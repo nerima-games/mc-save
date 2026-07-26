@@ -46,7 +46,7 @@
   ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.build.json --pretty false && tsc -p tsconfig.test.json --pretty false",
-    "lint": "oxlint index.ts domain scripts test",
+    "lint": "oxlint --deny-warnings index.ts domain scripts test",
     "lint:fix": "oxlint --fix index.ts domain scripts test",
     "test": "vitest run",
     "test:watch": "vitest",
