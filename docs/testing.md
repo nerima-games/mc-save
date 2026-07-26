@@ -5,7 +5,7 @@
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト+ツール）の両方 |
-| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない） |
+| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
 | `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + `Date.now()` 禁止 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:coverage` | カバレッジ計測。**閾値は未設定**（後述） |
