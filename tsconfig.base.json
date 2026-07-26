@@ -1,0 +1,68 @@
+{
+  // Shared compiler options for every tsconfig in this repository.
+  // Strictness policy: `strict: true` PLUS every additional strictness flag
+  // spelled out explicitly, so that a future TypeScript release changing a
+  // default cannot silently weaken this repository.
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // No DOM, no WebWorker, no Node globals.
+    //
+    // mc-save ships a codec toolkit and a StoragePort *contract*; neither knows
+    // what a browser is. The one adapter that genuinely needs `DOM` is the
+    // IndexedDB one, and it is not written yet (see docs/public-api.md). When it
+    // lands it adds "DOM" here — and the moment it does, `pnpm typecheck` stops
+    // being able to prove that the toolkit itself is platform-free, so the
+    // adapter must arrive together with its own tsconfig that fences it off.
+    "lib": ["ES2024"],
+    "types": [],
+
+    "allowJs": false,
+    "checkJs": false,
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "removeComments": false,
+
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "useUnknownInCatchVariables": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "resolvePackageJsonExports": true,
+    "resolvePackageJsonImports": true,
+    "skipLibCheck": true,
+
+    "newLine": "lf",
+    "stripInternal": true,
+
+    // No build step yet (see README 現状). Every tsconfig here is check-only;
+    // `package.json#exports` points at TypeScript source. The emitting
+    // build/publish pipeline is added when this repo reaches completion.
+    "noEmit": true,
+
+    "baseUrl": "."
+  }
+}
