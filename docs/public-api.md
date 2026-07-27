@@ -225,25 +225,71 @@ plan.md §6 Step 0 が求める API ロックファイルのセーブ版とし�
 ---
 
 <a id="idb"></a>
-## 8. 未実装: IndexedDB アダプタ
+## 8. 実装済み: IndexedDB アダプタ
 
-plan.md §3.5 は `StoragePort` の IndexedDB 実装を要求しているが、
-スケルトン段階では**意図的に入れていない**。
+`domain/indexeddb-storage.ts`。plan.md §3.5 の要求を満たす。
 
-理由: `lib: ["DOM"]` を `tsconfig.base.json` に足した瞬間、
-「このツールキットは platform-free である」ことを `pnpm typecheck` で証明できなくなる。
-アダプタは自前の tsconfig で隔離した上で追加する。
+### `lib: ["DOM"]` は足していない — 当初の計画は誤りだった
 
-### 実装時に移植すべき内容
+このセクションは当初「アダプタは自前の tsconfig で隔離した上で追加する」と書いていた。
+**隔離は不要だった。** `domain/indexeddb-surface.ts` が
+アダプタの使う IndexedDB API だけを構造的に記述し、
+`test/fixtures/indexeddb-surface.ts` を本物の `lib.dom.d.ts` に対してコンパイルする
+テストが「実物の `IDBFactory` がキャスト無しでその型を満たす」ことを証明している。
+mc-render `application/dom-surface.ts` / mx-ui と同じ手口である。
+
+別 tsconfig 案を捨てた理由は趣味ではなく機構である:
+`scripts/api-lock.ts` は `tsconfig.build.json` からレポートを作り、
+`scripts/check-dependency-whitelist.ts` は `index.ts` と `domain/` を出荷対象と見なす。
+`tsconfig.build.json` の外に置いたアダプタは `index.ts` から re-export できず、
+`pnpm check:deps` の走査からも外れる —
+**実媒体に触る唯一のファイルが、どのゲートからも見えないファイルになる。**
+
+### 非自明だった型の性質（触る前に読むこと）
+
+`onsuccess` 等のハンドラ引数が `never` なのは書き間違いではない。
+lib.dom はこれらを**プロパティ**として宣言しており、
+`strictFunctionTypes` 下では引数が反変になる。
+したがって実物の `IDBRequest` が我々の型に代入可能であるためには、
+我々の引数型が `Event` の**部分型**でなければならない。
+DOM 無しで書ける `Event` の部分型は `never` だけである。
+実測した拒否メッセージは `domain/indexeddb-surface.ts` 冒頭に記録してある。
+
+**結果としてイベントは読めない。これは仕様である** — 下の「upgrade ハンドラ」を参照。
+
+### ストアレイアウト（このアダプタ自身のもの。参照実装のものではない）
+
+| 項目 | 値 |
+| --- | --- |
+| DB 名 | **呼び出し側が渡す**（`IndexedDbStorageOptions.databaseName`）。mc-save は `'minecraft-worlds'` を知らない。鍵 `worldId:x:z` を知らないのと同じ理由である |
+| レイアウトバージョン | `STORE_LAYOUT_VERSION = 1`。セーブフォーマットのバージョンとは無関係 |
+| ストア | `saves` 1 本のみ。`keyPath: 'key'` |
+| インデックス | `by-insertion`（`seq` 上）。`keys` が挿入順を返すために必要 |
+| レコード | `{ key, seq, envelope }` |
+
+`chunks` / `metadata` は**作らない**。それは参照実装のスキーマであり、
+それを知らないことが mc-save の設計そのものである（`domain/storage-port.ts` 冒頭）。
+
+### エラーチャネルは広げていない
+
+`StorageService` は `StorageError` を約束しており、全ての失敗が `StorageError` である。
+ただしクォータだけは呼び出し側の正しい対応が異なる（リトライしても無駄）ので、
+`operation` に `:quota-exceeded` を付し `isQuotaExceeded` で読み戻す。
+`blocked` は `indexeddb.open:blocked` と命名する（こちらはリトライが有効なので印は付けない）。
+
+### 参照実装から移植した値
 
 | 項目 | 参照実装の値・場所 |
 | --- | --- |
-| DB 名 | `'minecraft-worlds'`（`storage-idb-model.ts:8`）。**`'ts-minecraft'` ではない** |
-| DB バージョン | `DB_VERSION = 2`（`storage-idb-model.ts:9`） |
-| ストア | `'chunks'` / `'metadata'`（`storage-idb-model.ts:10-11`） |
-| チャンク鍵 | `` `${worldId}:${chunkCoord.x}:${chunkCoord.z}` ``（`storage-idb-model.ts:27-28`）。メタデータ鍵は素の `worldId` |
+
+| 項目 | 参照実装の値・場所 |
+| --- | --- |
+| DB 名 | `'minecraft-worlds'`（`storage-idb-model.ts:8`）。**この定数はゲーム側の持ち物になった。** mc-save は渡された名前をそのまま使うだけである |
+| DB バージョン | `DB_VERSION = 2`（`storage-idb-model.ts:9`）。こちらのレイアウトは 1 から数え直す |
+| ストア | `'chunks'` / `'metadata'`（`storage-idb-model.ts:10-11`）。**採用しない**（上記） |
+| チャンク鍵 | `` `${worldId}:${chunkCoord.x}:${chunkCoord.z}` ``（`storage-idb-model.ts:27-28`）。**採用しない** — 鍵は呼び出し側が綴る |
 | IDB ラッパ | `packages/world/infrastructure/idb-utils.ts`（243 LOC） |
-| エラーマッピング | `storage-error-mapping.ts`（19 LOC）。`QuotaExceededError` は `DOMException.name` で判定 |
+| エラーマッピング | `storage-error-mapping.ts`（19 LOC）。`QuotaExceededError` は `DOMException.name` で判定。**これは採用した** |
 | 設定用の第 2 DB | `'minecraft-settings'` v1、ストア `'settings'`、単一レコード鍵 `'current'`（`settings-storage-service.ts:5-8`） |
 
 **注意**: 参照実装の設定用アダプタ（`packages/game/infrastructure/settings-storage-service.ts`, 151 LOC）は
@@ -259,3 +305,21 @@ mc-save に移植する際は 1 本にまとめること。
 
 mc-save ではスキーマ移行は `defineFormat` の連鎖が担い、
 IndexedDB の `upgrade` はストア構造の変更だけに限定する（責務を混ぜない）。
+
+**そしてこれは型で強制されている。** 上記のとおりハンドラの引数が `never` なので、
+`event.oldVersion` は読もうと思っても読めない。
+参照実装は同じ規律を偶然守って（`oldVersion` を渡しておきながら捨てて）いたが、
+ここでは「守り忘れる」ことができない。
+
+**古いバージョンで書かれた DB がどうなるか**: 開き、欠けていた構造だけを獲得し、
+**レコードは 1 件も書き換えられず 1 件も落ちない**。
+エンベロープが古いフォーマットバージョンのままでも構わない —
+それは `decodeSave` の担当であって媒体の担当ではない。
+回帰テストは `test/indexeddb-storage.test.ts` の
+「an older database keeps every record it had」。
+
+**この設計の代償**（将来この行を読む人へ）: 既に存在するストアに
+後からインデックスを足す変更は、上記の分岐が「ストアがあるか」しか見ないので発火しない。
+既存ストアに upgrade 中に触るには `IDBOpenDBRequest.transaction` が要り、
+それは今わざと surface に入っていない。
+その時の正しい代価は surface と fixture の変更であって、キャストではない。

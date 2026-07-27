@@ -88,8 +88,12 @@ docs/                             実装情報
 
 **このリポジトリはまだ叩き台（pre-audit first cut）である。**
 
-- **IndexedDB アダプタは未実装。** `lib: ["DOM"]` を足すとツールキットが platform-free で
-  あることを型で証明できなくなるため、別 tsconfig で隔離してから追加する
+- **IndexedDB アダプタは実装済み（`domain/indexeddb-storage.ts`）。** `lib: ["DOM"]` は
+  足していない。`domain/indexeddb-surface.ts` が使う API だけを構造的に記述し、
+  それが本物の `lib.dom.d.ts` の部分集合であることを fixture のコンパイルで証明している
+  （mc-render `application/dom-surface.ts` と同じ手口）。別 tsconfig による隔離も不要だった
+- **実ブラウザでの契約テストはまだ無い。** テストは `test/fake-indexeddb.ts` に対して走る。
+  何を再現し何を再現しないかは同ファイル冒頭に列挙してある
 - **旧セーブ fixture が無い。** 参照実装に移植元が存在しないため新規作成が必要
 - **リトライ / クォータのポリシーは持たない。** エラー型だけ定義し、`Schedule` は利用側が巻く
 - **ビルド／publish はまだない。** `exports` は TypeScript ソースを直接指している

@@ -173,7 +173,7 @@ export const DB_NAME = 'minecraft-worlds'
 
 | テスト名 | 主張 |
 | --- | --- |
-| ⬜ `the IndexedDB adapter opens 'minecraft-worlds', not 'ts-minecraft'` | 定数を直接 assert する。1 行だが、間違えたら全プレイヤーのワールドが消えたように見える |
+| ✅ `creates a database under the name it was given, and no other` | **定数の持ち主が変わった形で移植済み**（`test/indexeddb-storage.test.ts`）。`'minecraft-worlds'` はゲーム側の定数であり、mc-save が知ってよいものではない — 鍵 `worldId:x:z` を知らないのと同じ理由。mc-save が主張できるのは「渡された名前をそのまま使う」ことで、間違えたら全プレイヤーのワールドが消えたように見えるのは同じである |
 
 ---
 

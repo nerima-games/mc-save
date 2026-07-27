@@ -9,12 +9,26 @@
     "moduleResolution": "bundler",
     // No DOM, no WebWorker, no Node globals.
     //
-    // mc-save ships a codec toolkit and a StoragePort *contract*; neither knows
-    // what a browser is. The one adapter that genuinely needs `DOM` is the
-    // IndexedDB one, and it is not written yet (see docs/public-api.md). When it
-    // lands it adds "DOM" here — and the moment it does, `pnpm typecheck` stops
-    // being able to prove that the toolkit itself is platform-free, so the
-    // adapter must arrive together with its own tsconfig that fences it off.
+    // mc-save ships a codec toolkit, a StoragePort *contract*, and an IndexedDB
+    // adapter — and none of them knows what a browser is.
+    //
+    // An earlier version of this comment said the IndexedDB adapter would have
+    // to add "DOM" here when it landed. IT LANDED AND IT DID NOT, and the reason
+    // is worth stating where the temptation is:
+    //
+    // adding "DOM" would make `pnpm typecheck` stop proving that the toolkit is
+    // platform-free. Every file under domain/ would silently become able to
+    // reach `window`, `document` and `localStorage`, and nothing would notice
+    // for months. Instead `domain/indexeddb-surface.ts` describes, structurally,
+    // the handful of IndexedDB members the adapter uses, and
+    // `test/fixtures/indexeddb-surface.ts` is COMPILED BY A TEST against the
+    // real `lib.dom.d.ts` to prove a real `IDBFactory` satisfies it with no
+    // cast. Same pattern as mc-render's `application/dom-surface.ts`.
+    //
+    // So this line is now load-bearing in both directions, and a test asserts
+    // it: `test/indexeddb-storage.test.ts`, "the shipped project still compiles
+    // with NO DOM at all". If you are here to add "DOM", that test is where the
+    // argument against it is written down.
     "lib": ["ES2024"],
     "types": [],
 

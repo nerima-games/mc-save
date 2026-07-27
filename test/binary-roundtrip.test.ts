@@ -103,13 +103,22 @@ const SAVED_FLUID = new Uint8Array([9, 8, 7, 6])
  * a round-trip test written against it asserts nothing about serialisation and
  * would go green on a format that no medium could store.
  *
- * WHAT THIS DOES NOT REPRODUCE, and what therefore stays a browser question:
- * transactions, `onupgradeneeded` and store creation, quota, key ordering under
- * a real index, and error mapping from `DOMException`. Those belong to the
- * IndexedDB adapter, which mc-save has not written yet — `domain/storage-port.ts`
- * says so in the comment on `makeInMemoryStorage` ("re-run against the
- * IndexedDB adapter when it lands"), and this file is deliberately written
- * against `StoragePort` so that it can be.
+ * WHAT THIS DOES NOT REPRODUCE: transactions, `onupgradeneeded` and store
+ * creation, quota, key ordering under a real index, and error mapping from
+ * `DOMException`.
+ *
+ * Those belong to the IndexedDB adapter, and they are no longer a browser
+ * question: the adapter exists (`domain/indexeddb-storage.ts`) and every one of
+ * them is tested against `test/fake-indexeddb.ts`, whose own header draws this
+ * same line for what IT does and does not stand in for. What remains a browser
+ * question is only real durability across a reload and real quota pressure.
+ *
+ * This file is still deliberately written against `StoragePort` rather than
+ * against a database, because its claim is about the CODEC and the value that
+ * crosses the medium, not about the medium. `domain/storage-port.ts` promised
+ * the contract block would be "re-run against the IndexedDB adapter when it
+ * lands"; it landed, and that promise is kept in
+ * `test/storage-port-contract.ts`.
  */
 const throughStructuredClone: Layer.Layer<StoragePort> = Layer.effect(
   StoragePort,
@@ -212,8 +221,24 @@ describe('a chunk across the storage medium', () => {
 
 /**
  * ---------------------------------------------------------------------------
- * Triage row #9 is NOT ported, and this is the exact reason
+ * Triage row #9 — WHY IT IS NOT PORTED *HERE*
  * ---------------------------------------------------------------------------
+ *
+ * UPDATE. Reason (a) below has since been answered: the IndexedDB adapter was
+ * written (`domain/indexeddb-storage.ts`), and row #9 is now ported, in
+ * `test/indexeddb-storage.test.ts`, as the ADAPTER TEST the triage said it
+ * should become. Reason (b) was NOT answered and never will be — it is a
+ * design decision, not a gap — so the port asserts this adapter's own store
+ * layout and deliberately does not assert `chunks` and `metadata`.
+ *
+ * The test above is still NOT that port, and its label is still correct. It
+ * makes the one claim in row #9 that is about PERSISTENCE rather than about the
+ * MEDIUM — that a save which was written is enumerable afterwards — and it makes
+ * it through `StoragePort` with no database anywhere in sight. That is why it
+ * belongs in this file and not in that one.
+ *
+ * The original reasoning is kept verbatim below, because it is what the port
+ * was built to satisfy.
  *
  * `'minecraft-worlds' IndexedDB is created after game starts`
  * (ts-minecraft/e2e/persistence/save-load.e2e.ts:37-46) asserts three things
@@ -243,9 +268,10 @@ describe('a chunk across the storage medium', () => {
  *     chunks and metadata" would be asserting the reference's design against a
  *     repository built to not have it.
  *
- * So row #9 stays a browser test, and it belongs to whoever writes the
- * IndexedDB adapter — as an adapter test, phrased about that adapter's own
- * store layout, not about the reference's. The part of it that is really about
- * persistence rather than about IndexedDB is `keys`, and that is the test
- * directly above.
+ * So row #9 belongs to whoever writes the IndexedDB adapter — as an adapter
+ * test, phrased about that adapter's own store layout, not about the
+ * reference's. The part of it that is really about persistence rather than
+ * about IndexedDB is `keys`, and that is the test directly above.
+ *
+ * That is exactly what happened. See the UPDATE at the top of this note.
  */

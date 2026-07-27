@@ -13,7 +13,7 @@
 <!-- ------------------------------------------------------------------------- -->
 
 format: 1
-exported declarations: 32
+exported declarations: 49
 supporting declarations: 5
 
 ## Exported
@@ -46,10 +46,127 @@ const FIRST_VERSION = 1;
 type FormatRegistry = ReadonlyMap<string, AnySaveFormat>;
 ```
 
+### INSERTION_INDEX_NAME  `const`
+
+```ts
+const INSERTION_INDEX_NAME = "by-insertion";
+```
+
+### IdbDatabase  `type`
+
+```ts
+type IdbDatabase = {
+    readonly name: string;
+    readonly version: number;
+    readonly objectStoreNames: IdbStringList;
+    readonly createObjectStore: (name: string, options?: {
+        readonly keyPath?: string;
+    }) => IdbObjectStore;
+    readonly transaction: (storeNames: string, mode?: 'readonly' | 'readwrite') => IdbTransaction;
+    readonly close: () => void;
+    onversionchange: ((event: never) => void) | null;
+};
+```
+
+### IdbDomException  `type`
+
+```ts
+type IdbDomException = {
+    readonly name: string;
+    readonly message: string;
+};
+```
+
+### IdbFactory  `type`
+
+```ts
+type IdbFactory = {
+    readonly open: (name: string, version?: number) => IdbOpenRequest;
+    readonly databases?: () => Promise<ReadonlyArray<{
+        readonly name?: string;
+        readonly version?: number;
+    }>>;
+};
+```
+
+### IdbIndex  `type`
+
+```ts
+type IdbIndex = {
+    readonly getAllKeys: (query?: null, count?: number) => IdbRequest;
+    readonly openCursor: (query?: null, direction?: 'prev') => IdbRequest;
+};
+```
+
+### IdbObjectStore  `type`
+
+```ts
+type IdbObjectStore = {
+    readonly get: (key: string) => IdbRequest;
+    readonly put: (value: unknown) => IdbRequest;
+    readonly delete: (key: string) => IdbRequest;
+    readonly index: (name: string) => IdbIndex;
+    readonly createIndex: (name: string, keyPath: string) => unknown;
+};
+```
+
+### IdbOpenRequest  `type`
+
+```ts
+type IdbOpenRequest = IdbRequest & {
+    readonly result: IdbDatabase;
+    onupgradeneeded: ((event: never) => void) | null;
+    onblocked: ((event: never) => void) | null;
+};
+```
+
+### IdbRequest  `type`
+
+```ts
+type IdbRequest = {
+    readonly result: unknown;
+    readonly error: IdbDomException | null;
+    onsuccess: ((event: never) => void) | null;
+    onerror: ((event: never) => void) | null;
+};
+```
+
+### IdbStringList  `type`
+
+```ts
+type IdbStringList = {
+    readonly length: number;
+    readonly contains: (name: string) => boolean;
+    readonly item: (index: number) => string | null;
+};
+```
+
+### IdbTransaction  `type`
+
+```ts
+type IdbTransaction = {
+    readonly objectStore: (name: string) => IdbObjectStore;
+    readonly abort: () => void;
+    readonly error: IdbDomException | null;
+    oncomplete: ((event: never) => void) | null;
+    onerror: ((event: never) => void) | null;
+    onabort: ((event: never) => void) | null;
+};
+```
+
 ### InMemoryStorageLayer  `const`
 
 ```ts
 const InMemoryStorageLayer: Layer.Layer<StoragePort>;
+```
+
+### IndexedDbStorageOptions  `type`
+
+```ts
+type IndexedDbStorageOptions = {
+    readonly factory: IdbFactory;
+    readonly databaseName: string;
+};
 ```
 
 ### Migration  `type`
@@ -74,6 +191,24 @@ class MigrationError extends MigrationError_base<{
 }> {
     get message(): string;
 }
+```
+
+### QUOTA_EXCEEDED_MARKER  `const`
+
+```ts
+const QUOTA_EXCEEDED_MARKER = ":quota-exceeded";
+```
+
+### SAVE_STORE_NAME  `const`
+
+```ts
+const SAVE_STORE_NAME = "saves";
+```
+
+### STORE_LAYOUT_VERSION  `const`
+
+```ts
+const STORE_LAYOUT_VERSION = 1;
 ```
 
 ### SaveDecodeError  `class`
@@ -202,10 +337,22 @@ const encodeSave: <A, I>(format: SaveFormat<A, I>, value: A) => Effect.Effect<Sa
 const failingStorageLayer: (operation: string) => Layer.Layer<StoragePort>;
 ```
 
+### indexedDbStorageLayer  `const`
+
+```ts
+const indexedDbStorageLayer: (options: IndexedDbStorageOptions) => Layer.Layer<StoragePort, StorageError>;
+```
+
 ### isFromFuture  `const`
 
 ```ts
 const isFromFuture: (envelope: SaveEnvelope, currentVersion: number) => boolean;
+```
+
+### isQuotaExceeded  `const`
+
+```ts
+const isQuotaExceeded: (error: StorageError) => boolean;
 ```
 
 ### loadFrom  `const`
@@ -224,6 +371,12 @@ const lookupFormat: (registry: FormatRegistry, name: string) => Option.Option<An
 
 ```ts
 const makeInMemoryStorage: Effect.Effect<StorageService>;
+```
+
+### makeIndexedDbStorage  `const`
+
+```ts
+const makeIndexedDbStorage: (options: IndexedDbStorageOptions) => Effect.Effect<StorageService, StorageError, Scope.Scope>;
 ```
 
 ### migrateToCurrent  `const`

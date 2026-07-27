@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
+import { readFileSync } from 'node:fs'
 import {
   allowedDirectDependencies,
   checkDeclaredDependencies,
@@ -7,7 +8,9 @@ import {
   classifyImport,
   findBannedTimeSources,
   findTransitivePath,
+  isToolingOrTestPath,
   REPOSITORY_POLICY,
+  SCAN_ROOTS,
   TIME_SOURCE_ESCAPE_HATCH,
   type DeclaredDependencies,
 } from '../scripts/check-dependency-whitelist'
@@ -267,6 +270,55 @@ describe('time-source ban', () => {
       expect(
         findBannedTimeSources(`const now = Date.now() // ${TIME_SOURCE_ESCAPE_HATCH}`, 'domain/adapter.ts'),
       ).toStrictEqual([])
+    }),
+  )
+})
+
+// ---------------------------------------------------------------------------
+// What the gate calls "shipped" and what npm actually ships must be one set.
+//
+// These are two hand-maintained lists that describe the same thing and cannot
+// see each other, and both halves have gone wrong elsewhere in this
+// organisation, in opposite directions: mx-multiplayer had `stages` in
+// SCAN_ROOTS but not in isToolingOrTestPath, so a shipped file was classified as
+// tooling and allowed to import a devDependency; mc-render had the mirror image,
+// with `stages/` correctly shipped to the gate and omitted from `files`, so
+// `npm publish` would have produced a package with none of its stage
+// registrations in it.
+//
+// Neither is visible from inside its own half, so the test derives one from the
+// other rather than restating either. It arrives with the IndexedDB adapter
+// because that adapter is the first thing this repository ships that a consumer
+// cannot replace themselves — mc-save without it is a codec toolkit with no way
+// to reach a medium.
+// ---------------------------------------------------------------------------
+describe('the published package and the dependency gate agree on what ships', () => {
+  it.effect('every shipped source root the gate scans is in package.json `files`', () =>
+    Effect.sync(() => {
+      const shipped = SCAN_ROOTS.filter((root) => !isToolingOrTestPath(`${root}/probe.ts`))
+      const manifest: { readonly files: ReadonlyArray<string> } = JSON.parse(
+        readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+      )
+
+      // `index.ts` is a file rather than a directory; the rest are roots.
+      const missing = shipped.filter((root) => !manifest.files.includes(root))
+      expect(
+        missing,
+        `these roots ship code but npm would not include them: ${missing.join(', ')}`,
+      ).toStrictEqual([])
+    }),
+  )
+
+  it.effect('and `domain` is one of them — every adapter mc-save ships lives there', () =>
+    Effect.sync(() => {
+      // Named explicitly as well as derived, because the derivation above would
+      // also pass if `domain` stopped being scanned at all. mc-save has no
+      // `application/` directory: `domain/storage-port.ts` already shipped two
+      // adapters before the IndexedDB one joined them, and adding a fourth
+      // shipped root would mean editing the vendored region of two scripts,
+      // three tsconfigs and this manifest to gain nothing.
+      expect(SCAN_ROOTS).toContain('domain')
+      expect(isToolingOrTestPath('domain/indexeddb-storage.ts')).toBe(false)
     }),
   )
 })

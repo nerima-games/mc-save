@@ -19,7 +19,7 @@
 | `StoragePort` | 鍵とエンベロープしか知らない狭い Port |
 | インメモリアダプタ | Port の**正典実装**。テスト用ではなく契約の基準 |
 | フォーマットレジストリ | 登録済みフォーマットの列挙。immutable な値 |
-| IndexedDB アダプタ | **未実装**。[public-api.md](./public-api.md#idb) 参照 |
+| IndexedDB アダプタ | **実装済み**。`domain/indexeddb-storage.ts`。ストア 1 本（`saves`）と挿入順インデックス 1 本を自前で持つ。[public-api.md](./public-api.md#idb) 参照 |
 
 ## 2. 非スコープ（ここに書いたら負け）
 
@@ -97,7 +97,7 @@ mc-compose は mc-save に**直接は依存しない**（推移閉包の禁止�
 
 | 省略したもの | 理由 | いつ入れるか |
 | --- | --- | --- |
-| IndexedDB アダプタ | `lib: ["DOM"]` が必要になり、ツールキットが platform-free であることを型で証明できなくなる | 別 tsconfig で隔離して追加する |
+| ~~IndexedDB アダプタ~~ | ~~`lib: ["DOM"]` が必要になる~~ → **前提が誤りだった。** 狭い構造型 + 部分集合証明で `lib` を広げずに実装できた（`domain/indexeddb-surface.ts`） | **済**（別 tsconfig も不要だった） |
 | リトライ / クォータポリシー | 誰が巻くべきかがまだ決まっていない | 最初の実消費者（worldgen）が決める |
 | 圧縮 | 参照実装は無圧縮（1 チャンク 64KB + 流体 64KB）。計測なしに入れない | 実測後 |
 | `@nerima-games/mc-kernel` への依存 | 未 publish（plan.md §6 Step 0） | kernel が消費可能になった時点 |
