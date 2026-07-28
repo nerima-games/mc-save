@@ -1,0 +1,9 @@
+{
+  "format": "mc-save/test/player-history",
+  "version": 3,
+  "payload": {
+    "worldName": "ねりま world",
+    "health": 17,
+    "dimension": "overworld"
+  }
+}

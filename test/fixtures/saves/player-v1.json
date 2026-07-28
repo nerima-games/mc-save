@@ -1,0 +1,8 @@
+{
+  "format": "mc-save/test/player-history",
+  "version": 1,
+  "payload": {
+    "worldName": "ねりま world",
+    "hp": 17
+  }
+}

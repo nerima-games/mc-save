@@ -52,17 +52,65 @@ IndexedDB の列挙は**キーの昇順**なので、素直な実装は正しい
 | --- | --- |
 | ラウンドトリップテスト | ✅ `test/format-roundtrip.test.ts` |
 | マイグレーションテスト | ✅ `test/migration.test.ts` |
-| 旧セーブ fixture との互換テスト | ⬜ **fixture が参照実装に存在しない**（[design-notes.md](./design-notes.md#dn-2)）。新規作成が必要 |
+| 旧セーブ fixture との互換テスト | ✅ `test/legacy-save-compat.test.ts`（10 件）。**参照実装に fixture は無いままである**（[design-notes.md](./design-notes.md#dn-2)）ので、移植ではなく**新規作成した** —— §3.1 |
+
+### 3.1 fixture を「移植できない」まま作った方法
+
+要求は「参照実装の fixture を資産として移植」だが、**移植元は無い**。
+参照実装にはバージョン管理そのものが無く（[envelope.ts](../domain/envelope.ts) の冒頭:
+バージョン番号は 2 つあってどちらも分岐に読まれていない）、
+旧セーブ fixture という概念が成立していなかった。**この事実は変わっていない。**
+
+代わりに、このリポジトリが**自分のフォーマットについて**書き出した。
+
+| 部品 | 場所 | 役割 |
+| --- | --- | --- |
+| 凍結された歴代フォーマット定義 | `test/support/player-format-history.ts` | v1 / v2 / v3 を `defineFormat` で保持。**編集禁止**（そのファイルのヘッダに理由） |
+| 書き出す仕組み | `scripts/write-save-fixtures.ts`（`pnpm fixtures:write`） | §4-2 の「手書き JSON は禁止」を満たす。全バイトが `encodeSave` の出力 |
+| ゴールデン fixture | `test/fixtures/saves/player-v{1,2,3}.json` | commit 済み |
+| ゲート | `test/legacy-save-compat.test.ts` | 下記 |
+
+**`pnpm verify` は書き出しを走らせない。** 検証が再生成を兼ねると、
+出力を変える変更が fixture を書き換えて green になる —— ゴールデンテストを無価値にする典型である。
+書き出しは人間の決定、突き合わせは自動、と分けてある。
+
+**`test/migration.test.ts` との違いが要点である。** あちらは v1 ペイロードを
+**テストの中で組み立てて**移送するので、示せるのは「この build が思う v1 を、この build が読める」
+という自己整合性までである。こちらは**ディスクから読んだバイト**から始まる。
+壊れた移送に合わせて「v1 はこうだったことにする」と直す変更は、
+前者では 1 つの整合した変更として green のまま通り、後者では commit 済みファイルが動かないので落ちる。
+
+**ミューテーション実測**（2026-07-28、4 件とも赤になることを確認して戻した）:
+
+| 入れた変更 | 落ちたテスト |
+| --- | --- |
+| v1→v2 の移送が `health` ではなく `hitpoints` に改名 | v1 の行 1 件 |
+| `dimension` の既定を `overworld` → `nether` | v1 と v2 の行 2 件 |
+| commit 済み v1 fixture の値を書き換え（`hp` 17→11） | 3 件（復号・形状・ドリフト） |
+| v1 fixture を**現行 shape で再スタンプ**（version 1 のまま payload だけ v3） | 3 件（同上） |
+
+最後の 1 件が、この構成が実際に何を守っているかを示している ——
+3 つの fixture を全部現行フォーマットで書き出せば、
+バージョン番号だけ違う同一ペイロードが 3 つ commit され、
+**移送は 1 ステップも実行されないまま「全バージョン互換」と報告される**。
+`the committed fixtures carry the OLD shapes, not re-stamped modern ones` がそれを閉じている。
 
 ## 4. 完了条件
 
 このリポジトリが「完成」と言えるのは以下が全て満たされたときである。
 
 1. `pnpm verify` が green
-2. **バージョンごとのゴールデン fixture が commit されている**
+2. **バージョンごとのゴールデン fixture が commit されている** —— **機構は満たした（§3.1）。対象がまだ 1 つ足りない**
    - fixture を**書き出す仕組み**も同時にある（手書き JSON は禁止。
      「現行コードが出力するもの」ではなく「人が出力すると思ったもの」を固定してしまう）
+     → ✅ `pnpm fixtures:write`
    - フォーマットが持ったことのある全バージョンに fixture がある
+     → ✅ ただし**現時点で存在するフォーマットは `test/support/player-format-history.ts` の
+     1 つだけ**である。テストが「全バージョン」を強制する仕掛け
+     （`FORMAT_HISTORY` の長さ = 現行バージョン）は入っているので、
+     **実フォーマットが増えたときに同じ形を繰り返すこと**。
+     残っているのは条件 4 —— mc-worldgen が実際に `defineFormat` を使う日であり、
+     そのとき本項は「そのフォーマットにも fixture があるか」に変わる
 3. ~~**IndexedDB アダプタが実装され**~~、契約テストが実ブラウザで green
    （アダプタは済。契約テストは fake に対しては green。実ブラウザ実行が残り）
    - `test/storage-port.test.ts` を実アダプタに対して再実行できる
