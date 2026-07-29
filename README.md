@@ -44,11 +44,11 @@ mc-save に依存するのは `mc-worldgen` と `mc-sim` の 2 つである。
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_22 + corepack が入る
+$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack が入る
 $ pnpm install
 ```
 
-Nix を使わない場合は Node.js 22 以上と pnpm 9.15.0（`corepack` 推奨）を用意する。
+Nix を使わない場合は Node.js 24 以上と pnpm 11（`corepack` 推奨）を用意する。
 
 > **注意**: ツールチェーンは `devenv.nix` から `flake.nix` + `flake.lock` に移行済みである。
 > `flake.lock` はコミットされているので、`nix develop`（`.envrc` は `use flake`）は
