@@ -35,8 +35,8 @@ import { describe, expect, it } from '@effect/vitest'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Effect, Either, Schema } from 'effect'
-import { SaveEnvelopeSchema, type SaveEnvelope } from '../domain/envelope'
-import { decodeSave } from '../domain/format'
+import { SaveEnvelopeSchema, type SaveEnvelope } from '../src/domain/envelope'
+import { decodeSave } from '../src/domain/format'
 import {
   EXPECTED_AFTER_MIGRATION,
   FIXTURE_DIRECTORY,

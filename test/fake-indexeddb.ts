@@ -5,11 +5,11 @@
  * `vitest.config.ts` runs `environment: 'node'`, and that is a decision rather
  * than a default (`docs/testing.md` §2). The alternative was `fake-indexeddb`
  * from npm, which was rejected on the rule that governs this whole repository:
- * `pnpm check:deps` allows exactly one runtime dependency and every addition is
- * a boundary decision, and — more to the point — a third-party fake is written
- * against `lib.dom.d.ts`, so consuming it would drag `"DOM"` back in through
- * `types` and delete the property `domain/indexeddb-surface.ts` exists to
- * protect.
+ * this package has zero runtime dependencies beyond `effect` and every
+ * addition is a boundary decision, and — more to the point — a third-party
+ * fake is written against `lib.dom.d.ts`, so consuming it would drag `"DOM"`
+ * back in through `types` and delete the property
+ * `src/domain/indexeddb-surface.ts` exists to protect.
  *
  * The reason this fake is TRUSTWORTHY is `test/fixtures/indexeddb-surface.ts`:
  * it implements `IdbFactory` and friends with NO CAST, and a real `IDBFactory`
@@ -78,7 +78,7 @@ import type {
   IdbRequest,
   IdbStringList,
   IdbTransaction,
-} from '../domain/indexeddb-surface'
+} from '../src/domain/indexeddb-surface'
 
 /** A `DOMException` as far as the surface is concerned. */
 export const domException = (name: string, message: string): IdbDomException => ({ name, message })

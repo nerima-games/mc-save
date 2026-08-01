@@ -44,8 +44,8 @@ import { Effect, Exit, Option, Schema } from 'effect'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
-import { saveEnvelope } from '../domain/envelope'
-import { defineFormat } from '../domain/format'
+import { saveEnvelope } from '../src/domain/envelope'
+import { defineFormat } from '../src/domain/format'
 import {
   INSERTION_INDEX_NAME,
   indexedDbStorageLayer,
@@ -53,9 +53,9 @@ import {
   makeIndexedDbStorage,
   SAVE_STORE_NAME,
   STORE_LAYOUT_VERSION,
-} from '../domain/indexeddb-storage'
-import { loadFrom, saveTo } from '../domain/persistence'
-import { SaveKey, StoragePort } from '../domain/storage-port'
+} from '../src/domain/indexeddb-storage'
+import { loadFrom, saveTo } from '../src/domain/persistence'
+import { SaveKey, StoragePort } from '../src/domain/storage-port'
 import { makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR, type FakeIndexedDb } from './fake-indexeddb'
 import { storagePortContract } from './storage-port-contract'
 

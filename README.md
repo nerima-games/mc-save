@@ -9,8 +9,11 @@ mc-save は「何を保存するか」を知らない。
 
 ## 依存
 
-`effect` と `@nerima-games/mc-kernel` のみ。
-直接依存のホワイトリストは**空集合**であり、`pnpm check:deps` が機械的に強制している。
+`effect` のみ（Tier1 の安定ライブラリとして、org 内依存はゼロ。
+`@nerima-games/mc-kernel` は普遍的に import 可能だが、mc-kernel 自体が未 publish のため
+現状は使っていない — [docs/versioning.md](./docs/versioning.md) 参照）。
+直接依存の許可リストは**空集合**であり、`.oxlintrc.json` の `no-restricted-imports` が
+機械的に強制している（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md)）。
 
 mc-save に依存するのは `mc-worldgen` と `mc-sim` の 2 つである。
 
@@ -59,37 +62,39 @@ Nix を使わない場合は Node.js 24 以上と pnpm 11（`corepack` 推奨）
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
-| `pnpm lint` | oxlint（唯一の lint/format 設定）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| `pnpm lint` | oxlint（唯一の lint/format 設定）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect`） |
 | `pnpm test:watch` | vitest watch |
-| `pnpm test:coverage` | カバレッジ計測（閾値は未設定。[docs/testing.md](./docs/testing.md) 参照） |
-| `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + `Date.now()` 禁止 |
-| `pnpm verify` | `typecheck && lint && check:deps && test`。CI と同じ |
+| `pnpm test:coverage` | カバレッジ計測 + 99% 閾値ゲート（現状はこの閾値を満たしていない。[docs/testing.md](./docs/testing.md) §5 参照） |
+| `pnpm verify` | `typecheck && lint && test`。CI と同じ |
 
 ### 構成
 
 ```
-index.ts                                公開バレル
-domain/
-  envelope.ts        バージョン付きエンベロープ
-  errors.ts          StorageError / SaveDecodeError / MigrationError / DuplicateFormatError
-  format.ts          defineFormat、マイグレーション連鎖、encode/decode
-  persistence.ts     saveTo / loadFrom（コーデックと媒体が出会う唯一の場所）
-  registry.ts        フォーマットレジストリ（immutable）
-  storage-port.ts    StoragePort + インメモリ/失敗アダプタ
+src/
+  index.ts             公開バレル
+  domain/
+    envelope.ts        バージョン付きエンベロープ
+    errors.ts          StorageError / SaveDecodeError / MigrationError / DuplicateFormatError
+    format.ts          defineFormat、マイグレーション連鎖、encode/decode
+    indexeddb-storage.ts  IndexedDB アダプタ
+    indexeddb-surface.ts  アダプタが使う IndexedDB API の構造的記述（型のみ）
+    persistence.ts     saveTo / loadFrom（コーデックと媒体が出会う唯一の場所）
+    registry.ts        フォーマットレジストリ（immutable）
+    storage-port.ts    StoragePort + インメモリ/失敗アダプタ
 scripts/
-  check-dependency-whitelist.ts   16 リポジトリ共通のゲート
-test/                             47 tests
-docs/                             実装情報
+  write-save-fixtures.ts   ゴールデン fixture の書き出し（pnpm fixtures:write）
+test/                      docs/testing.md 参照
+docs/                      実装情報
 ```
 
 ## 現状
 
 **このリポジトリはまだ叩き台（pre-audit first cut）である。**
 
-- **IndexedDB アダプタは実装済み（`domain/indexeddb-storage.ts`）。** `lib: ["DOM"]` は
-  足していない。`domain/indexeddb-surface.ts` が使う API だけを構造的に記述し、
+- **IndexedDB アダプタは実装済み（`src/domain/indexeddb-storage.ts`）。** `lib: ["DOM"]` は
+  足していない。`src/domain/indexeddb-surface.ts` が使う API だけを構造的に記述し、
   それが本物の `lib.dom.d.ts` の部分集合であることを fixture のコンパイルで証明している
   （mc-render `application/dom-surface.ts` と同じ手口）。別 tsconfig による隔離も不要だった
 - **実ブラウザでの契約テストはまだ無い。** テストは `test/fake-indexeddb.ts` に対して走る。
@@ -97,7 +102,8 @@ docs/                             実装情報
 - **旧セーブ fixture が無い。** 参照実装に移植元が存在しないため新規作成が必要
 - **リトライ / クォータのポリシーは持たない。** エラー型だけ定義し、`Schedule` は利用側が巻く
 - **ビルド／publish はまだない。** `exports` は TypeScript ソースを直接指している
-- **カバレッジ閾値は未設定。** 99% ゲートは完成条件到達時に有効化する
+- **カバレッジ閾値は有効化済みだが、実測はまだ 99% を満たしていない。**
+  [docs/testing.md](./docs/testing.md) §5 に現状のギャップを記載してある
 
 ## License
 
