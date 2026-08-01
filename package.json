@@ -1,6 +1,6 @@
 {
   "name": "@nerima-games/mc-save",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "type": "module",
   "description": "Persistence toolkit for the nerima-games Minecraft-clone rebuild: versioned save formats with migration chains, a format registry, and the StoragePort with an in-memory adapter.",
   "homepage": "https://github.com/nerima-games/mc-save#readme",

@@ -56,6 +56,8 @@ describe('listFrom', () => {
           : Effect.fail(new StorageError({ operation: 'test.get', key })),
       put: () => Effect.void,
       remove: () => Effect.void,
+      commitBatch: () => Effect.void,
+      readBatch: (keys) => Effect.all(keys.map((key) => service.get(key))),
     }
 
     return Effect.gen(function* () {
@@ -108,6 +110,8 @@ describe('listFrom', () => {
       get: () => Effect.die('must not read a key after listing failed'),
       put: () => Effect.void,
       remove: () => Effect.void,
+      commitBatch: () => Effect.void,
+      readBatch: () => Effect.die('must not batch-read after listing failed'),
     }
 
     return Effect.gen(function* () {

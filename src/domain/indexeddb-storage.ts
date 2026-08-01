@@ -323,6 +323,7 @@ const runTransaction = <A>(
   Effect.async<A, StorageError>((resume) => {
     let settled = false
     let delivered: { readonly value: A } | undefined
+    let pendingFailure: { readonly cause: unknown } | undefined
 
     const settle = (outcome: Effect.Effect<A, StorageError>): void => {
       if (settled) {
@@ -349,12 +350,11 @@ const runTransaction = <A>(
     }
 
     transaction.onerror = () => {
-      fail(transaction.error)
+      pendingFailure ??= { cause: transaction.error }
     }
     transaction.onabort = () => {
-      // `error` is genuinely null when the browser aborts a transaction of its
-      // own accord, so this must not read through it.
-      fail(transaction.error)
+      // Wait for abort before reporting failure: only then is rollback complete.
+      fail(pendingFailure?.cause ?? transaction.error)
     }
     transaction.oncomplete = () => {
       settle(
@@ -389,11 +389,11 @@ const runTransaction = <A>(
       try {
         body()
       } catch (cause) {
-        fail(cause)
+        pendingFailure = { cause }
         try {
           transaction.abort()
         } catch {
-          // Already finished; the failure above is what the caller sees.
+          fail(cause)
         }
       }
     }
@@ -405,7 +405,12 @@ const runTransaction = <A>(
         })
       }
       request.onerror = () => {
-        fail(request.error)
+        pendingFailure ??= { cause: request.error }
+        try {
+          transaction.abort()
+        } catch {
+          fail(request.error)
+        }
       }
     }
 
@@ -484,6 +489,76 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
         deliver(undefined)
       })
     }),
+
+  commitBatch: (mutations) =>
+    mutations.length === 0
+      ? Effect.void
+      : runTransaction<void>(
+          database,
+          'readwrite',
+          'indexeddb.commitBatch',
+          undefined,
+          (store, deliver, onResult) => {
+            const apply = (index: number, nextSequence: number): void => {
+              const mutation = mutations[index]
+              if (mutation === undefined) {
+                deliver(undefined)
+                return
+              }
+              if (mutation._tag === 'Remove') {
+                onResult(store.delete(mutation.key), () => apply(index + 1, nextSequence))
+                return
+              }
+              onResult(store.get(mutation.key), (existing) => {
+                const existingSequence = readNumber(existing, 'seq')
+                const sequence = existingSequence ?? nextSequence
+                onResult(store.put({ key: mutation.key, seq: sequence, envelope: mutation.envelope }), () =>
+                  apply(index + 1, existingSequence === undefined ? nextSequence + 1 : nextSequence),
+                )
+              })
+            }
+
+            onResult(store.index(INSERTION_INDEX_NAME).openCursor(null, 'prev'), (cursor) => {
+              const highest = readNumber(asRecord(cursor)?.['value'], 'seq')
+              apply(0, highest === undefined ? 0 : highest + 1)
+            })
+          },
+        ),
+
+  readBatch: (keys) =>
+    keys.length === 0
+      ? Effect.succeed([])
+      : runTransaction<ReadonlyArray<Option.Option<SaveEnvelope>>>(
+          database,
+          'readonly',
+          'indexeddb.readBatch',
+          undefined,
+          (store, deliver, onResult) => {
+            const results: Array<Option.Option<SaveEnvelope>> = []
+            const read = (index: number): void => {
+              const key = keys[index]
+              if (key === undefined) {
+                deliver(results)
+                return
+              }
+              onResult(store.get(key), (record) => {
+                if (record === undefined) {
+                  results.push(Option.none())
+                } else {
+                  const envelope = readEnvelope(record)
+                  if (envelope === undefined) {
+                    throw new TypeError(
+                      `${SAVE_STORE_NAME} holds a record at "${key}" that this adapter did not write`,
+                    )
+                  }
+                  results.push(Option.some(envelope))
+                }
+                read(index + 1)
+              })
+            }
+            read(0)
+          },
+        ),
 
   keys: runTransaction<ReadonlyArray<SaveKey>>(
     database,
