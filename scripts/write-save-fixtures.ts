@@ -49,12 +49,14 @@ const main = async (): Promise<void> => {
   const directory = path.join(repositoryRoot, FIXTURE_DIRECTORY)
   await mkdir(directory, { recursive: true })
 
-  for (const entry of FORMAT_HISTORY) {
-    const envelope = await Effect.runPromise(entry.write())
-    const target = path.join(directory, entry.fixtureFile)
-    await writeFile(target, serialiseFixture(envelope), 'utf8')
-    process.stdout.write(`wrote ${FIXTURE_DIRECTORY}/${entry.fixtureFile} (v${String(entry.version)})\n`)
-  }
+  await Promise.all(
+    FORMAT_HISTORY.map(async (entry) => {
+      const envelope = await Effect.runPromise(entry.write())
+      const target = path.join(directory, entry.fixtureFile)
+      await writeFile(target, serialiseFixture(envelope), 'utf8')
+      process.stdout.write(`wrote ${FIXTURE_DIRECTORY}/${entry.fixtureFile} (v${String(entry.version)})\n`)
+    }),
+  )
 
   process.stdout.write(`\n${String(FORMAT_HISTORY.length)} fixture(s) written. Commit them.\n`)
 }
