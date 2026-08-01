@@ -111,7 +111,7 @@ test/fixtures/
 ---
 
 <a id="dn-3"></a>
-## DN-3 ⬜ 「破損」と「未来のセーブ」を混同しない
+## DN-3 ✅ 「破損」と「未来のセーブ」を混同しない
 
 plan.md には無いが、参照実装の実測から出てきた項目である。
 
@@ -141,7 +141,7 @@ UI 側はそれを直訳して、`corrupt` の要素に削除ボタンだけを�
 | ✅ `reports a save written by a newer build as such, not as corruption` | `version > current` は専用メッセージ。「削除を提案してはならない」を明記 |
 | ✅ `reports the recorded version when the payload does not satisfy the schema` | エラーがエンベロープの記録バージョンを保持する |
 | ✅ `refuses an envelope belonging to a different format, even when the payload would fit` | 鍵衝突が成功として通らない |
-| ⬜ `a corrupt record does not take the whole listing down` | 一括読み込みの `{ valid, corrupt }` 分割（未実装） |
+| ✅ `a corrupt record does not take the whole listing down` | `listFrom` が一括読み込みを `{ valid, corrupt }` に分割し、媒体障害だけは Effect を失敗させる |
 
 ---
 
