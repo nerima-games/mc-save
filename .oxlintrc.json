@@ -1,0 +1,157 @@
+{
+  "$schema": "https://oxc-project.github.io/oxc/schema/linter.json",
+  // oxlint is the ONLY lint/format configuration in this repository.
+  // There is deliberately no prettier, no biome and no .editorconfig.
+  //
+  // NOTE on the `Date.now()` ban: this repository used to enforce it with a
+  // custom script (scripts/check-dependency-whitelist.ts), which org standard
+  // (PACKAGE_STANDARD.md "scripts/check-dependency-whitelist.ts の廃止") has
+  // retired in favour of oxlint's `no-restricted-imports` below. oxlint 0.12
+  // implements neither `no-restricted-syntax` nor `no-restricted-properties`,
+  // and `no-restricted-globals` is listed but not implemented (verified
+  // empirically: a file containing `Date.now()` produces 0 diagnostics under
+  // all three rules), so the raw-clock-read ban itself currently has no
+  // automated enforcement. DEPENDENCY_POLICY.md leaves this to each
+  // repository's discretion; move it back here when oxlint implements one of
+  // the rules above.
+  "env": {
+    "es2022": true,
+    "node": true
+  },
+  "settings": {
+    "typescript": {
+      "version": "5.9"
+    }
+  },
+  "plugins": [],
+  "categories": {
+    "correctness": "warn",
+    "suspicious": "warn",
+    "perf": "warn",
+    "style": "off",
+    "restriction": "off"
+  },
+  "rules": {
+    // TypeScript-specific rules
+    // Prefer `type` over `interface` for pure data types (Schema.Struct pattern).
+    "@typescript-eslint/consistent-type-definitions": ["warn", "type"],
+    "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/no-unused-vars": "warn",
+    "@typescript-eslint/no-floating-promises": "warn",
+    "@typescript-eslint/no-misused-new": "warn",
+    "@typescript-eslint/no-unnecessary-type-assertion": "warn",
+    "@typescript-eslint/no-var-requires": "warn",
+    "@typescript-eslint/prefer-enum-initializers": "warn",
+    "@typescript-eslint/prefer-for-of": "warn",
+    "@typescript-eslint/prefer-literal-enum-member": "warn",
+
+    // Correctness
+    "no-array-constructor": "warn",
+    "no-empty": "warn",
+    "no-eq-null": "warn",
+    "no-extra-boolean-cast": "warn",
+    "no-fallthrough": "warn",
+    "no-irregular-whitespace": "warn",
+    "no-self-compare": "warn",
+    "no-throw-literal": "warn",
+    "no-unreachable": "warn",
+    "use-isnan": "warn",
+    "valid-typeof": "warn",
+
+    // Suspicious
+    "no-console": "warn",
+    "no-debugger": "warn",
+    "no-empty-function": "warn",
+    "no-empty-pattern": "warn",
+    // `_tag` is the Effect-TS tagged-union discriminator (Schema.TaggedClass /
+    // Data.TaggedEnum); this is a framework convention, not a naming choice,
+    // so it is exempted from the blanket `suspicious` category's
+    // no-underscore-dangle rule (verified via `oxlint -A suspicious` that the
+    // rule is otherwise category-default-enabled, not from this file's
+    // explicit `rules` list).
+    "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-redeclare": "warn",
+    "no-shadow": "warn",
+    "no-unreachable-loop": "warn",
+    "no-unused-private-class-members": "warn",
+
+    // Performance
+    "no-await-in-loop": "warn",
+    "no-loop-func": "warn",
+    "no-promise-executor-return": "warn",
+    "no-sync": "warn",
+
+    // Style
+    // NOTE: this file was previously named `oxlint.json` (no leading dot),
+    // which oxlint never auto-discovers -- it was silently unloaded, and every
+    // rule below was therefore dormant. Now that it loads as `.oxlintrc.json`,
+    // the ~30 formatting rules that used to live here (array-bracket-spacing,
+    // block-spacing, brace-style, camelcase, comma-dangle, comma-spacing,
+    // comma-style, computed-property-spacing, eol-last, func-call-spacing,
+    // indent, key-spacing, keyword-spacing, linebreak-style,
+    // lines-between-class-members, no-mixed-spaces-and-tabs, no-new-object,
+    // no-tabs, no-trailing-spaces, no-whitespace-before-property,
+    // object-curly-spacing, one-var, operator-linebreak, padded-blocks,
+    // quote-props, semi-spacing, space-before-blocks, space-infix-ops,
+    // space-unary-ops, spaced-comment) had to be removed: they are hard
+    // "Rule '<x>' not found in plugin 'eslint'" config-parse errors under
+    // oxlint 1.76.0, which split these into a separate `@stylistic` plugin
+    // this repo does not depend on (verified empirically via `oxlint
+    // --print-config`; none of them appear in `oxlint --rules` either, unlike
+    // the merely-inert `no-restricted-globals` below). They were never
+    // actually enforced before this fix, so nothing regresses. Re-add them
+    // via a `jsPlugins: ["@stylistic/eslint-plugin"]` + `@stylistic/*` rule
+    // names if formatting enforcement is wanted later.
+    "no-array-method-this-argument": "warn",
+    "no-bitwise": "warn",
+
+    // Restriction
+    "default-case": "warn",
+    "default-case-last": "warn",
+    "no-empty-character-class": "warn",
+    // Declared for intent and for the day oxlint implements it; inert in 0.12
+    // (listed by `oxlint --rules` but not actually implemented).
+    "no-restricted-globals": ["warn", "name", "open", "close", "event"],
+    "no-restricted-imports": [
+      "warn",
+      {
+        "paths": [
+          {
+            "name": "effect",
+            "message": "Please use named imports from 'effect' package",
+            "importNames": ["default"]
+          }
+        ],
+        "patterns": [
+          {
+            // NOTE: DEPENDENCY_POLICY.md's own Tier1 example uses a negative
+            // lookahead (`(?!mc-kernel\b)`), but oxlint's regex option is
+            // matched by the Rust `regex` crate, which does not support
+            // lookaround assertions -- that pattern silently never matches
+            // anything (verified empirically: it produces 0 diagnostics for
+            // any @nerima-games/* import, including the ones it is meant to
+            // restrict). Enumerating the other 15 roster repos explicitly,
+            // the same strategy DEPENDENCY_POLICY.md §5 already uses for its
+            // Tier2/3/4 examples, is what actually fires. Update this list if
+            // the org roster (DEPENDENCY_POLICY.md §1) changes.
+            "regex": "^@nerima-games/(mc-audio|mc-compose|mc-dev-meta|mc-meshing|mc-noise|mc-physics|mc-playground-kit|mc-render|mc-sim|mc-worldgen|mx-gameplay|mx-multiplayer|mx-redstone|mx-ui)(/.*)?$",
+            "message": "mc-save is a Tier1 library (DEPENDENCY_POLICY.md) and must not depend on any other @nerima-games/* package. mc-kernel is universally importable and exempt; mc-save does not currently use it either, since @nerima-games/mc-kernel is not yet published (see docs/versioning.md)."
+          }
+        ]
+      }
+    ],
+    "prefer-template": "warn",
+
+    // Disabled rules (conflict with project style)
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "@typescript-eslint/explicit-module-boundary-types": "off",
+    "@typescript-eslint/no-non-null-assertion": "off",
+    "no-case-declarations": "off",
+    "no-constant-condition": "off",
+    "no-param-reassign": "off",
+    "no-plusplus": "off"
+  },
+  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
+}

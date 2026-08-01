@@ -5,23 +5,34 @@
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト+ツール）の両方 |
-| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
-| `pnpm check:deps` | 依存ホワイトリスト + 循環検査 + `Date.now()` 禁止 |
+| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
-| `pnpm test:coverage` | カバレッジ計測。**閾値は未設定**（後述） |
-| `pnpm verify` | 上記 4 つ（coverage 以外）。CI と同一内容 |
+| `pnpm test:coverage` | カバレッジ計測 + 99% 閾値ゲート（後述）。`verify` には含めない |
+| `pnpm verify` | `typecheck && lint && test` の 3 段。CI と同一内容（[TEST_STANDARD.md](https://github.com/nerima-games/.github/blob/main/TEST_STANDARD.md) §1） |
+
+旧・`pnpm check:deps`（依存ホワイトリスト + 循環検査 + `Date.now()` 禁止、
+`scripts/check-dependency-whitelist.ts`）は org 標準により廃止された。依存境界の実効は
+`.oxlintrc.json` の `no-restricted-imports` に一本化されている。`Date.now()` 等の
+raw clock read 禁止は、oxlint がそれを表現できるルールを実装するまでの間、
+自動強制を持たない（`.oxlintrc.json` 冒頭のコメント参照）。
 
 `pnpm` は PATH に無い場合がある。`corepack pnpm <cmd>` で 9.15.0 が起動する。
 
 ## 2. 現状のテスト
 
+`test/dependency-policy.test.ts`（旧・`scripts/check-dependency-whitelist.ts` の単体テスト）と
+`test/api-lock.test.ts`（旧・`scripts/api-lock.ts` の単体テスト）は、それぞれが検証対象としていた
+スクリプトの廃止に伴い削除した。現状の6ファイル・70 tests:
+
 ```
-test/format-roundtrip.test.ts    12 tests   コーデックのラウンドトリップ、連鎖検証
-test/migration.test.ts            8 tests   マイグレーション（リネームを含む）、Port 経由のロード
-test/storage-port.test.ts         8 tests   StoragePort の契約テスト
-test/dependency-policy.test.ts   19 tests   16 リポジトリのグラフ、import ゲート、時計禁止
-                                 ─────
-                                 47 tests   全て green
+test/format-roundtrip.test.ts       12 tests   コーデックのラウンドトリップ、連鎖検証
+test/migration.test.ts               8 tests   マイグレーション（リネームを含む）、Port 経由のロード
+test/storage-port.test.ts            8 tests   StoragePort の契約テスト（インメモリ）
+test/binary-roundtrip.test.ts        5 tests   バイナリペイロードのラウンドトリップ
+test/legacy-save-compat.test.ts     10 tests   旧セーブ fixture との互換性（§3）
+test/indexeddb-storage.test.ts      27 tests   IndexedDB アダプタ + 契約テスト（fake 経由）
+                                    ─────
+                                     70 tests   全て green
 ```
 
 ### 契約テストという書き方
@@ -57,7 +68,7 @@ IndexedDB の列挙は**キーの昇順**なので、素直な実装は正しい
 ### 3.1 fixture を「移植できない」まま作った方法
 
 要求は「参照実装の fixture を資産として移植」だが、**移植元は無い**。
-参照実装にはバージョン管理そのものが無く（[envelope.ts](../domain/envelope.ts) の冒頭:
+参照実装にはバージョン管理そのものが無く（[envelope.ts](../src/domain/envelope.ts) の冒頭:
 バージョン番号は 2 つあってどちらも分岐に読まれていない）、
 旧セーブ fixture という概念が成立していなかった。**この事実は変わっていない。**
 
@@ -116,28 +127,46 @@ IndexedDB の列挙は**キーの昇順**なので、素直な実装は正しい
    - `test/storage-port.test.ts` を実アダプタに対して再実行できる
 4. **mc-worldgen が実際に `defineFormat` でチャンクフォーマットを定義し、消費している**
    - ツールキットは消費者なしには正しさを主張できない
-5. カバレッジ 99% ゲートが有効化されている（後述）
+5. カバレッジ 99% ゲートが有効化されている（済。ただし実測が閾値未達 — 後述）
 
 プレビューは無い。UI を持たないリポジトリだからである
 （plan.md §2.3-4 の「プレビューは検証対象と同居する」の対象外）。
 
-## 5. カバレッジ閾値: 今はまだ設定しない
+## 5. カバレッジ閾値: 99% ゲート、有効化済み
 
-参照実装は branches / functions / lines / statements の 99% を強制している。
-mc-save でも**最終的には同じ 99% を課す**が、今は課さない。
+組織としての決定（[TEST_STANDARD.md §3](https://github.com/nerima-games/.github/blob/main/TEST_STANDARD.md#3-カバレッジゲート-4-指標-99即日全リポジトリ必須段階移行なし)）
+により、段階的ロールアウトを設けず branches / functions / lines / statements の
+99% を即時・一律に有効化した。`vitest.config.ts` の `coverage.thresholds` および
+CI の `Coverage` ステップは、もはやコメントアウトされていない。
 
-理由: スケルトンに閾値を課しても意味が無い。
-型定義だけのモジュールをいくつか置けば簡単に満たせてしまい、
-実装の品質について何も語らない数字になる。
+**有効化した時点(2026-08-01)の実測値は 99% を満たしていない**
+（`pnpm test:coverage` の実際の出力。`src/domain/indexeddb-surface.ts` 除外後の数値）:
 
-現状:
+```
+All files          |   85.76 |     90.9 |   88.67 |   85.76 |
+ src               |       0 |      100 |     100 |       0 |   ← src/index.ts（バレルが直接importされるテストが無い）
+ src/domain        |    87.1 |    90.84 |   88.46 |    87.1 |
+  registry.ts       |       0 |      100 |     100 |       0 |   ← どのテストからも一切呼ばれていない
+  errors.ts         |   92.59 |       75 |      75 |   92.59 |
+  format.ts         |   89.06 |     90.9 |     100 |   89.06 |
+  indexeddb-storage.ts | 90.98 | 88.88  |   90.32 |   90.98 |
+```
 
-- 計測とレポートは**常に動いている**（`pnpm test:coverage`、CI でも実行してアーティファクト化）
-- 閾値だけが未設定。`vitest.config.ts` の `coverage.thresholds` がコメントアウトされている
-- CI の `Coverage` ステップも同様
+（`src/domain/indexeddb-surface.ts` は型宣言のみで実行可能な文が無いため
+`coverage.exclude` に加えてある。§ `vitest.config.ts` のコメント参照。）
 
-**有効化のタイミング**: 上記「完了条件」の 1〜4 を満たした時点で、
-`vitest.config.ts` と `.github/workflows/ci.yaml` の**両方**を同時に更新する。
+したがって**このゲートを有効化した直後、CI の `Coverage` ステップは赤くなる**。
+これは既知・受容済みの結果として扱う（TEST_STANDARD.md §3 の方針どおり、
+延期やしきい値緩和は行わない）。実装側で埋めるべき具体的なギャップ:
+
+- `src/index.ts`: 現在どのテストもバレル経由で import していないため、公開エントリポイント
+  としての re-export が一度も実行されない。バレル経由の import を使うテスト（または
+  スモークテスト）を追加する
+- `src/domain/registry.ts`: `registerFormat` / `registerFormats` / `lookupFormat` /
+  `describeRegistry` / `emptyRegistry` を検証するテストが 1 つも無い。`test/registry.test.ts`
+  を新設する
+- `src/domain/errors.ts` / `format.ts` / `indexeddb-storage.ts`: 既存テストが到達していない
+  分岐が残っている。§3 の指針どおり、まず「その分岐は本当に到達可能か」を問うこと
 
 ```typescript
 thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },

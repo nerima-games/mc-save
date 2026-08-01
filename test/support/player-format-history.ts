@@ -50,9 +50,9 @@
  * proves it still reads what was actually written.
  */
 import { Effect, Option, Schema } from 'effect'
-import type { SaveEnvelope } from '../../domain/envelope'
-import type { SaveDecodeError } from '../../domain/errors'
-import { defineFormat, encodeSave, type Migration, type SaveFormat } from '../../domain/format'
+import type { SaveEnvelope } from '../../src/domain/envelope'
+import type { SaveDecodeError } from '../../src/domain/errors'
+import { defineFormat, encodeSave, type Migration, type SaveFormat } from '../../src/domain/format'
 
 /** The format name, stamped into every envelope. Shared by all three versions. */
 export const PLAYER_FORMAT_NAME = 'mc-save/test/player-history'

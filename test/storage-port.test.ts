@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
-import { saveEnvelope } from '../domain/envelope'
-import { failingStorageLayer, InMemoryStorageLayer, SaveKey, StoragePort } from '../domain/storage-port'
+import { saveEnvelope } from '../src/domain/envelope'
+import { failingStorageLayer, InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port'
 import { storagePortContract } from './storage-port-contract'
 
 /**

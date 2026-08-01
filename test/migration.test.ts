@@ -1,9 +1,9 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Option, Schema } from 'effect'
-import { saveEnvelope } from '../domain/envelope'
-import { defineFormat, migrateToCurrent, type Migration } from '../domain/format'
-import { loadFrom, saveTo } from '../domain/persistence'
-import { InMemoryStorageLayer, SaveKey, StoragePort } from '../domain/storage-port'
+import { saveEnvelope } from '../src/domain/envelope'
+import { defineFormat, migrateToCurrent, type Migration } from '../src/domain/format'
+import { loadFrom, saveTo } from '../src/domain/persistence'
+import { InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port'
 
 /**
  * The scenario these tests pin down is the one the reference implementation

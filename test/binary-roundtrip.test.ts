@@ -42,10 +42,10 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Option, Schema } from 'effect'
-import type { SaveEnvelope } from '../domain/envelope'
-import { defineFormat, encodeSave } from '../domain/format'
-import { loadFrom, saveTo } from '../domain/persistence'
-import { makeInMemoryStorage, SaveKey, StoragePort } from '../domain/storage-port'
+import type { SaveEnvelope } from '../src/domain/envelope'
+import { defineFormat, encodeSave } from '../src/domain/format'
+import { loadFrom, saveTo } from '../src/domain/persistence'
+import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage-port'
 
 /**
  * A chunk, as mc-worldgen would define it.
