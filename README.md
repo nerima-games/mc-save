@@ -12,7 +12,7 @@ mc-save は「何を保存するか」を知らない。
 `effect` のみ（Tier1 の安定ライブラリとして、org 内依存はゼロ。
 `@nerima-games/mc-kernel` は普遍的に import 可能だが、mc-kernel 自体が未 publish のため
 現状は使っていない — [docs/versioning.md](./docs/versioning.md) 参照）。
-直接依存の許可リストは**空集合**であり、`oxlint.json` の `no-restricted-imports` が
+直接依存の許可リストは**空集合**であり、`.oxlintrc.json` の `no-restricted-imports` が
 機械的に強制している（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md)）。
 
 mc-save に依存するのは `mc-worldgen` と `mc-sim` の 2 つである。
@@ -62,7 +62,7 @@ Nix を使わない場合は Node.js 24 以上と pnpm 11（`corepack` 推奨）
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
-| `pnpm lint` | oxlint（唯一の lint/format 設定）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった） |
+| `pnpm lint` | oxlint（唯一の lint/format 設定）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect`） |
 | `pnpm test:watch` | vitest watch |

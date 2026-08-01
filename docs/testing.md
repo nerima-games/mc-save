@@ -5,16 +5,16 @@
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト+ツール）の両方 |
-| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`oxlint.json` は 5 カテゴリすべてと個別 67 ルールが `warn`、`error` は 4 つだけ。このフラグが無かった頃は実質その 4 つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
+| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:coverage` | カバレッジ計測 + 99% 閾値ゲート（後述）。`verify` には含めない |
 | `pnpm verify` | `typecheck && lint && test` の 3 段。CI と同一内容（[TEST_STANDARD.md](https://github.com/nerima-games/.github/blob/main/TEST_STANDARD.md) §1） |
 
 旧・`pnpm check:deps`（依存ホワイトリスト + 循環検査 + `Date.now()` 禁止、
 `scripts/check-dependency-whitelist.ts`）は org 標準により廃止された。依存境界の実効は
-`oxlint.json` の `no-restricted-imports` に一本化されている。`Date.now()` 等の
+`.oxlintrc.json` の `no-restricted-imports` に一本化されている。`Date.now()` 等の
 raw clock read 禁止は、oxlint がそれを表現できるルールを実装するまでの間、
-自動強制を持たない（`oxlint.json` 冒頭のコメント参照）。
+自動強制を持たない（`.oxlintrc.json` 冒頭のコメント参照）。
 
 `pnpm` は PATH に無い場合がある。`corepack pnpm <cmd>` で 9.15.0 が起動する。
 

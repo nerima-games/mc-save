@@ -24,7 +24,7 @@
  * `scripts/check-dependency-whitelist.ts` classified shipped source as
  * `index.ts` plus `domain/` (both scripts have since been retired in favour of
  * org-standard tooling — see docs/testing.md — but the shipped-source
- * boundary they enforced is now `tsconfig.build.json` / `oxlint.json`'s `src`
+ * boundary they enforced is now `tsconfig.build.json` / `.oxlintrc.json`'s `src`
  * target, and the argument is unchanged). An adapter outside
  * `tsconfig.build.json` could not be re-exported from `src/index.ts` without
  * silently falling outside every gate that scans shipped source — so the one

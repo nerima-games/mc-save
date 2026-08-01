@@ -83,7 +83,7 @@ mc-save の `StoragePort` は 4 メソッド（`get` / `put` / `remove` / `keys`
 
 直接依存の許可リストは**空集合**である
 （[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §1、
-実効機構は `oxlint.json` の `no-restricted-imports`）。
+実効機構は `.oxlintrc.json` の `no-restricted-imports`）。
 
 ### 子（mc-save に依存するリポジトリ）
 

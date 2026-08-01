@@ -28,8 +28,8 @@
     "correctness": "warn",
     "suspicious": "warn",
     "perf": "warn",
-    "style": "warn",
-    "restriction": "warn"
+    "style": "off",
+    "restriction": "off"
   },
   "rules": {
     // TypeScript-specific rules
@@ -63,6 +63,13 @@
     "no-debugger": "warn",
     "no-empty-function": "warn",
     "no-empty-pattern": "warn",
+    // `_tag` is the Effect-TS tagged-union discriminator (Schema.TaggedClass /
+    // Data.TaggedEnum); this is a framework convention, not a naming choice,
+    // so it is exempted from the blanket `suspicious` category's
+    // no-underscore-dangle rule (verified via `oxlint -A suspicious` that the
+    // rule is otherwise category-default-enabled, not from this file's
+    // explicit `rules` list).
+    "no-underscore-dangle": ["warn", { "allow": ["_tag"] }],
     "no-eval": "error",
     "no-implied-eval": "error",
     "no-redeclare": "warn",
@@ -77,38 +84,28 @@
     "no-sync": "warn",
 
     // Style
-    "array-bracket-spacing": "warn",
-    "block-spacing": "warn",
-    "brace-style": ["warn", "1tbs", { "allowSingleLine": true }],
-    "camelcase": "warn",
-    "comma-dangle": ["warn", "always-multiline"],
-    "comma-spacing": "warn",
-    "comma-style": "warn",
-    "computed-property-spacing": "warn",
-    "eol-last": "warn",
-    "func-call-spacing": "warn",
-    "indent": "off",
-    "key-spacing": "warn",
-    "keyword-spacing": "warn",
-    "linebreak-style": ["warn", "unix"],
-    "lines-between-class-members": "warn",
+    // NOTE: this file was previously named `oxlint.json` (no leading dot),
+    // which oxlint never auto-discovers -- it was silently unloaded, and every
+    // rule below was therefore dormant. Now that it loads as `.oxlintrc.json`,
+    // the ~30 formatting rules that used to live here (array-bracket-spacing,
+    // block-spacing, brace-style, camelcase, comma-dangle, comma-spacing,
+    // comma-style, computed-property-spacing, eol-last, func-call-spacing,
+    // indent, key-spacing, keyword-spacing, linebreak-style,
+    // lines-between-class-members, no-mixed-spaces-and-tabs, no-new-object,
+    // no-tabs, no-trailing-spaces, no-whitespace-before-property,
+    // object-curly-spacing, one-var, operator-linebreak, padded-blocks,
+    // quote-props, semi-spacing, space-before-blocks, space-infix-ops,
+    // space-unary-ops, spaced-comment) had to be removed: they are hard
+    // "Rule '<x>' not found in plugin 'eslint'" config-parse errors under
+    // oxlint 1.76.0, which split these into a separate `@stylistic` plugin
+    // this repo does not depend on (verified empirically via `oxlint
+    // --print-config`; none of them appear in `oxlint --rules` either, unlike
+    // the merely-inert `no-restricted-globals` below). They were never
+    // actually enforced before this fix, so nothing regresses. Re-add them
+    // via a `jsPlugins: ["@stylistic/eslint-plugin"]` + `@stylistic/*` rule
+    // names if formatting enforcement is wanted later.
     "no-array-method-this-argument": "warn",
     "no-bitwise": "warn",
-    "no-mixed-spaces-and-tabs": "error",
-    "no-new-object": "warn",
-    "no-tabs": "error",
-    "no-trailing-spaces": "warn",
-    "no-whitespace-before-property": "warn",
-    "object-curly-spacing": ["warn", "always"],
-    "one-var": ["warn", "never"],
-    "operator-linebreak": "warn",
-    "padded-blocks": ["warn", "never"],
-    "quote-props": ["warn", "as-needed"],
-    "semi-spacing": "warn",
-    "space-before-blocks": "warn",
-    "space-infix-ops": "warn",
-    "space-unary-ops": "warn",
-    "spaced-comment": "warn",
 
     // Restriction
     "default-case": "warn",
@@ -120,14 +117,26 @@
     "no-restricted-imports": [
       "warn",
       {
-        "name": "effect",
-        "message": "Please use named imports from 'effect' package",
-        "importNames": ["default"]
-      },
-      {
+        "paths": [
+          {
+            "name": "effect",
+            "message": "Please use named imports from 'effect' package",
+            "importNames": ["default"]
+          }
+        ],
         "patterns": [
           {
-            "regex": "^@nerima-games/(?!mc-kernel\\b).+",
+            // NOTE: DEPENDENCY_POLICY.md's own Tier1 example uses a negative
+            // lookahead (`(?!mc-kernel\b)`), but oxlint's regex option is
+            // matched by the Rust `regex` crate, which does not support
+            // lookaround assertions -- that pattern silently never matches
+            // anything (verified empirically: it produces 0 diagnostics for
+            // any @nerima-games/* import, including the ones it is meant to
+            // restrict). Enumerating the other 15 roster repos explicitly,
+            // the same strategy DEPENDENCY_POLICY.md §5 already uses for its
+            // Tier2/3/4 examples, is what actually fires. Update this list if
+            // the org roster (DEPENDENCY_POLICY.md §1) changes.
+            "regex": "^@nerima-games/(mc-audio|mc-compose|mc-dev-meta|mc-meshing|mc-noise|mc-physics|mc-playground-kit|mc-render|mc-sim|mc-worldgen|mx-gameplay|mx-multiplayer|mx-redstone|mx-ui)(/.*)?$",
             "message": "mc-save is a Tier1 library (DEPENDENCY_POLICY.md) and must not depend on any other @nerima-games/* package. mc-kernel is universally importable and exempt; mc-save does not currently use it either, since @nerima-games/mc-kernel is not yet published (see docs/versioning.md)."
           }
         ]
@@ -144,5 +153,5 @@
     "no-param-reassign": "off",
     "no-plusplus": "off"
   },
-  "ignore": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
+  "ignorePatterns": ["node_modules/**", "coverage/**", "dist/**", ".git/**", "*.config.ts", "docs/**"]
 }

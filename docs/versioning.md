@@ -42,7 +42,7 @@ kernel の些細な変更が 15 リポジトリの version bump を誘発する�
 
 意図された依存グラフは**コードとドキュメントの側に**記録してある:
 
-- `oxlint.json` の `no-restricted-imports`（mc-save 自身の許可先を機械的に強制する）
+- `.oxlintrc.json` の `no-restricted-imports`（mc-save 自身の許可先を機械的に強制する）
 - [DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §1（org 全体の許可グラフの正典）
 - [architecture.md](./architecture.md) の Mermaid 図
 

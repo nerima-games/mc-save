@@ -197,7 +197,7 @@ export const DB_NAME = 'minecraft-worlds'
 旧実装は `test/dependency-policy.test.ts` + `pnpm check:deps`
 （`scripts/check-dependency-whitelist.ts`）だったが、org 標準（PACKAGE_STANDARD.md
 「`scripts/check-dependency-whitelist.ts` の廃止」）によりこの機構自体が廃止された。
-依存境界（誰が誰に依存してよいか）は `oxlint.json` の `no-restricted-imports` に一本化されている。
+依存境界（誰が誰に依存してよいか）は `.oxlintrc.json` の `no-restricted-imports` に一本化されている。
 raw clock read（`Date.now()` 等）の禁止だけは、oxlint 0.12 が `no-restricted-syntax` も
 `no-restricted-properties` も実装しておらず、`no-restricted-globals` も一覧に出るだけで
 動かないため（0.12.0 で実測確認済み）、現時点で自動強制する手段が無い。

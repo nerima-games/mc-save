@@ -244,7 +244,7 @@ mc-render `application/dom-surface.ts` / mx-ui と同じ手口である。
 （両スクリプトとも org 標準の移行で今は廃止済み — [API_STANDARD.md §4](https://github.com/nerima-games/.github/blob/main/API_STANDARD.md)、
 [PACKAGE_STANDARD.md「`scripts/check-dependency-whitelist.ts` の廃止」](https://github.com/nerima-games/.github/blob/main/PACKAGE_STANDARD.md)）。
 `tsconfig.build.json` の外に置いたアダプタは `src/index.ts` から re-export できず、出荷対象を
-走査する範囲（現在は `oxlint.json` の対象パス `src`）からも外れる —
+走査する範囲（現在は `.oxlintrc.json` の対象パス `src`）からも外れる —
 **実媒体に触る唯一のファイルが、どのゲートからも見えないファイルになる。** この結論自体は、
 実効機構が変わった今も変わらない。
 

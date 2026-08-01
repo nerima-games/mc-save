@@ -75,7 +75,7 @@ graph BT
 ```
 
 このグラフは組織全体の [DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md)
-§1 が正典として記述しており、mc-save 自身の許可先は `oxlint.json` の `no-restricted-imports`
+§1 が正典として記述しており、mc-save 自身の許可先は `.oxlintrc.json` の `no-restricted-imports`
 で機械的に強制される（旧・`scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY.dependencyGraph`
 は org 標準の移行に伴い廃止された）。
 図と DEPENDENCY_POLICY.md が食い違ったら DEPENDENCY_POLICY.md が正である。
@@ -145,7 +145,7 @@ kit は「ミニ世界 + カメラ + レンダラ + 入力を 1 秒で束ねる�
 
 kit を `dependencies` に入れると、出荷ビルドから入力処理が消える。
 mc-save は Tier1 で `@nerima-games/*` への直接依存を一切許可しないため、
-`oxlint.json` の `no-restricted-imports` がそもそも `@nerima-games/mc-playground-kit` を
+`.oxlintrc.json` の `no-restricted-imports` がそもそも `@nerima-games/mc-playground-kit` を
 含むあらゆる `@nerima-games/*` の import を弾く。
 mc-save は kit を devDependency としても使わない（プレビューを持たないため）。
 
