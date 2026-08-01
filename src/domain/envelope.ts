@@ -54,12 +54,30 @@ export type SaveEnvelope = {
   readonly format: string
   readonly version: number
   readonly payload: unknown
+  /** Optional because envelopes written before integrity support remain readable. */
+  readonly integrity?: SaveIntegrity | undefined
+  /** Game-owned state unknown to mc-save, retained verbatim across checkpoints. */
+  readonly extensions?: Readonly<Record<string, unknown>> | undefined
+}
+
+export type SaveIntegrity = {
+  readonly algorithm: 'fnv1a32'
+  readonly byteLength: number
+  readonly checksum: string
 }
 
 export const SaveEnvelopeSchema: Schema.Schema<SaveEnvelope> = Schema.Struct({
   format: Schema.String.pipe(Schema.minLength(1)),
   version: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(FIRST_VERSION)),
   payload: Schema.Unknown,
+  integrity: Schema.optional(
+    Schema.Struct({
+      algorithm: Schema.Literal('fnv1a32'),
+      byteLength: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(0)),
+      checksum: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{8}$/u)),
+    }),
+  ),
+  extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
 })
 
 export const saveEnvelope = (format: string, version: number, payload: unknown): SaveEnvelope => ({
