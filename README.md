@@ -47,7 +47,7 @@ mc-save に依存するのは `mc-worldgen` と `mc-sim` の 2 つである。
 ### セットアップ
 
 ```console
-$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack が入る
+$ direnv allow          # flake.nix の devShell で nodejs_24 + corepack + oxlint が入る
 $ pnpm install
 ```
 
@@ -62,7 +62,7 @@ Nix を使わない場合は Node.js 24 以上と pnpm 11（`corepack` 推奨）
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json` と `tsconfig.test.json` の両方を型検査 |
-| `pnpm lint` | oxlint（唯一の lint/format 設定）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった） |
+| `pnpm lint` | oxlint（唯一の lint/format 設定）。package.json の devDependency ではなく flake.nix の devShell が提供する（org 全体で単一バージョンに固定するため）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった） |
 | `pnpm lint:fix` | oxlint の自動修正 |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect`） |
 | `pnpm test:watch` | vitest watch |

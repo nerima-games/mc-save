@@ -5,7 +5,7 @@
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト+ツール）の両方 |
-| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
+| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。package.json の devDependency ではなく flake.nix の devShell が提供する（org 全体で単一バージョンに固定するため。CI では `nix develop --command pnpm lint` として実行する）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:coverage` | カバレッジ計測 + 99% 閾値ゲート（後述）。`verify` には含めない |
 | `pnpm verify` | `typecheck && lint && test` の 3 段。CI と同一内容（[TEST_STANDARD.md](https://github.com/nerima-games/.github/blob/main/TEST_STANDARD.md) §1） |
