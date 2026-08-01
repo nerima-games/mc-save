@@ -17,6 +17,26 @@ const State = defineFormat({
   schema: Schema.Struct({ score: Schema.Number, label: Schema.String }),
 })
 
+const CompleteWorld = defineFormat({
+  name: 'mc-save/test/complete-world',
+  version: 1,
+  schema: Schema.Struct({
+    dimension: Schema.String,
+    player: Schema.Struct({
+      id: Schema.String,
+      position: Schema.Tuple(Schema.Number, Schema.Number, Schema.Number),
+      health: Schema.Number,
+      inventory: Schema.Array(Schema.Struct({ item: Schema.String, count: Schema.Number })),
+    }),
+    entities: Schema.Array(
+      Schema.Struct({ id: Schema.String, kind: Schema.String, health: Schema.Number, vehicle: Schema.NullOr(Schema.String) }),
+    ),
+    bosses: Schema.Array(
+      Schema.Struct({ id: Schema.String, kind: Schema.String, health: Schema.Number, phase: Schema.String }),
+    ),
+  }),
+})
+
 const key = SaveKey('world-1')
 const previousKey = SaveKey('world-1::previous')
 
@@ -81,6 +101,110 @@ describe('durable save checkpoints', () => {
 
       const latest = yield* storage.get(key)
       expect(Option.isSome(latest) && latest.value.extensions).toStrictEqual(extensions)
+    }),
+  )
+
+  it.effect('does not decode the previous checkpoint when latest is healthy', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      yield* saveDurably(State, key, { score: 1, label: 'previous' }).pipe(
+        Effect.provideService(StoragePort, storage),
+      )
+      yield* saveDurably(State, key, { score: 2, label: 'latest' }).pipe(
+        Effect.provideService(StoragePort, storage),
+      )
+
+      const inaccessiblePayload = Object.defineProperty({}, 'score', {
+        get: () => {
+          throw new Error('the previous payload was needlessly decoded')
+        },
+      })
+      const previous = yield* storage.get(previousKey)
+      if (Option.isNone(previous)) throw new Error('previous checkpoint was not written')
+      yield* storage.put(previousKey, { ...previous.value, payload: inaccessiblePayload })
+
+      yield* saveDurably(State, key, { score: 3, label: 'next' }).pipe(
+        Effect.provideService(StoragePort, storage),
+      )
+      expect(yield* loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage))).toStrictEqual(
+        Option.some({ score: 3, label: 'next' }),
+      )
+    }),
+  )
+
+  it.effect('serializes concurrent checkpoints for the same world', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      yield* saveDurably(State, key, { score: 0, label: 'initial' }).pipe(
+        Effect.provideService(StoragePort, storage),
+      )
+      let activeCommits = 0
+      let maximumActiveCommits = 0
+      const delayed = {
+        ...storage,
+        commitBatch: (mutations: Parameters<typeof storage.commitBatch>[0]) =>
+          Effect.gen(function* () {
+            activeCommits += 1
+            maximumActiveCommits = Math.max(maximumActiveCommits, activeCommits)
+            yield* Effect.async<void>((resume) => {
+              queueMicrotask(() => resume(Effect.void))
+            })
+            yield* storage.commitBatch(mutations)
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                activeCommits -= 1
+              }),
+            ),
+          ),
+      }
+
+      yield* Effect.all(
+        [1, 2, 3].map((score) =>
+          saveDurably(State, key, { score, label: `save-${String(score)}` }).pipe(
+            Effect.provideService(StoragePort, delayed),
+          ),
+        ),
+        { concurrency: 'unbounded', discard: true },
+      )
+
+      expect(maximumActiveCommits).toBe(1)
+      expect(yield* loadDurably(State, key).pipe(Effect.provideService(StoragePort, delayed))).toStrictEqual(
+        Option.some({ score: 3, label: 'save-3' }),
+      )
+      const previous = yield* delayed.get(previousKey)
+      expect(Option.isSome(previous) && previous.value.payload).toStrictEqual({ score: 2, label: 'save-2' })
+    }),
+  )
+
+  it.effect('round-trips dimension, player, entity, vehicle, and boss state', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      const complete = {
+        dimension: 'minecraft:the_end',
+        player: {
+          id: 'player-1',
+          position: [12.5, 64, -7.25] as const,
+          health: 17.5,
+          inventory: [
+            { item: 'minecraft:elytra', count: 1 },
+            { item: 'minecraft:firework_rocket', count: 32 },
+          ],
+        },
+        entities: [
+          { id: 'horse-1', kind: 'minecraft:horse', health: 24, vehicle: null },
+          { id: 'player-1', kind: 'minecraft:player', health: 17.5, vehicle: 'horse-1' },
+        ],
+        bosses: [
+          { id: 'dragon-1', kind: 'minecraft:ender_dragon', health: 153, phase: 'STRAFE_PLAYER' },
+          { id: 'wither-1', kind: 'minecraft:wither', health: 260, phase: 'ARMORED' },
+        ],
+      }
+
+      yield* saveDurably(CompleteWorld, key, complete).pipe(Effect.provideService(StoragePort, storage))
+      expect(yield* loadDurably(CompleteWorld, key).pipe(Effect.provideService(StoragePort, storage))).toStrictEqual(
+        Option.some(complete),
+      )
     }),
   )
 
