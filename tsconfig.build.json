@@ -3,7 +3,7 @@
   // ever leaks into domain code this project fails, which is what keeps the
   // codec toolkit usable from browser, worker and server alike.
   "extends": "./tsconfig.base.json",
-  "include": ["index.ts", "domain/**/*.ts"],
+  "include": ["src/index.ts", "src/domain/**/*.ts"],
   "exclude": [
     "node_modules",
     "coverage",

@@ -15,10 +15,16 @@
 
 plan.md §6 Step 0 / §8:
 
-> npm 公開・バージョン bump 運用は**界面安定（4 週間 API ロック無変更）まで開始しない**
+> npm 公開・バージョン bump 運用は**界面が十分安定するまで開始しない**
 >
 > リスク「新規構築初期は全界面が高 churn」→ 対策「npm 公開を遅らせ dev-meta workspace で開発。
 > bump 連鎖を構造的に回避」
+
+「界面の安定」は日数計測ベースの自動ゲートでは判定しない。旧・`api-lock.md` の
+「4 週間無変更で凍結」という freeze-clock 機構は org 標準として廃止されている
+（[API_STANDARD.md §4](https://github.com/nerima-games/.github/blob/main/API_STANDARD.md)）。
+代わりに、1.0.0 への昇格と同様、**maintainer の裁量判断**による
+（[RELEASE_STANDARD.md §4.2](https://github.com/nerima-games/.github/blob/main/RELEASE_STANDARD.md#42-新しい昇格ポリシー人間による裁量判断)）。
 
 16 リポジトリが互いに依存している状態で早期に publish を始めると、
 kernel の些細な変更が 15 リポジトリの version bump を誘発する。
@@ -36,7 +42,8 @@ kernel の些細な変更が 15 リポジトリの version bump を誘発する�
 
 意図された依存グラフは**コードとドキュメントの側に**記録してある:
 
-- `scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY.dependencyGraph`（16 行全部）
+- `oxlint.json` の `no-restricted-imports`（mc-save 自身の許可先を機械的に強制する）
+- [DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §1（org 全体の許可グラフの正典）
 - [architecture.md](./architecture.md) の Mermaid 図
 
 publish 開始時に、ボトムアップ（kernel → 各 tier1 → worldgen → …）で
@@ -52,15 +59,16 @@ publish 開始時に、ボトムアップ（kernel → 各 tier1 → worldgen �
 
 ## 4. `1.0.0` にする条件
 
-**下流リポジトリが実際に消費して契約を確認したとき**に `1.0.0` にする。
+**下流リポジトリが実際に消費して契約を確認したとき**に、maintainer の裁量判断で `1.0.0` にする
+（[RELEASE_STANDARD.md §4.2](https://github.com/nerima-games/.github/blob/main/RELEASE_STANDARD.md#42-新しい昇格ポリシー人間による裁量判断)。
+「〇〇日間 API 変更なし」のような日数計測ベースの自動ゲートは設けない）。
 
-mc-save の場合、具体的には:
+mc-save の場合、判断材料になる具体的な事実は:
 
 1. `mc-worldgen` が `defineFormat` でチャンクフォーマットを定義している
 2. `mc-sim` が同じくプレイヤー状態のフォーマットを定義している
-3. その状態で API を 4 週間変更していない（plan.md §6 Step 3 の API ロック条件）
-4. IndexedDB アダプタが実装済みで、契約テストが実ブラウザで green
-   （**アダプタは済**: `domain/indexeddb-storage.ts`。契約ブロックは
+3. IndexedDB アダプタが実装済みで、契約テストが実ブラウザで green
+   （**アダプタは済**: `src/domain/indexeddb-storage.ts`。契約ブロックは
    `test/storage-port-contract.ts` としてインメモリと IndexedDB の両方に対して走っている。
    **残るのは「実ブラウザで」の部分だけ** — 現状は `test/fake-indexeddb.ts` に対して走る。
    fake が何を再現し何を再現しないかは同ファイル冒頭に列挙してある）
@@ -75,9 +83,9 @@ mc-save の場合、具体的には:
 `package.json`:
 
 ```json
-"main": "./index.ts",
-"types": "./index.ts",
-"exports": { ".": "./index.ts" }
+"main": "./src/index.ts",
+"types": "./src/index.ts",
+"exports": { ".": "./src/index.ts" }
 ```
 
 **TypeScript ソースを直接指している。** `tsconfig.base.json` の `noEmit: true` も同じ理由である。
@@ -89,7 +97,7 @@ mc-save の場合、具体的には:
 
 1. `tsconfig.build.json` の `noEmit` を外し、`dist/` に emit する
 2. `exports` を `dist/index.js` + `dist/index.d.ts` に向ける
-3. `files` から `domain` を外し `dist` を入れる
+3. `files` から `src` を外し `dist` を入れる
 4. CI に `pnpm build` と、tag push での `pnpm publish` を追加
 5. `.npmrc` に GitHub Packages の認証設定（`//npm.pkg.github.com/:_authToken=`）を追加
 

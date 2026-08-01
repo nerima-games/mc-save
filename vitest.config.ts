@@ -28,28 +28,28 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       enabled: false,
-      include: ['index.ts', 'domain/**/*.ts'],
+      include: ['src/index.ts', 'src/domain/**/*.ts'],
       exclude: [
         '**/*.d.ts',
         '**/*.config.ts',
         '**/*.test.ts',
         '**/*.spec.ts',
+        // PURE_TYPE: declarations only, zero executable statements. v8 reports
+        // this kind of file as 0% rather than 100% (same quirk documented in
+        // mc-kernel's vitest.config.ts), which would make the headline number
+        // meaningless. This file's contract is proved by `pnpm typecheck`
+        // (test/fixtures/indexeddb-surface.ts compiles it against the real
+        // `lib.dom.d.ts`) rather than by executing it.
+        'src/domain/indexeddb-surface.ts',
       ],
       all: true,
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
-      // NO THRESHOLD YET — deliberate.
-      //
-      // The reference repository (takeokunn/ts-minecraft) enforces 99% on
-      // branches/functions/lines/statements. A threshold on a skeleton would be
-      // meaningless: it would be trivially satisfied by a handful of type-only
-      // modules and would say nothing about the real implementation.
-      //
-      // Coverage is collected and reported (`pnpm test:coverage`) so the number
-      // is always visible. The 99% gate is turned on — here and in the CI
-      // workflow — when this repository reaches its completion criteria.
-      //
-      //   thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+      // Org-wide decision (TEST_STANDARD.md §3): 99% on all four metrics,
+      // enabled immediately and uniformly, no staged rollout. See
+      // docs/testing.md §5 for this repository's measured baseline at the time
+      // this gate was turned on.
+      thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
     },
   },
   esbuild: {

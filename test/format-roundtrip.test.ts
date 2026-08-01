@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Schema } from 'effect'
-import { saveEnvelope } from '../domain/envelope'
-import { decodeSave, defineFormat, encodeSave, validateMigrationChain } from '../domain/format'
+import { saveEnvelope } from '../src/domain/envelope'
+import { decodeSave, defineFormat, encodeSave, validateMigrationChain } from '../src/domain/format'
 
 /**
  * A format whose encoded form differs from its decoded form, so that a

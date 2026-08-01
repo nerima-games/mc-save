@@ -18,7 +18,7 @@
  *
  * Excluded from `tsconfig.json` and `tsconfig.test.json` (`test/fixtures/**`),
  * because it names DOM types those projects deliberately cannot see. It is
- * still linted and still scanned by `pnpm check:deps`.
+ * still linted (`pnpm lint` scans all of `test`).
  */
 import type {
   IdbDatabase,
@@ -30,7 +30,7 @@ import type {
   IdbRequest,
   IdbStringList,
   IdbTransaction,
-} from '../../domain/indexeddb-surface'
+} from '../../src/domain/indexeddb-surface'
 
 declare const browserIndexedDb: IDBFactory
 declare const browserOpenRequest: IDBOpenDBRequest

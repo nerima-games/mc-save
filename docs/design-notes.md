@@ -194,10 +194,14 @@ export const DB_NAME = 'minecraft-worlds'
 | ✅ `ignores a clock read that only appears inside a comment or a string` | 誤検知しない |
 | ✅ `exempts a line carrying the escape-hatch marker` | Clock Port の実装アダプタだけが逃げられる |
 
-実装は `test/dependency-policy.test.ts`。
-機械的な強制は `pnpm check:deps`（`scripts/check-dependency-whitelist.ts`）が行う。
-oxlint 0.12 は `no-restricted-syntax` も `no-restricted-properties` も実装しておらず、
-`no-restricted-globals` も一覧に出るだけで動かない（0.12.0 で実測確認済み）。
+旧実装は `test/dependency-policy.test.ts` + `pnpm check:deps`
+（`scripts/check-dependency-whitelist.ts`）だったが、org 標準（PACKAGE_STANDARD.md
+「`scripts/check-dependency-whitelist.ts` の廃止」）によりこの機構自体が廃止された。
+依存境界（誰が誰に依存してよいか）は `oxlint.json` の `no-restricted-imports` に一本化されている。
+raw clock read（`Date.now()` 等）の禁止だけは、oxlint 0.12 が `no-restricted-syntax` も
+`no-restricted-properties` も実装しておらず、`no-restricted-globals` も一覧に出るだけで
+動かないため（0.12.0 で実測確認済み）、現時点で自動強制する手段が無い。
+DEPENDENCY_POLICY.md はこの種のチェックの扱いを各リポジトリの裁量としている。
 
 ---
 

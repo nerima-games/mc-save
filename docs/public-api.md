@@ -23,7 +23,7 @@ export const defineFormat = <A, I>(spec: {
 }): SaveFormat<A, I>
 ```
 
-`domain/format.ts`。**マイグレーション連鎖に穴があると定義時に throw する。**
+`src/domain/format.ts`。**マイグレーション連鎖に穴があると定義時に throw する。**
 実行時のハンドリング対象ではなく、出荷してはいけないビルドだからである。
 
 ```typescript
@@ -65,7 +65,7 @@ export const FIRST_VERSION = 1
 export const isFromFuture: (envelope: SaveEnvelope, currentVersion: number) => boolean
 ```
 
-`domain/envelope.ts`。**バージョンを payload の外側に置く**のが要点である。
+`src/domain/envelope.ts`。**バージョンを payload の外側に置く**のが要点である。
 これにより `Schema` を通す前にマイグレーションを走らせられる。
 
 ### 参照実装との差
@@ -115,7 +115,7 @@ export const decodeSave: <A, I>(format: SaveFormat<A, I>, envelope: SaveEnvelope
 
 ## 4. エラー
 
-`domain/errors.ts`。**参照実装は境界に 1 種類しか出していなかった**（`StorageError`、
+`src/domain/errors.ts`。**参照実装は境界に 1 種類しか出していなかった**（`StorageError`、
 `packages/block/domain/errors.ts:6-14`）。`IndexedDBError` も
 `storage-error-mapping.ts:7-10` で全部そこへ潰されていた。
 
@@ -227,23 +227,26 @@ plan.md §6 Step 0 が求める API ロックファイルのセーブ版とし�
 <a id="idb"></a>
 ## 8. 実装済み: IndexedDB アダプタ
 
-`domain/indexeddb-storage.ts`。plan.md §3.5 の要求を満たす。
+`src/domain/indexeddb-storage.ts`。plan.md §3.5 の要求を満たす。
 
 ### `lib: ["DOM"]` は足していない — 当初の計画は誤りだった
 
 このセクションは当初「アダプタは自前の tsconfig で隔離した上で追加する」と書いていた。
-**隔離は不要だった。** `domain/indexeddb-surface.ts` が
+**隔離は不要だった。** `src/domain/indexeddb-surface.ts` が
 アダプタの使う IndexedDB API だけを構造的に記述し、
 `test/fixtures/indexeddb-surface.ts` を本物の `lib.dom.d.ts` に対してコンパイルする
 テストが「実物の `IDBFactory` がキャスト無しでその型を満たす」ことを証明している。
 mc-render `application/dom-surface.ts` / mx-ui と同じ手口である。
 
-別 tsconfig 案を捨てた理由は趣味ではなく機構である:
+別 tsconfig 案を捨てた理由は趣味ではなく機構である。この判断をした当時、
 `scripts/api-lock.ts` は `tsconfig.build.json` からレポートを作り、
-`scripts/check-dependency-whitelist.ts` は `index.ts` と `domain/` を出荷対象と見なす。
-`tsconfig.build.json` の外に置いたアダプタは `index.ts` から re-export できず、
-`pnpm check:deps` の走査からも外れる —
-**実媒体に触る唯一のファイルが、どのゲートからも見えないファイルになる。**
+`scripts/check-dependency-whitelist.ts` は `src/index.ts` と `src/domain/` を出荷対象と見なしていた
+（両スクリプトとも org 標準の移行で今は廃止済み — [API_STANDARD.md §4](https://github.com/nerima-games/.github/blob/main/API_STANDARD.md)、
+[PACKAGE_STANDARD.md「`scripts/check-dependency-whitelist.ts` の廃止」](https://github.com/nerima-games/.github/blob/main/PACKAGE_STANDARD.md)）。
+`tsconfig.build.json` の外に置いたアダプタは `src/index.ts` から re-export できず、出荷対象を
+走査する範囲（現在は `oxlint.json` の対象パス `src`）からも外れる —
+**実媒体に触る唯一のファイルが、どのゲートからも見えないファイルになる。** この結論自体は、
+実効機構が変わった今も変わらない。
 
 ### 非自明だった型の性質（触る前に読むこと）
 
@@ -253,7 +256,7 @@ lib.dom はこれらを**プロパティ**として宣言しており、
 したがって実物の `IDBRequest` が我々の型に代入可能であるためには、
 我々の引数型が `Event` の**部分型**でなければならない。
 DOM 無しで書ける `Event` の部分型は `never` だけである。
-実測した拒否メッセージは `domain/indexeddb-surface.ts` 冒頭に記録してある。
+実測した拒否メッセージは `src/domain/indexeddb-surface.ts` 冒頭に記録してある。
 
 **結果としてイベントは読めない。これは仕様である** — 下の「upgrade ハンドラ」を参照。
 
@@ -268,7 +271,7 @@ DOM 無しで書ける `Event` の部分型は `never` だけである。
 | レコード | `{ key, seq, envelope }` |
 
 `chunks` / `metadata` は**作らない**。それは参照実装のスキーマであり、
-それを知らないことが mc-save の設計そのものである（`domain/storage-port.ts` 冒頭）。
+それを知らないことが mc-save の設計そのものである（`src/domain/storage-port.ts` 冒頭）。
 
 ### エラーチャネルは広げていない
 

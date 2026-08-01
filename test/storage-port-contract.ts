@@ -29,8 +29,8 @@
  */
 import { describe, expect, it } from '@effect/vitest'
 import { Effect, Layer, Option } from 'effect'
-import { saveEnvelope } from '../domain/envelope'
-import { SaveKey, StoragePort } from '../domain/storage-port'
+import { saveEnvelope } from '../src/domain/envelope'
+import { SaveKey, StoragePort } from '../src/domain/storage-port'
 
 const A = SaveKey('alpha')
 const B = SaveKey('beta')

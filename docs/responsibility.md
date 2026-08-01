@@ -19,7 +19,7 @@
 | `StoragePort` | 鍵とエンベロープしか知らない狭い Port |
 | インメモリアダプタ | Port の**正典実装**。テスト用ではなく契約の基準 |
 | フォーマットレジストリ | 登録済みフォーマットの列挙。immutable な値 |
-| IndexedDB アダプタ | **実装済み**。`domain/indexeddb-storage.ts`。ストア 1 本（`saves`）と挿入順インデックス 1 本を自前で持つ。[public-api.md](./public-api.md#idb) 参照 |
+| IndexedDB アダプタ | **実装済み**。`src/domain/indexeddb-storage.ts`。ストア 1 本（`saves`）と挿入順インデックス 1 本を自前で持つ。[public-api.md](./public-api.md#idb) 参照 |
 
 ## 2. 非スコープ（ここに書いたら負け）
 
@@ -53,7 +53,8 @@ mc-save に「30 秒ごとに保存」を書いた時点で、テストが時計
 - `packages/app/application/main/session-persist.ts:54` — `const nowMs = yield* Clock.currentTimeMillis`
 - `packages/app/application/main/session-persist.ts:82` — `lastPlayed: new Date(nowMs)`
 
-この性質は mc-save でも維持する。`pnpm check:deps` が機械的に強制している。
+この性質は mc-save でも維持する。raw clock read の自動強制は現時点で無い
+（[design-notes.md DN-5](./design-notes.md#dn-5) 参照）。
 
 ### 3-2. アプリケーション向けの Port は狭かった
 
@@ -80,8 +81,9 @@ mc-save の `StoragePort` は 4 メソッド（`get` / `put` / `remove` / `keys`
 | --- | --- |
 | `mc-kernel` | `WorldId` 等のブランデッド型、Clock Port の型。**唯一の依存**（普遍的に import 可、ホワイトリスト記載不要） |
 
-直接依存のホワイトリストは**空集合**である
-（`scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY` を参照）。
+直接依存の許可リストは**空集合**である
+（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §1、
+実効機構は `oxlint.json` の `no-restricted-imports`）。
 
 ### 子（mc-save に依存するリポジトリ）
 
@@ -97,7 +99,7 @@ mc-compose は mc-save に**直接は依存しない**（推移閉包の禁止�
 
 | 省略したもの | 理由 | いつ入れるか |
 | --- | --- | --- |
-| ~~IndexedDB アダプタ~~ | ~~`lib: ["DOM"]` が必要になる~~ → **前提が誤りだった。** 狭い構造型 + 部分集合証明で `lib` を広げずに実装できた（`domain/indexeddb-surface.ts`） | **済**（別 tsconfig も不要だった） |
+| ~~IndexedDB アダプタ~~ | ~~`lib: ["DOM"]` が必要になる~~ → **前提が誤りだった。** 狭い構造型 + 部分集合証明で `lib` を広げずに実装できた（`src/domain/indexeddb-surface.ts`） | **済**（別 tsconfig も不要だった） |
 | リトライ / クォータポリシー | 誰が巻くべきかがまだ決まっていない | 最初の実消費者（worldgen）が決める |
 | 圧縮 | 参照実装は無圧縮（1 チャンク 64KB + 流体 64KB）。計測なしに入れない | 実測後 |
 | `@nerima-games/mc-kernel` への依存 | 未 publish（plan.md §6 Step 0） | kernel が消費可能になった時点 |

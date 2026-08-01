@@ -18,14 +18,18 @@
  *
  * `docs/responsibility.md` (§ the risk table) proposed isolating the adapter in
  * a second tsconfig instead. That is rejected here on a mechanical consequence
- * rather than on taste, the same one mc-render found:
- * `scripts/api-lock.ts` builds its report from `REPOSITORY_POLICY.tsconfigFile`
- * = `tsconfig.build.json`, and `scripts/check-dependency-whitelist.ts`
- * classifies shipped source as `index.ts` plus `domain/`. An adapter outside
- * `tsconfig.build.json` could not be re-exported from `index.ts` without the
- * API lock either missing it or failing to emit, and `pnpm check:deps` would
- * stop scanning it — so the one file in this repository that talks to a real
- * medium would be the one file no gate could see.
+ * rather than on taste, the same one mc-render found. At the time this
+ * decision was made, `scripts/api-lock.ts` built its report from
+ * `REPOSITORY_POLICY.tsconfigFile` = `tsconfig.build.json`, and
+ * `scripts/check-dependency-whitelist.ts` classified shipped source as
+ * `index.ts` plus `domain/` (both scripts have since been retired in favour of
+ * org-standard tooling — see docs/testing.md — but the shipped-source
+ * boundary they enforced is now `tsconfig.build.json` / `oxlint.json`'s `src`
+ * target, and the argument is unchanged). An adapter outside
+ * `tsconfig.build.json` could not be re-exported from `src/index.ts` without
+ * silently falling outside every gate that scans shipped source — so the one
+ * file in this repository that talks to a real medium would be the one file
+ * no gate could see.
  *
  * So: DESCRIBE, structurally, the handful of IndexedDB members the adapter
  * actually uses. mc-render did this for `window` and `document`

@@ -18,7 +18,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          # Full history, not just the default shallow clone: the changeset
+          # status check below diffs the PR branch against `origin/main`.
+          fetch-depth: 0
 
       - name: Setup pnpm
         # Pinned to a commit, not the mutable v4 tag: this is a third-party action
@@ -26,7 +31,7 @@ jobs:
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
           cache: "pnpm"
@@ -43,31 +48,31 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      # Hard gate. Unlike the reference repository's check-package-dag.ts this
-      # script exits non-zero on any violation: unlisted cross-repo import,
-      # undeclared dependency, transitive-closure import, a runtime dependency
-      # on mc-playground-kit, or a raw wall-clock read (Date.now()).
-      - name: Dependency whitelist / time-source ban
-        run: pnpm check:deps
-
-      # The API lock (plan.md §6 Step 0-3). Fails when the committed
-      # api-lock.md no longer matches the package's public surface, so a change
-      # to what consumers can see cannot land without a reviewable diff. Run
-      # `pnpm api:update` to refresh it.
-      - name: API lock
-        run: pnpm api:check
-
       - name: Test
         run: pnpm test
 
-      # Coverage is reported but not yet thresholded — see vitest.config.ts.
-      # The 99% gate is added when this repository reaches its completion criteria.
+      # RELEASE_STANDARD.md §1.2: catch a user-facing PR that forgot to add a
+      # changeset. Only meaningful on a PR (there is nothing to diff against on
+      # a push to main itself). Not a perfect filter — a docs-only or
+      # CI-only PR will also be flagged — so treat a failure here as a prompt
+      # to run `pnpm changeset` (or confirm the change truly needs none),
+      # rather than as an unconditional hard requirement.
+      - name: Changeset status
+        if: github.event_name == 'pull_request'
+        run: pnpm changeset status --since=main
+
+      # Hard gate (TEST_STANDARD.md §3): statements/branches/functions/lines
+      # all at 99%, enforced by `vitest run --coverage` itself via
+      # `vitest.config.ts#test.coverage.thresholds`. Kept as a separate step
+      # from `pnpm verify` rather than folded into it, so the fast gate stays
+      # fast and the coverage report is still produced (and uploaded below)
+      # even when this step fails.
       - name: Coverage
         run: pnpm test:coverage
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: coverage
           path: coverage/

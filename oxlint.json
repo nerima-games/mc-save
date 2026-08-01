@@ -3,14 +3,17 @@
   // oxlint is the ONLY lint/format configuration in this repository.
   // There is deliberately no prettier, no biome and no .editorconfig.
   //
-  // NOTE on the `Date.now()` ban (see README 現状 / scripts/check-dependency-whitelist.ts):
-  // oxlint 0.12 does not implement `no-restricted-syntax` or `no-restricted-properties`,
-  // and while `no-restricted-globals` is listed by `oxlint --rules` it is not implemented
-  // either (no checkmark). Verified empirically against oxlint 0.12.0: a file containing
-  // `Date.now()` produces 0 diagnostics under all three rules. The ban is therefore
-  // enforced by `pnpm check:deps` (scripts/check-dependency-whitelist.ts) instead.
-  // When oxlint gains `no-restricted-syntax`, move the ban here and delete the script's
-  // time-source section.
+  // NOTE on the `Date.now()` ban: this repository used to enforce it with a
+  // custom script (scripts/check-dependency-whitelist.ts), which org standard
+  // (PACKAGE_STANDARD.md "scripts/check-dependency-whitelist.ts の廃止") has
+  // retired in favour of oxlint's `no-restricted-imports` below. oxlint 0.12
+  // implements neither `no-restricted-syntax` nor `no-restricted-properties`,
+  // and `no-restricted-globals` is listed but not implemented (verified
+  // empirically: a file containing `Date.now()` produces 0 diagnostics under
+  // all three rules), so the raw-clock-read ban itself currently has no
+  // automated enforcement. DEPENDENCY_POLICY.md leaves this to each
+  // repository's discretion; move it back here when oxlint implements one of
+  // the rules above.
   "env": {
     "es2022": true,
     "node": true
@@ -111,8 +114,8 @@
     "default-case": "warn",
     "default-case-last": "warn",
     "no-empty-character-class": "warn",
-    // Declared for intent and for the day oxlint implements it; inert in 0.12.
-    // The real enforcement lives in scripts/check-dependency-whitelist.ts.
+    // Declared for intent and for the day oxlint implements it; inert in 0.12
+    // (listed by `oxlint --rules` but not actually implemented).
     "no-restricted-globals": ["warn", "name", "open", "close", "event"],
     "no-restricted-imports": [
       "warn",
@@ -120,6 +123,14 @@
         "name": "effect",
         "message": "Please use named imports from 'effect' package",
         "importNames": ["default"]
+      },
+      {
+        "patterns": [
+          {
+            "regex": "^@nerima-games/(?!mc-kernel\\b).+",
+            "message": "mc-save is a Tier1 library (DEPENDENCY_POLICY.md) and must not depend on any other @nerima-games/* package. mc-kernel is universally importable and exempt; mc-save does not currently use it either, since @nerima-games/mc-kernel is not yet published (see docs/versioning.md)."
+          }
+        ]
       }
     ],
     "prefer-template": "warn",
