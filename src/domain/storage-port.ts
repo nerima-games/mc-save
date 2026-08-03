@@ -46,10 +46,21 @@ export const SaveKey = Brand.refined<SaveKey>(
   (value) => Brand.error(`SaveKey must be a non-blank string, received ${JSON.stringify(value)}`),
 )
 
+/** One ordered change in an atomic storage checkpoint. */
+export type StorageMutation =
+  | { readonly _tag: 'Put'; readonly key: SaveKey; readonly envelope: SaveEnvelope }
+  | { readonly _tag: 'Remove'; readonly key: SaveKey }
+
 export type StorageService = {
   readonly get: (key: SaveKey) => Effect.Effect<Option.Option<SaveEnvelope>, StorageError>
   readonly put: (key: SaveKey, envelope: SaveEnvelope) => Effect.Effect<void, StorageError>
   readonly remove: (key: SaveKey) => Effect.Effect<void, StorageError>
+  /** Apply every mutation in order, or leave the store completely unchanged. */
+  readonly commitBatch: (mutations: ReadonlyArray<StorageMutation>) => Effect.Effect<void, StorageError>
+  /** Read keys in request order; absent keys occupy their position as `Option.none`. */
+  readonly readBatch: (
+    keys: ReadonlyArray<SaveKey>,
+  ) => Effect.Effect<ReadonlyArray<Option.Option<SaveEnvelope>>, StorageError>
   /**
    * Every key currently present, in insertion order.
    *
@@ -95,6 +106,24 @@ export const makeInMemoryStorage: Effect.Effect<StorageService> = Effect.gen(fun
         return next
       }),
 
+    commitBatch: (mutations) =>
+      Ref.update(store, (current) => {
+        const next = new Map(current)
+        for (const mutation of mutations) {
+          if (mutation._tag === 'Put') {
+            next.set(mutation.key, mutation.envelope)
+          } else {
+            next.delete(mutation.key)
+          }
+        }
+        return next
+      }),
+
+    readBatch: (keys) =>
+      Ref.get(store).pipe(
+        Effect.map((current) => keys.map((key) => Option.fromNullable(current.get(key)))),
+      ),
+
     keys: Ref.get(store).pipe(Effect.map((current) => [...current.keys()].map((key) => SaveKey(key)))),
   }
 })
@@ -114,5 +143,7 @@ export const failingStorageLayer = (operation: string): Layer.Layer<StoragePort>
     get: (key) => Effect.fail(new StorageError({ operation, key })),
     put: (key) => Effect.fail(new StorageError({ operation, key })),
     remove: (key) => Effect.fail(new StorageError({ operation, key })),
+    commitBatch: () => Effect.fail(new StorageError({ operation })),
+    readBatch: () => Effect.fail(new StorageError({ operation })),
     keys: Effect.fail(new StorageError({ operation })),
   })

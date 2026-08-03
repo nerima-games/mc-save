@@ -324,6 +324,49 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  it.effect('commitBatch rolls back earlier writes when a later mutation fails', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const invalid = envelope({ cannotClone: () => undefined })
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({ original: true }))
+        return yield* Effect.flip(
+          storage.commitBatch([
+            { _tag: 'Put', key: A, envelope: envelope({ overwritten: true }) },
+            { _tag: 'Put', key: B, envelope: invalid },
+          ]),
+        )
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error.operation).toBe('indexeddb.commitBatch')
+      expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([
+        { key: 'alpha', seq: 0, envelope: envelope({ original: true }) },
+      ])
+    }),
+  )
+
+  it.effect('commitBatch reports a browser abort and rolls the whole checkpoint back', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        factory.abortAfterNextWrite()
+        return yield* Effect.flip(
+          storage.commitBatch([
+            { _tag: 'Put', key: A, envelope: envelope({ n: 1 }) },
+            { _tag: 'Put', key: B, envelope: envelope({ n: 2 }) },
+          ]),
+        )
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error.operation).toBe('indexeddb.commitBatch')
+      expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([])
+    }),
+  )
+
   it.effect('a blocked upgrade fails rather than waiting forever', () =>
     Effect.gen(function* () {
       // The DOM does not treat `blocked` as an error: the open stays pending

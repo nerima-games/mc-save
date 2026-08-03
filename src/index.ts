@@ -25,6 +25,7 @@
  */
 
 export * from './domain/envelope'
+export * from './domain/durable-save'
 export * from './domain/errors'
 export * from './domain/format'
 export * from './domain/indexeddb-storage'

@@ -139,9 +139,9 @@ export const defineFormat = <A, I>(spec: {
   const problems = validateMigrationChain({ name: spec.name, version: spec.version, migrations })
 
   if (problems.length > 0) {
-    throw new Error(
-      `save format "${spec.name}" is not well-formed:\n` + problems.map((problem) => `  - ${problem}`).join('\n'),
-    )
+    throw new Error(`save format "${spec.name}" is not well-formed:\n${problems
+      .map((problem) => `  - ${problem}`)
+      .join('\n')}`)
   }
 
   return {

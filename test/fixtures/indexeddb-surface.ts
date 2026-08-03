@@ -80,14 +80,14 @@ export const exceptionIsAnIdbDomException: IdbDomException = browserException
  * on the way in and still be driven with `() => {}` on the way out.
  */
 export const installsHandlersOnTheRealThing = (): void => {
-  browserRequest.onsuccess = () => {}
-  browserRequest.onerror = () => {}
-  browserOpenRequest.onupgradeneeded = () => {}
-  browserOpenRequest.onblocked = () => {}
-  browserDatabase.onversionchange = () => {}
-  browserTransaction.oncomplete = () => {}
-  browserTransaction.onerror = () => {}
-  browserTransaction.onabort = () => {}
+  browserRequest.onsuccess = () => undefined
+  browserRequest.onerror = () => undefined
+  browserOpenRequest.onupgradeneeded = () => undefined
+  browserOpenRequest.onblocked = () => undefined
+  browserDatabase.onversionchange = () => undefined
+  browserTransaction.oncomplete = () => undefined
+  browserTransaction.onerror = () => undefined
+  browserTransaction.onabort = () => undefined
 }
 
 /**
@@ -122,14 +122,14 @@ export const drivesTheRealApiThroughTheNarrowTypes = (): void => {
     const store = transaction.objectStore('saves')
 
     store.put({ key: 'a', seq: 0, envelope: { format: 'f', version: 1, payload: null } })
-    store.get('a').onsuccess = () => {}
+    store.get('a').onsuccess = () => undefined
     store.delete('a')
 
     const index = store.index('by-insertion')
-    index.getAllKeys().onsuccess = () => {}
-    index.openCursor(null, 'prev').onsuccess = () => {}
+    index.getAllKeys().onsuccess = () => undefined
+    index.openCursor(null, 'prev').onsuccess = () => undefined
 
-    transaction.oncomplete = () => {}
+    transaction.oncomplete = () => undefined
     transaction.onabort = () => {
       // `error` is nullable on a browser-initiated abort, so the mapping must
       // cope with `null` rather than read through it.

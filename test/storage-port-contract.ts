@@ -79,6 +79,34 @@ export const storagePortContract = <E>(
       }).pipe(Effect.provide(freshLayer())),
     )
 
+    it.effect('commitBatch applies puts, overwrites, and removes in declaration order', () =>
+      Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({ old: true }))
+        yield* storage.commitBatch([
+          { _tag: 'Put', key: B, envelope: envelope({ n: 1 }) },
+          { _tag: 'Put', key: A, envelope: envelope({ n: 2 }) },
+          { _tag: 'Remove', key: B },
+          { _tag: 'Put', key: B, envelope: envelope({ n: 3 }) },
+        ])
+
+        expect(yield* storage.keys).toStrictEqual([A, B])
+        expect(yield* storage.readBatch([B, SaveKey('missing'), A])).toStrictEqual([
+          Option.some(envelope({ n: 3 })),
+          Option.none(),
+          Option.some(envelope({ n: 2 })),
+        ])
+      }).pipe(Effect.provide(freshLayer())),
+    )
+
+    it.effect('empty batches are successful no-ops', () =>
+      Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.commitBatch([])
+        expect(yield* storage.readBatch([])).toStrictEqual([])
+      }).pipe(Effect.provide(freshLayer())),
+    )
+
     it.effect('keys lists every written key in insertion order', () =>
       Effect.gen(function* () {
         const storage = yield* StoragePort
