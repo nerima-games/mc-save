@@ -56,6 +56,18 @@ describe('durable save checkpoints', () => {
     }),
   )
 
+  it.effect('falls back to the previous known-good checkpoint when latest is missing', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
+      yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
+      yield* storage.remove(key)
+
+      const restored = yield* loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage))
+      expect(restored).toStrictEqual(Option.some({ score: 1, label: 'first' }))
+    }),
+  )
+
   it.effect('does not replace a good previous checkpoint with a corrupt latest', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
