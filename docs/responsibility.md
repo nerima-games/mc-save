@@ -62,8 +62,9 @@ mc-save に「30 秒ごとに保存」を書いた時点で、テストが時計
 `StorageServicePort`（`packages/world/domain/storage-service-port.ts:14-31`）は
 `saveChunk` / `loadChunk` の **2 メソッドだけ**だった。この禁欲は正しい。
 
-mc-save の `StoragePort` は 4 メソッド（`get` / `put` / `remove` / `keys`）で、
-しかもドメイン語彙（chunk / metadata）を一切含まない。
+mc-save の `StoragePort` は 6 メソッド（`get` / `put` / `remove` / `commitBatch` / `readBatch` / `keys`）で、
+`commitBatch` は mutation を宣言順に適用し、全て成功するかストアを変更しない原子的な操作である。
+`readBatch` は要求されたキーの順序を保って結果を返す。しかもドメイン語彙（chunk / metadata）を一切含まない。
 
 ### 3-3. 一括読み込みは壊れたレコードを隔離していた
 

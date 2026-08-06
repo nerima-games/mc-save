@@ -22,17 +22,20 @@ raw clock read 禁止は、oxlint がそれを表現できるルールを実装�
 
 `test/dependency-policy.test.ts`（旧・`scripts/check-dependency-whitelist.ts` の単体テスト）と
 `test/api-lock.test.ts`（旧・`scripts/api-lock.ts` の単体テスト）は、それぞれが検証対象としていた
-スクリプトの廃止に伴い削除した。現状の6ファイル・70 tests:
+スクリプトの廃止に伴い削除した。現状の9ファイル・93 tests:
 
 ```
 test/format-roundtrip.test.ts       12 tests   コーデックのラウンドトリップ、連鎖検証
 test/migration.test.ts               8 tests   マイグレーション（リネームを含む）、Port 経由のロード
-test/storage-port.test.ts            8 tests   StoragePort の契約テスト（インメモリ）
+test/storage-port.test.ts            10 tests  StoragePort の契約テスト（インメモリ）
 test/binary-roundtrip.test.ts        5 tests   バイナリペイロードのラウンドトリップ
 test/legacy-save-compat.test.ts     10 tests   旧セーブ fixture との互換性（§3）
-test/indexeddb-storage.test.ts      27 tests   IndexedDB アダプタ + 契約テスト（fake 経由）
+test/persistence-listing.test.ts      4 tests   一覧取得時の破損隔離とストレージエラー
+test/durable-save.test.ts             11 tests  耐久チェックポイントとセーブ整合性
+test/indexeddb-storage.test.ts       31 tests  IndexedDB アダプタ + 契約テスト（fake 経由）
+test/public-api.test.ts                2 tests  バレルの実行時 export と StorageService 境界
                                     ─────
-                                     70 tests   全て green
+                                     93 tests   全て green
 ```
 
 ### 契約テストという書き方
