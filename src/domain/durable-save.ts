@@ -264,7 +264,10 @@ export const loadDurably = <A, I>(
       key,
       previousKey(key),
     ])
-    if (Option.isNone(latest)) return Option.none<A>()
+    if (Option.isNone(latest)) {
+      if (Option.isNone(previous)) return Option.none<A>()
+      return Option.some(yield* decodeStored(format, previous.value, maxBytes))
+    }
     return yield* decodeStored(format, latest.value, maxBytes).pipe(
       Effect.map(Option.some),
       Effect.catchTags({
