@@ -1,6 +1,6 @@
 /* eslint-disable no-bitwise -- UTF-8 encoding and FNV-1a are byte-level algorithms. */
 import { Effect, Option, Schema } from 'effect'
-import { type SaveEnvelope, SaveEnvelopeSchema, type SaveIntegrity } from './envelope'
+import { isFromFuture, type SaveEnvelope, SaveEnvelopeSchema, type SaveIntegrity } from './envelope'
 import { MigrationError, SaveDecodeError, StorageError } from './errors'
 import { decodeSave, encodeSave, type SaveFormat } from './format'
 import { SaveKey, StoragePort } from './storage-port'
@@ -167,43 +167,57 @@ const releaseLock = (storage: object, key: SaveKey, lock: SaveLock): void => {
   if (locks.size === 0) saveLocks.delete(storage)
 }
 
+const readStoredEnvelope = <A, I>(
+  format: SaveFormat<A, I>,
+  stored: unknown,
+  maxBytes: number,
+): Effect.Effect<SaveEnvelope, SaveDecodeError> =>
+  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SaveDecodeError({
+          format: format.name,
+          version: 0,
+          reason: 'stored value is not a well-formed save envelope',
+          cause,
+        }),
+    ),
+    Effect.flatMap((envelope) => validateSaveEnvelope(envelope, maxBytes)),
+  )
+
 const decodeStored = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
   maxBytes: number,
 ): Effect.Effect<A, SaveDecodeError | MigrationError> =>
-  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
-    Effect.mapError(
-      (cause) =>
-        new SaveDecodeError({
-          format: format.name,
-          version: 0,
-          reason: 'stored value is not a well-formed save envelope',
-          cause,
-        }),
-    ),
-    Effect.flatMap((envelope) => validateSaveEnvelope(envelope, maxBytes)),
-    Effect.flatMap((envelope) => decodeSave(format, envelope)),
-  )
+  readStoredEnvelope(format, stored, maxBytes).pipe(Effect.flatMap((envelope) => decodeSave(format, envelope)))
 
-const validatedStoredEnvelope = <A, I>(
+const isFutureSaveDecodeError = <A, I>(
+  format: SaveFormat<A, I>,
+  envelope: SaveEnvelope,
+  error: SaveDecodeError,
+): boolean => envelope.format === format.name && isFromFuture(envelope, format.version) && error.version > format.version
+
+const recoverableCheckpoint = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
   maxBytes: number,
-): Effect.Effect<SaveEnvelope, SaveDecodeError | MigrationError> =>
-  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
-    Effect.mapError(
-      (cause) =>
-        new SaveDecodeError({
-          format: format.name,
-          version: 0,
-          reason: 'stored value is not a well-formed save envelope',
-          cause,
-        }),
-    ),
-    Effect.flatMap((envelope) => validateSaveEnvelope(envelope, maxBytes)),
-    Effect.tap((envelope) => decodeSave(format, envelope)),
-  )
+): Effect.Effect<Option.Option<SaveEnvelope>, SaveDecodeError> =>
+  Effect.gen(function* () {
+    const envelope = yield* readStoredEnvelope(format, stored, maxBytes).pipe(Effect.option)
+    if (Option.isNone(envelope)) return Option.none<SaveEnvelope>()
+
+    return yield* decodeSave(format, envelope.value).pipe(
+      Effect.as(Option.some(envelope.value)),
+      Effect.catchTags({
+        SaveDecodeError: (error) =>
+          isFutureSaveDecodeError(format, envelope.value, error)
+            ? Effect.fail(error)
+            : Effect.succeed(Option.none<SaveEnvelope>()),
+        MigrationError: () => Effect.succeed(Option.none<SaveEnvelope>()),
+      }),
+    )
+  })
 
 export const saveDurably = <A, I>(
   format: SaveFormat<A, I>,
@@ -225,11 +239,11 @@ export const saveDurably = <A, I>(
           previousKey(key),
         ])
         const latestGood = Option.isSome(latest)
-          ? yield* validatedStoredEnvelope(format, latest.value, maxBytes).pipe(Effect.option)
+          ? yield* recoverableCheckpoint(format, latest.value, maxBytes)
           : Option.none<SaveEnvelope>()
         const previousGood =
           Option.isNone(latestGood) && Option.isSome(previous)
-            ? yield* validatedStoredEnvelope(format, previous.value, maxBytes).pipe(Effect.option)
+            ? yield* recoverableCheckpoint(format, previous.value, maxBytes)
             : Option.none<SaveEnvelope>()
         const inherited = Option.isSome(latestGood)
           ? latestGood.value.extensions
@@ -268,13 +282,22 @@ export const loadDurably = <A, I>(
       if (Option.isNone(previous)) return Option.none<A>()
       return Option.some(yield* decodeStored(format, previous.value, maxBytes))
     }
-    return yield* decodeStored(format, latest.value, maxBytes).pipe(
+    const latestEnvelope = yield* Effect.either(readStoredEnvelope(format, latest.value, maxBytes))
+    if (latestEnvelope._tag === 'Left') {
+      return Option.isSome(previous)
+        ? yield* decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
+        : yield* Effect.fail(latestEnvelope.left)
+    }
+
+    return yield* decodeSave(format, latestEnvelope.right).pipe(
       Effect.map(Option.some),
       Effect.catchTags({
         SaveDecodeError: (latestError) =>
-          Option.isSome(previous)
-            ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
-            : Effect.fail(latestError),
+          isFutureSaveDecodeError(format, latestEnvelope.right, latestError)
+            ? Effect.fail(latestError)
+            : Option.isSome(previous)
+              ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
+              : Effect.fail(latestError),
         MigrationError: (latestError) =>
           Option.isSome(previous)
             ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
