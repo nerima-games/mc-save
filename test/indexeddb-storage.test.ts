@@ -418,6 +418,113 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  it.effect('an envelope with unknown keys is rejected before get returns it', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: {
+            format: 'mc-save/test/idb',
+            version: 1,
+            payload: { n: 1 },
+            unknown: 'not allowed',
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('invalid envelope fields are rejected before get returns them', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: {
+            format: '',
+            version: 0,
+            payload: { n: 1 },
+            integrity: {
+              algorithm: 'fnv1a32',
+              byteLength: -1,
+              checksum: 'not-a-checksum',
+            },
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('an envelope without payload is rejected before get returns it', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: {
+            format: 'mc-save/test/idb',
+            version: 1,
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('a strict envelope failure aborts readBatch', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } },
+        {
+          key: 'beta',
+          seq: 1,
+          envelope: {
+            format: 'mc-save/test/idb',
+            version: 1,
+            payload: { n: 2 },
+            unknown: 'not allowed',
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.readBatch([A, B]))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.readBatch')
+    }),
+  )
+
   it.effect('operating on a closed connection is a StorageError, not a defect', () =>
     Effect.gen(function* () {
       // The state `onversionchange` deliberately creates: another tab is
@@ -478,11 +585,19 @@ describe('onupgradeneeded and a database written by an older version', () => {
 
       const found = yield* Effect.gen(function* () {
         const storage = yield* StoragePort
-        return { keys: yield* storage.keys, alpha: yield* storage.get(A) }
+        return {
+          keys: yield* storage.keys,
+          alpha: yield* storage.get(A),
+          batch: yield* storage.readBatch([A, B]),
+        }
       }).pipe(Effect.provide(layerFor(factory)))
 
       expect(found.keys).toStrictEqual([A, B])
       expect(found.alpha).toStrictEqual(Option.some(envelope({ n: 1 })))
+      expect(found.batch).toStrictEqual([
+        Option.some(envelope({ n: 1 })),
+        Option.some(envelope({ n: 2 })),
+      ])
     }),
   )
 

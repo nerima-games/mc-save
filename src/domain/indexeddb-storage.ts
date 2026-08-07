@@ -81,8 +81,8 @@
  * `test/fake-indexeddb.ts` models that auto-commit rule specifically so this
  * property is tested rather than assumed.
  */
-import { Effect, Layer, Option, Scope } from 'effect'
-import type { SaveEnvelope } from './envelope'
+import { Effect, Layer, Option, Schema, Scope } from 'effect'
+import { SaveEnvelopeSchema, type SaveEnvelope } from './envelope'
 import { StorageError } from './errors'
 import type { IdbDatabase, IdbFactory, IdbObjectStore, IdbRequest } from './indexeddb-surface'
 import { SaveKey, StoragePort, type StorageService } from './storage-port'
@@ -213,23 +213,35 @@ const readNumber = (source: unknown, field: string): number | undefined => {
 }
 
 /**
- * Pull the envelope out of one of our own records.
+ * Pull and decode the envelope out of one of our own records.
  *
- * The envelope itself is NOT validated here, and that is deliberate.
- * `domain/persistence.ts` re-validates it with `SaveEnvelopeSchema` before
- * opening it, and a second, hand-written notion of "well formed" in the adapter
- * is exactly the reference's bug: its main test double replaced Schema decoding
- * with hand-written type guards (`storage-service-test-utils.ts:30-44`), so
- * "corrupt" meant one thing in tests and another in production. The adapter
- * validates only the wrapper it wrote itself.
+ * The IndexedDB surface returns `unknown`, so the envelope must cross the
+ * `SaveEnvelope` boundary through the same schema used by persistence. Strict
+ * excess-property parsing keeps future or corrupted fields from being silently
+ * exposed as a trusted envelope; format migrations still happen later in
+ * `domain/persistence.ts` and `domain/format.ts`.
  */
+const decodeSaveEnvelope = Schema.decodeUnknownSync(SaveEnvelopeSchema, {
+  onExcessProperty: 'error',
+})
+
 const readEnvelope = (record: unknown): SaveEnvelope | undefined => {
   const fields = asRecord(record)
   if (fields === undefined || typeof fields['key'] !== 'string') {
     return undefined
   }
-  const envelope = asRecord(fields['envelope'])
-  return envelope === undefined ? undefined : (envelope as unknown as SaveEnvelope)
+  const envelope = fields['envelope']
+  if (envelope === undefined) {
+    return undefined
+  }
+  const envelopeFields = asRecord(envelope)
+  if (
+    envelopeFields === undefined ||
+    !Object.prototype.hasOwnProperty.call(envelopeFields, 'payload')
+  ) {
+    throw new TypeError('IndexedDB save envelope is missing payload')
+  }
+  return decodeSaveEnvelope(envelope)
 }
 
 // ---------------------------------------------------------------------------
