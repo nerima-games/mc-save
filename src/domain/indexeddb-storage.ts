@@ -234,13 +234,6 @@ const readEnvelope = (record: unknown): SaveEnvelope | undefined => {
   if (envelope === undefined) {
     return undefined
   }
-  const envelopeFields = asRecord(envelope)
-  if (
-    envelopeFields === undefined ||
-    !Object.prototype.hasOwnProperty.call(envelopeFields, 'payload')
-  ) {
-    throw new TypeError('IndexedDB save envelope is missing payload')
-  }
   return decodeSaveEnvelope(envelope)
 }
 
