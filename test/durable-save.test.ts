@@ -68,6 +68,44 @@ describe('durable save checkpoints', () => {
     }),
   )
 
+  it.effect('does not fall back when latest is a valid checkpoint from a newer build', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
+      yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
+      yield* storage.put(key, saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' }))
+
+      const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
+      expect(result._tag).toBe('Left')
+      if (result._tag === 'Left') {
+        expect(result.left).toMatchObject({ _tag: 'SaveDecodeError', version: State.version + 1 })
+        expect(result.left.message).toContain('newer build')
+      }
+    }),
+  )
+
+  it.effect('does not overwrite a valid checkpoint from a newer build', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
+      yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
+      const previous = yield* storage.get(previousKey)
+      const future = saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' })
+      yield* storage.put(key, future)
+
+      const result = yield* Effect.either(
+        saveDurably(State, key, { score: 4, label: 'replacement' }).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(result._tag).toBe('Left')
+      if (result._tag === 'Left') {
+        expect(result.left).toMatchObject({ _tag: 'SaveDecodeError', version: State.version + 1 })
+        expect(result.left.message).toContain('newer build')
+      }
+      expect(yield* storage.get(key)).toStrictEqual(Option.some(future))
+      expect(yield* storage.get(previousKey)).toStrictEqual(previous)
+    }),
+  )
+
   it.effect('does not replace a good previous checkpoint with a corrupt latest', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
