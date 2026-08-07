@@ -279,6 +279,14 @@ describe('save integrity', () => {
     }
   })
 
+  it.effect('uses canonical UTF-8 bytes for multi-byte payloads', () =>
+    Effect.gen(function* () {
+      const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'é漢🦊' }))
+      expect(sealed.integrity).toStrictEqual({ algorithm: 'fnv1a32', byteLength: 87, checksum: '08574854' })
+      expect(yield* validateSaveEnvelope(sealed)).toStrictEqual(sealed)
+    }),
+  )
+
   it.effect('rejects non-finite values and saves above the configured byte limit', () =>
     Effect.gen(function* () {
       const nonFinite = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: Number.NaN }))

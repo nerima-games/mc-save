@@ -8,23 +8,45 @@ import { SaveKey, StoragePort } from './storage-port'
 export const DEFAULT_MAX_SAVE_BYTES = 16 * 1024 * 1024
 
 const utf8Bytes = (value: string): Uint8Array => {
-  const bytes: Array<number> = []
-  for (const character of value) {
-    const point = character.codePointAt(0) ?? 0
-    if (point <= 0x7f) bytes.push(point)
-    else if (point <= 0x7ff) bytes.push(0xc0 | (point >> 6), 0x80 | (point & 0x3f))
-    else if (point <= 0xffff) {
-      bytes.push(0xe0 | (point >> 12), 0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f))
-    } else {
-      bytes.push(
-        0xf0 | (point >> 18),
-        0x80 | ((point >> 12) & 0x3f),
-        0x80 | ((point >> 6) & 0x3f),
-        0x80 | (point & 0x3f),
-      )
+  let ascii = true
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) {
+      ascii = false
+      break
     }
   }
-  return Uint8Array.from(bytes)
+  if (ascii) {
+    const bytes = new Uint8Array(value.length)
+    for (let index = 0; index < value.length; index += 1) bytes[index] = value.charCodeAt(index)
+    return bytes
+  }
+
+  const bytes = new Uint8Array(value.length * 3)
+  let offset = 0
+  for (let index = 0; index < value.length; index += 1) {
+    const point = value.codePointAt(index) ?? 0
+    if (point <= 0x7f) {
+      bytes[offset] = point
+      offset += 1
+    } else if (point <= 0x7ff) {
+      bytes[offset] = 0xc0 | (point >> 6)
+      bytes[offset + 1] = 0x80 | (point & 0x3f)
+      offset += 2
+    } else if (point <= 0xffff) {
+      bytes[offset] = 0xe0 | (point >> 12)
+      bytes[offset + 1] = 0x80 | ((point >> 6) & 0x3f)
+      bytes[offset + 2] = 0x80 | (point & 0x3f)
+      offset += 3
+    } else {
+      bytes[offset] = 0xf0 | (point >> 18)
+      bytes[offset + 1] = 0x80 | ((point >> 12) & 0x3f)
+      bytes[offset + 2] = 0x80 | ((point >> 6) & 0x3f)
+      bytes[offset + 3] = 0x80 | (point & 0x3f)
+      offset += 4
+      index += 1
+    }
+  }
+  return bytes.subarray(0, offset)
 }
 
 type Canonicalized = {
