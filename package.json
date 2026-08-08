@@ -54,7 +54,7 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test"
   },
   "dependencies": {
-    "effect": "^3.22.0"
+    "effect": "^3.22.1"
   },
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
