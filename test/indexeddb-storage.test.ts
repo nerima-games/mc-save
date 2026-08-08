@@ -40,7 +40,7 @@
  * This file makes the claims that genuinely need a database.
  */
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Exit, Option, Schema } from 'effect'
+import { Effect, Exit, Option, Schema, Scope } from 'effect'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
@@ -54,9 +54,10 @@ import {
   SAVE_STORE_NAME,
   STORE_LAYOUT_VERSION,
 } from '../src/domain/indexeddb-storage'
+import type { IdbDatabase } from '../src/domain/indexeddb-surface'
 import { loadFrom, saveTo } from '../src/domain/persistence'
 import { SaveKey, StoragePort } from '../src/domain/storage-port'
-import { makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR, type FakeIndexedDb } from './fake-indexeddb'
+import { domException, makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR, type FakeIndexedDb } from './fake-indexeddb'
 import { storagePortContract } from './storage-port-contract'
 
 const DATABASE = 'mc-save/test/worlds'
@@ -297,6 +298,28 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  it.effect('a failure whose own `name` is not even a string is NOT reported as quota either', () =>
+    Effect.gen(function* () {
+      // `readString`'s own defensive re-check, one level more paranoid than
+      // the test above: every `DOMException`-shaped cause this fake otherwise
+      // produces already carries a STRING `name`, so this is the only way to
+      // exercise the branch where it does not — a medium response malformed
+      // enough that even reading its `name` is not something `failureFor` can
+      // trust.
+      const factory = makeFakeIndexedDb()
+      factory.corruptNextWriteWithMalformedCause({ name: 42, message: 'not even a proper DOMException' })
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.put(A, envelope({})))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(isQuotaExceeded(error)).toBe(false)
+      expect(error.operation).toBe('indexeddb.put')
+    }),
+  )
+
   it.effect('a transaction that aborts fails the write AND leaves the store untouched', () =>
     Effect.gen(function* () {
       // A browser may abort a transaction of its own accord, with `error` null.
@@ -367,6 +390,145 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  it.effect('opening below the version already on disk fails, rather than silently downgrading', () =>
+    Effect.gen(function* () {
+      // `request.onerror` on the OPEN request itself (distinct from
+      // `onblocked`): the DOM's `VersionError`, fired when the requested
+      // version is lower than what is already stored. Not reachable through
+      // `makeIndexedDbStorage`, which always asks for its own fixed
+      // `STORE_LAYOUT_VERSION` — this is what a corrupted or hand-edited
+      // record of "what version we last wrote" would look like.
+      const factory = makeFakeIndexedDb()
+      factory.holdOpenAt(DATABASE, STORE_LAYOUT_VERSION + 1)
+
+      const error = yield* Effect.flip(
+        Effect.gen(function* () {
+          yield* StoragePort
+        }).pipe(Effect.provide(layerFor(factory))),
+      )
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+    }),
+  )
+
+  it.effect('a live connection closes itself on versionchange, so a later open does not block', () =>
+    Effect.gen(function* () {
+      // The other half of the `onblocked` test below, and the reason the
+      // adapter registers `database.onversionchange` at all (this file's own
+      // header: "Without this, THIS connection is what makes the next version
+      // of the game fire `onblocked` in another tab"). Kept open across a
+      // second, higher-version open — issued directly through `factory.open`,
+      // since this adapter always requests its own fixed
+      // `STORE_LAYOUT_VERSION` and a real version bump is what is being
+      // simulated here, the way a second tab running a newer release would.
+      const factory = makeFakeIndexedDb()
+      const scope = yield* Scope.make()
+      const first = yield* makeIndexedDbStorage({ factory, databaseName: DATABASE }).pipe(Scope.extend(scope))
+      yield* first.put(A, envelope({ n: 1 }))
+
+      const outcome = yield* Effect.async<'success' | 'blocked' | 'error'>((resume) => {
+        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION + 1)
+        request.onupgradeneeded = () => undefined
+        request.onsuccess = () => {
+          resume(Effect.succeed('success'))
+        }
+        request.onblocked = () => {
+          resume(Effect.succeed('blocked'))
+        }
+        request.onerror = () => {
+          resume(Effect.succeed('error'))
+        }
+      })
+
+      // Had `onversionchange` not closed the first connection, this comes
+      // back 'blocked' instead — exactly the failure this handler exists to
+      // prevent.
+      expect(outcome).toBe('success')
+
+      yield* Scope.close(scope, Exit.void)
+    }),
+  )
+
+  it.effect('a blocked open is not dead — it retries and succeeds once the blocker closes', () =>
+    Effect.gen(function* () {
+      // The real DOM does not drop a `blocked` request; it stays pending and
+      // can still fire `upgradeneeded`/`success` later, once whatever was in
+      // the way leaves. Opened directly through `factory.open` — an
+      // uncooperative connection with no `onversionchange` handler, the same
+      // shape `holdOpenAt` models but closed explicitly here instead of never,
+      // so the SAME request reports twice: `blocked`, then `success`.
+      const factory = makeFakeIndexedDb()
+
+      const first = yield* Effect.async<IdbDatabase>((resume) => {
+        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION)
+        request.onupgradeneeded = () => undefined
+        request.onsuccess = () => {
+          resume(Effect.succeed(request.result))
+        }
+      })
+
+      const reports: Array<'blocked' | 'success'> = []
+      const second = yield* Effect.async<'success'>((resume) => {
+        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION + 1)
+        request.onupgradeneeded = () => undefined
+        request.onblocked = () => {
+          reports.push('blocked')
+          // Close only now — after `blocked` actually reported — so this
+          // proves the retry path rather than a request that never blocked.
+          first.close()
+        }
+        request.onsuccess = () => {
+          reports.push('success')
+          resume(Effect.succeed('success'))
+        }
+      })
+
+      expect(reports).toStrictEqual(['blocked', 'success'])
+      expect(second).toBe('success')
+    }),
+  )
+
+  it.effect('a late second report, after the adapter already settled on blocked, is silently dropped', () =>
+    Effect.gen(function* () {
+      // The adapter's own `openDatabase` (`domain/indexeddb-storage.ts`) has
+      // the identical "already settled" guard as `runTransaction`, and this is
+      // what it is for: the underlying open request from the previous test
+      // can genuinely report twice, but `StoragePort`'s Effect must resolve
+      // exactly once. Here the FIRST report is what the layer resolves with —
+      // a blocked failure — and the second (a later, unrequested success) must
+      // change nothing about that.
+      const factory = makeFakeIndexedDb()
+
+      // A live connection below `STORE_LAYOUT_VERSION`, opened directly and
+      // with no `onversionchange` handler, so the adapter's own open — always
+      // for `STORE_LAYOUT_VERSION` — is genuinely blocked rather than won
+      // outright.
+      const blocker = yield* Effect.async<IdbDatabase>((resume) => {
+        const request = factory.open(DATABASE, 0)
+        request.onupgradeneeded = () => undefined
+        request.onsuccess = () => {
+          resume(Effect.succeed(request.result))
+        }
+      })
+
+      const outcome = yield* Effect.exit(
+        Effect.gen(function* () {
+          yield* StoragePort
+        }).pipe(Effect.provide(layerFor(factory))),
+      )
+      expect(Exit.isFailure(outcome)).toBe(true)
+
+      // The adapter's Effect has already resolved with the failure above.
+      // Closing the blocker now retries the SAME underlying request, which
+      // this time succeeds — a second report the adapter must not act on.
+      // Nothing further to assert on the (already-completed) Effect; the
+      // claim is only that this does not throw or hang.
+      blocker.close()
+      yield* Effect.sleep('0 millis')
+    }),
+  )
+
   it.effect('a blocked upgrade fails rather than waiting forever', () =>
     Effect.gen(function* () {
       // The DOM does not treat `blocked` as an error: the open stays pending
@@ -415,6 +577,252 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('readBatch is just as loud about a record this adapter did not write', () =>
+    Effect.gen(function* () {
+      // `readBatch` has its own copy of the same "present but unrecognisable"
+      // check `get` has, on its own separate code path — the two are not
+      // implemented in terms of each other, so `get`'s coverage of this does
+      // not stand in for `readBatch`'s.
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } },
+        { key: 'beta', seq: 1, somethingElse: 'not an envelope' },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.readBatch([A, B]))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.readBatch')
+    }),
+  )
+
+  it.effect('a record present under our key but carrying no string key of its own is an error too', () =>
+    Effect.gen(function* () {
+      // `readEnvelope`'s FIRST guard, ahead of and distinct from the
+      // "no `envelope` field" case above: real IndexedDB's `keyPath` only
+      // requires SOME value at the key path, not a string one, so a foreign
+      // writer could leave a record IndexedDB happily stores and returns for
+      // `get('alpha')` whose own `key` field is missing or not a string —
+      // `seedAt` is what makes that constructible at all (`seed` itself
+      // can't, see its doc comment).
+      const factory = makeFakeIndexedDb()
+      factory.seedAt(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', value: { seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } } },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('an envelope with unknown keys is rejected before get returns it', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: {
+            format: 'mc-save/test/idb',
+            version: 1,
+            payload: { n: 1 },
+            unknown: 'not allowed',
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('invalid envelope fields are rejected before get returns them', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: {
+            format: '',
+            version: 0,
+            payload: { n: 1 },
+            integrity: {
+              algorithm: 'fnv1a32',
+              byteLength: -1,
+              checksum: 'not-a-checksum',
+            },
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('an envelope without payload is rejected before get returns it', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: {
+            format: 'mc-save/test/idb',
+            version: 1,
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.get(A))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.get')
+    }),
+  )
+
+  it.effect('a strict envelope failure aborts readBatch', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } },
+        {
+          key: 'beta',
+          seq: 1,
+          envelope: {
+            format: 'mc-save/test/idb',
+            version: 1,
+            payload: { n: 2 },
+            unknown: 'not allowed',
+          },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.readBatch([A, B]))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.readBatch')
+    }),
+  )
+
+  it.effect('a malformed index answer (not an array) fails keys as a StorageError', () =>
+    Effect.gen(function* () {
+      // Nothing reachable through `put`/`seed` can make the index answer
+      // anything but a well-formed array of string keys — see
+      // `corruptNextIndexKeys`'s own doc comment. This is `readKeys`'s first
+      // throw (`domain/indexeddb-storage.ts`), caught by `runTransaction`'s
+      // `guard` and surfaced as a `StorageError` rather than an uncaught
+      // exception or a hang.
+      const factory = makeFakeIndexedDb()
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({}))
+        factory.corruptNextIndexKeys('not-an-array')
+        return yield* Effect.flip(storage.keys)
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.keys')
+      expect(error.cause).toBeInstanceOf(TypeError)
+      expect((error.cause as TypeError).message).toContain(INSERTION_INDEX_NAME)
+    }),
+  )
+
+  it.effect('a malformed index answer (a non-string entry) fails keys as a StorageError', () =>
+    Effect.gen(function* () {
+      // `readKeys`'s second throw: the outer value is an array, but not every
+      // entry is a string.
+      const factory = makeFakeIndexedDb()
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({}))
+        factory.corruptNextIndexKeys(['alpha', 123])
+        return yield* Effect.flip(storage.keys)
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.keys')
+      expect(error.cause).toBeInstanceOf(TypeError)
+      expect((error.cause as TypeError).message).toContain(SAVE_STORE_NAME)
+    }),
+  )
+
+  it.effect('reports the ORIGINAL failure, not a secondary one, when the abort that follows it also fails', () =>
+    Effect.gen(function* () {
+      // `guard`'s own catch (`domain/indexeddb-storage.ts`): when the body
+      // that processes a request's result throws, the transaction is aborted
+      // as well as reported — and if THAT abort call itself fails (a medium
+      // failure this adapter cannot cause through legitimate use, hence
+      // `corruptNextAbort`), the caller must still see the failure that
+      // actually broke the chain, not a `TransactionInactiveError` about
+      // failing to clean up after it.
+      const factory = makeFakeIndexedDb()
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({}))
+        factory.corruptNextIndexKeys('not-an-array')
+        factory.corruptNextAbort(domException('InvalidStateError', 'the transaction has already finished'))
+        return yield* Effect.flip(storage.keys)
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.keys')
+      expect(error.cause).toBeInstanceOf(TypeError)
+      expect((error.cause as TypeError).message).toContain(INSERTION_INDEX_NAME)
+    }),
+  )
+
+  it.effect('a request-level failure is still reported when aborting after it also fails', () =>
+    Effect.gen(function* () {
+      // `onResult`'s own onerror handler has the identical fallback, one level
+      // closer to the medium: the request itself failed (`failNextWrite`), and
+      // the abort that follows fails too. `commitBatch`'s writes are the ones
+      // to use here — unlike `put`'s own last write, every write inside
+      // `commitBatch` is wrapped through `onResult`, so its request-level
+      // `onerror` is the one that actually fires.
+      const factory = makeFakeIndexedDb()
+      factory.failNextWrite('UnknownError', 'the medium hiccuped')
+      factory.corruptNextAbort(domException('InvalidStateError', 'the transaction has already finished'))
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.commitBatch([{ _tag: 'Put', key: A, envelope: envelope({}) }]))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.commitBatch')
+      expect(isQuotaExceeded(error)).toBe(false)
     }),
   )
 
@@ -478,11 +886,19 @@ describe('onupgradeneeded and a database written by an older version', () => {
 
       const found = yield* Effect.gen(function* () {
         const storage = yield* StoragePort
-        return { keys: yield* storage.keys, alpha: yield* storage.get(A) }
+        return {
+          keys: yield* storage.keys,
+          alpha: yield* storage.get(A),
+          batch: yield* storage.readBatch([A, B]),
+        }
       }).pipe(Effect.provide(layerFor(factory)))
 
       expect(found.keys).toStrictEqual([A, B])
       expect(found.alpha).toStrictEqual(Option.some(envelope({ n: 1 })))
+      expect(found.batch).toStrictEqual([
+        Option.some(envelope({ n: 1 })),
+        Option.some(envelope({ n: 2 })),
+      ])
     }),
   )
 

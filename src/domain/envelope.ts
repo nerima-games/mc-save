@@ -69,7 +69,11 @@ export type SaveIntegrity = {
 export const SaveEnvelopeSchema: Schema.Schema<SaveEnvelope> = Schema.Struct({
   format: Schema.String.pipe(Schema.minLength(1)),
   version: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(FIRST_VERSION)),
-  payload: Schema.Unknown,
+  payload: Schema.Unknown.pipe(
+    Schema.filter((value): value is unknown => value !== undefined, {
+      message: () => 'Save envelope payload must be present',
+    }),
+  ),
   integrity: Schema.optional(
     Schema.Struct({
       algorithm: Schema.Literal('fnv1a32'),

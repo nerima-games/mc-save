@@ -211,4 +211,17 @@ describe('旧セーブ fixture との互換テスト', () => {
       }
     }),
   )
+
+  it.effect('SaveEnvelopeSchema rejects a missing or undefined payload', () =>
+    Effect.sync(() => {
+      const base = { format: PLAYER_FORMAT_NAME, version: PLAYER_FORMAT_CURRENT.version }
+      expect(() => Schema.decodeUnknownSync(SaveEnvelopeSchema)(base)).toThrow()
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeSchema)({ ...base, payload: undefined }),
+      ).toThrow()
+      expect(
+        Schema.decodeUnknownSync(SaveEnvelopeSchema)({ ...base, payload: null }),
+      ).toStrictEqual({ ...base, payload: null })
+    }),
+  )
 })

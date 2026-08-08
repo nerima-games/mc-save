@@ -138,10 +138,20 @@ export const decodeSave: <A, I>(format: SaveFormat<A, I>, envelope: SaveEnvelope
 export type SaveKey = string & Brand.Brand<'SaveKey'>
 export const SaveKey: Brand.Brand.Constructor<SaveKey>   // 空文字・空白のみを拒否
 
+export type StorageMutation =
+  | { readonly _tag: 'Put'; readonly key: SaveKey; readonly envelope: SaveEnvelope }
+  | { readonly _tag: 'Remove'; readonly key: SaveKey }
+
 export type StorageService = {
   readonly get: (key: SaveKey) => Effect.Effect<Option.Option<SaveEnvelope>, StorageError>
   readonly put: (key: SaveKey, envelope: SaveEnvelope) => Effect.Effect<void, StorageError>
   readonly remove: (key: SaveKey) => Effect.Effect<void, StorageError>
+  readonly commitBatch: (
+    mutations: ReadonlyArray<StorageMutation>,
+  ) => Effect.Effect<void, StorageError>
+  readonly readBatch: (
+    keys: ReadonlyArray<SaveKey>,
+  ) => Effect.Effect<ReadonlyArray<Option.Option<SaveEnvelope>>, StorageError>
   readonly keys: Effect.Effect<ReadonlyArray<SaveKey>, StorageError>
 }
 
@@ -150,8 +160,10 @@ export class StoragePort extends Context.Tag('@nerima-games/mc-save/StoragePort'
 >() {}
 ```
 
+`commitBatch` は `Put` / `Remove` mutation を指定順に適用し、全て成功するかストアを変更しない。
+`readBatch` は要求順で結果を返し、欠損キーも `Option.none()` としてその位置を保持する。
 `keys` が関数でなく値なのは引数を取らないからで、
-参照実装も `listWorldMetadata` で同じ区別をしていた（`storage-service.ts:168`）。
+参照実装も `listWorldMetadata` で同じ区別をしていた（`src/domain/storage-port.ts`）。
 
 ### アダプタ
 

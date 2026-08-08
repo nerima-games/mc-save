@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest'
-import { Effect, Schema } from 'effect'
-import { saveEnvelope } from '../src/domain/envelope'
+import { Effect, ParseResult, Schema } from 'effect'
+import { FIRST_VERSION, saveEnvelope } from '../src/domain/envelope'
 import { decodeSave, defineFormat, encodeSave, validateMigrationChain } from '../src/domain/format'
 
 /**
@@ -108,6 +108,38 @@ describe('encodeSave / decodeSave', () => {
       }
     }),
   )
+
+  /**
+   * `encodeSave`'s own failure path, distinct from `decodeSave`'s: the value in
+   * hand satisfies TypeScript but not the schema's ENCODE direction. A struct
+   * whose field encoder can itself fail — as opposed to a struct that simply
+   * rejects a wrong-shaped `unknown` on decode — is the only way to reach it.
+   */
+  const NonNegativeOnEncode = Schema.transformOrFail(Schema.Number, Schema.Number, {
+    strict: true,
+    decode: (n) => ParseResult.succeed(n),
+    encode: (n, _options, ast) =>
+      n < 0
+        ? ParseResult.fail(new ParseResult.Type(ast, n, 'score must not be negative'))
+        : ParseResult.succeed(n),
+  })
+
+  const ScoreOnly = defineFormat({
+    name: 'mc-save/test/score-only',
+    version: 1,
+    schema: Schema.Struct({ score: NonNegativeOnEncode }),
+  })
+
+  it.effect('fails encoding, not decoding, when the value cannot satisfy the schema on its way out', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.flip(encodeSave(ScoreOnly, { score: -1 }))
+
+      expect(result._tag).toBe('SaveDecodeError')
+      expect(result.format).toBe('mc-save/test/score-only')
+      expect(result.version).toBe(1)
+      expect(result.reason).toBe('the value does not satisfy the format schema, so it cannot be encoded')
+    }),
+  )
 })
 
 describe('validateMigrationChain', () => {
@@ -165,6 +197,49 @@ describe('validateMigrationChain', () => {
       })
 
       expect(problems.some((problem) => problem.includes('above the current version'))).toBe(true)
+    }),
+  )
+
+  it.effect('rejects a non-integer or below-FIRST_VERSION top-level version, and stops there', () =>
+    Effect.sync(() => {
+      const problems = validateMigrationChain({ name: 'f', version: 0, migrations: [] })
+
+      expect(problems).toStrictEqual([
+        `version must be an integer >= ${String(FIRST_VERSION)}, received 0`,
+      ])
+    }),
+  )
+
+  it.effect('rejects a non-integer or below-FIRST_VERSION migration.from', () =>
+    Effect.sync(() => {
+      const problems = validateMigrationChain({
+        name: 'f',
+        version: 2,
+        migrations: [{ ...noop, from: 0 }],
+      })
+
+      expect(
+        problems.some((problem) => problem.includes('migration.from must be an integer >=')),
+      ).toBe(true)
+    }),
+  )
+
+  it.effect('rejects any migration declared on a format that starts at FIRST_VERSION', () =>
+    Effect.sync(() => {
+      // A format at FIRST_VERSION has never had an earlier shape, so there is
+      // nothing for a migration to start from — declaring one is always a
+      // mistake, never a legitimate chain of one.
+      const problems = validateMigrationChain({
+        name: 'f',
+        version: FIRST_VERSION,
+        migrations: [noop],
+      })
+
+      expect(
+        problems.some((problem) =>
+          problem.includes(`version is ${String(FIRST_VERSION)} but 1 migration(s) are declared`),
+        ),
+      ).toBe(true)
     }),
   )
 })

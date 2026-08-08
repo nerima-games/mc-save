@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@effect/vitest'
 import { Effect } from 'effect'
 import { saveEnvelope } from '../src/domain/envelope'
+import { StorageError } from '../src/domain/errors'
 import { failingStorageLayer, InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port'
 import { storagePortContract } from './storage-port-contract'
 
@@ -48,5 +49,41 @@ describe('failingStorageLayer', () => {
       expect(error.operation).toBe('quota-exceeded')
       expect(error.message).toContain('alpha')
     }).pipe(Effect.provide(failingStorageLayer('quota-exceeded'))),
+  )
+
+  it.effect('fails every other method the same way, each naming the operation', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+
+      const get = yield* Effect.flip(storage.get(A))
+      const remove = yield* Effect.flip(storage.remove(A))
+      const commitBatch = yield* Effect.flip(storage.commitBatch([{ _tag: 'Remove', key: A }]))
+      const readBatch = yield* Effect.flip(storage.readBatch([A]))
+
+      for (const error of [get, remove, commitBatch, readBatch]) {
+        expect(error._tag).toBe('StorageError')
+        expect(error.operation).toBe('unavailable')
+      }
+      // `get` and `remove` are keyed like `put`; `commitBatch` and `readBatch`
+      // are not, the same asymmetry `StorageService`'s own shape has.
+      expect(get.key).toBe('alpha')
+      expect(remove.key).toBe('alpha')
+      expect(commitBatch.key).toBeUndefined()
+      expect(readBatch.key).toBeUndefined()
+    }).pipe(Effect.provide(failingStorageLayer('unavailable'))),
+  )
+})
+
+describe('StorageError.message', () => {
+  it.effect('omits the key clause when no key is involved', () =>
+    Effect.sync(() => {
+      // The other half of the "fails writes ... naming the operation and key"
+      // assertion above: `put`'s error names its key, but `commitBatch` and
+      // `readBatch` fail with no key at all, and the message getter has a
+      // ternary specifically for that case.
+      expect(new StorageError({ operation: 'indexeddb.commitBatch' }).message).toBe(
+        'storage operation "indexeddb.commitBatch" failed',
+      )
+    }),
   )
 })

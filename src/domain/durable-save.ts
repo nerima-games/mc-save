@@ -1,6 +1,6 @@
 /* eslint-disable no-bitwise -- UTF-8 encoding and FNV-1a are byte-level algorithms. */
 import { Effect, Option, Schema } from 'effect'
-import { type SaveEnvelope, SaveEnvelopeSchema, type SaveIntegrity } from './envelope'
+import { isFromFuture, type SaveEnvelope, SaveEnvelopeSchema, type SaveIntegrity } from './envelope'
 import { MigrationError, SaveDecodeError, StorageError } from './errors'
 import { decodeSave, encodeSave, type SaveFormat } from './format'
 import { SaveKey, StoragePort } from './storage-port'
@@ -8,23 +8,45 @@ import { SaveKey, StoragePort } from './storage-port'
 export const DEFAULT_MAX_SAVE_BYTES = 16 * 1024 * 1024
 
 const utf8Bytes = (value: string): Uint8Array => {
-  const bytes: Array<number> = []
-  for (const character of value) {
-    const point = character.codePointAt(0) ?? 0
-    if (point <= 0x7f) bytes.push(point)
-    else if (point <= 0x7ff) bytes.push(0xc0 | (point >> 6), 0x80 | (point & 0x3f))
-    else if (point <= 0xffff) {
-      bytes.push(0xe0 | (point >> 12), 0x80 | ((point >> 6) & 0x3f), 0x80 | (point & 0x3f))
-    } else {
-      bytes.push(
-        0xf0 | (point >> 18),
-        0x80 | ((point >> 12) & 0x3f),
-        0x80 | ((point >> 6) & 0x3f),
-        0x80 | (point & 0x3f),
-      )
+  let ascii = true
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) > 0x7f) {
+      ascii = false
+      break
     }
   }
-  return Uint8Array.from(bytes)
+  if (ascii) {
+    const bytes = new Uint8Array(value.length)
+    for (let index = 0; index < value.length; index += 1) bytes[index] = value.charCodeAt(index)
+    return bytes
+  }
+
+  const bytes = new Uint8Array(value.length * 3)
+  let offset = 0
+  for (let index = 0; index < value.length; index += 1) {
+    const point = value.codePointAt(index) ?? 0
+    if (point <= 0x7f) {
+      bytes[offset] = point
+      offset += 1
+    } else if (point <= 0x7ff) {
+      bytes[offset] = 0xc0 | (point >> 6)
+      bytes[offset + 1] = 0x80 | (point & 0x3f)
+      offset += 2
+    } else if (point <= 0xffff) {
+      bytes[offset] = 0xe0 | (point >> 12)
+      bytes[offset + 1] = 0x80 | ((point >> 6) & 0x3f)
+      bytes[offset + 2] = 0x80 | (point & 0x3f)
+      offset += 3
+    } else {
+      bytes[offset] = 0xf0 | (point >> 18)
+      bytes[offset + 1] = 0x80 | ((point >> 12) & 0x3f)
+      bytes[offset + 2] = 0x80 | ((point >> 6) & 0x3f)
+      bytes[offset + 3] = 0x80 | (point & 0x3f)
+      offset += 4
+      index += 1
+    }
+  }
+  return bytes.subarray(0, offset)
 }
 
 type Canonicalized = {
@@ -167,43 +189,57 @@ const releaseLock = (storage: object, key: SaveKey, lock: SaveLock): void => {
   if (locks.size === 0) saveLocks.delete(storage)
 }
 
+const readStoredEnvelope = <A, I>(
+  format: SaveFormat<A, I>,
+  stored: unknown,
+  maxBytes: number,
+): Effect.Effect<SaveEnvelope, SaveDecodeError> =>
+  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
+    Effect.mapError(
+      (cause) =>
+        new SaveDecodeError({
+          format: format.name,
+          version: 0,
+          reason: 'stored value is not a well-formed save envelope',
+          cause,
+        }),
+    ),
+    Effect.flatMap((envelope) => validateSaveEnvelope(envelope, maxBytes)),
+  )
+
 const decodeStored = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
   maxBytes: number,
 ): Effect.Effect<A, SaveDecodeError | MigrationError> =>
-  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
-    Effect.mapError(
-      (cause) =>
-        new SaveDecodeError({
-          format: format.name,
-          version: 0,
-          reason: 'stored value is not a well-formed save envelope',
-          cause,
-        }),
-    ),
-    Effect.flatMap((envelope) => validateSaveEnvelope(envelope, maxBytes)),
-    Effect.flatMap((envelope) => decodeSave(format, envelope)),
-  )
+  readStoredEnvelope(format, stored, maxBytes).pipe(Effect.flatMap((envelope) => decodeSave(format, envelope)))
 
-const validatedStoredEnvelope = <A, I>(
+const isFutureSaveDecodeError = <A, I>(
+  format: SaveFormat<A, I>,
+  envelope: SaveEnvelope,
+  error: SaveDecodeError,
+): boolean => envelope.format === format.name && isFromFuture(envelope, format.version) && error.version > format.version
+
+const recoverableCheckpoint = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
   maxBytes: number,
-): Effect.Effect<SaveEnvelope, SaveDecodeError | MigrationError> =>
-  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
-    Effect.mapError(
-      (cause) =>
-        new SaveDecodeError({
-          format: format.name,
-          version: 0,
-          reason: 'stored value is not a well-formed save envelope',
-          cause,
-        }),
-    ),
-    Effect.flatMap((envelope) => validateSaveEnvelope(envelope, maxBytes)),
-    Effect.tap((envelope) => decodeSave(format, envelope)),
-  )
+): Effect.Effect<Option.Option<SaveEnvelope>, SaveDecodeError> =>
+  Effect.gen(function* () {
+    const envelope = yield* readStoredEnvelope(format, stored, maxBytes).pipe(Effect.option)
+    if (Option.isNone(envelope)) return Option.none<SaveEnvelope>()
+
+    return yield* decodeSave(format, envelope.value).pipe(
+      Effect.as(Option.some(envelope.value)),
+      Effect.catchTags({
+        SaveDecodeError: (error) =>
+          isFutureSaveDecodeError(format, envelope.value, error)
+            ? Effect.fail(error)
+            : Effect.succeed(Option.none<SaveEnvelope>()),
+        MigrationError: () => Effect.succeed(Option.none<SaveEnvelope>()),
+      }),
+    )
+  })
 
 export const saveDurably = <A, I>(
   format: SaveFormat<A, I>,
@@ -225,11 +261,11 @@ export const saveDurably = <A, I>(
           previousKey(key),
         ])
         const latestGood = Option.isSome(latest)
-          ? yield* validatedStoredEnvelope(format, latest.value, maxBytes).pipe(Effect.option)
+          ? yield* recoverableCheckpoint(format, latest.value, maxBytes)
           : Option.none<SaveEnvelope>()
         const previousGood =
           Option.isNone(latestGood) && Option.isSome(previous)
-            ? yield* validatedStoredEnvelope(format, previous.value, maxBytes).pipe(Effect.option)
+            ? yield* recoverableCheckpoint(format, previous.value, maxBytes)
             : Option.none<SaveEnvelope>()
         const inherited = Option.isSome(latestGood)
           ? latestGood.value.extensions
@@ -268,13 +304,22 @@ export const loadDurably = <A, I>(
       if (Option.isNone(previous)) return Option.none<A>()
       return Option.some(yield* decodeStored(format, previous.value, maxBytes))
     }
-    return yield* decodeStored(format, latest.value, maxBytes).pipe(
+    const latestEnvelope = yield* Effect.either(readStoredEnvelope(format, latest.value, maxBytes))
+    if (latestEnvelope._tag === 'Left') {
+      return Option.isSome(previous)
+        ? yield* decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
+        : yield* Effect.fail(latestEnvelope.left)
+    }
+
+    return yield* decodeSave(format, latestEnvelope.right).pipe(
       Effect.map(Option.some),
       Effect.catchTags({
         SaveDecodeError: (latestError) =>
-          Option.isSome(previous)
-            ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
-            : Effect.fail(latestError),
+          isFutureSaveDecodeError(format, latestEnvelope.right, latestError)
+            ? Effect.fail(latestError)
+            : Option.isSome(previous)
+              ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
+              : Effect.fail(latestError),
         MigrationError: (latestError) =>
           Option.isSome(previous)
             ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))

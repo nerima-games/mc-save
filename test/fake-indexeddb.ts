@@ -99,12 +99,27 @@ type StoreState = {
   records: Map<string, StoredRecord>
 }
 
+/**
+ * `database` is set once the connection's own `IDBDatabase`-shaped object
+ * exists, so a LATER, higher-version open can fire `versionchange` on it —
+ * the real DOM mechanism that gives the adapter's `database.onversionchange`
+ * handler something to respond to, ahead of and instead of blocking forever.
+ * `undefined` for a connection synthesised directly by `holdOpenAt`, which
+ * models an uncooperative tab with no handler to call.
+ */
+type Connection = {
+  closed: boolean
+  database: (IdbDatabase & { onversionchange: ((event: never) => void) | null }) | undefined
+}
+
 type DatabaseState = {
   readonly name: string
   version: number
   readonly stores: Map<string, StoreState>
   /** Open connections that have not been closed, for the `blocked` path. */
-  readonly connections: Set<{ closed: boolean }>
+  readonly connections: Set<Connection>
+  /** Retries for an `open()` that reported `blocked`, run again from `close()`. */
+  pendingRetry: Array<() => void>
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +173,14 @@ export type FakeIndexedDb = IdbFactory & {
    */
   readonly failNextWrite: (name: string, message?: string) => void
   /**
+   * Fail the next write request with a cause that is NOT DOMException-shaped
+   * — unlike `failNextWrite`, no `name` is required to be a string. Models a
+   * medium response so malformed that even the failure cannot be trusted, the
+   * one case `readString`'s own defensive re-check (`domain/indexeddb-storage.ts`)
+   * exists for.
+   */
+  readonly corruptNextWriteWithMalformedCause: (cause: unknown) => void
+  /**
    * Abort the transaction the way a browser does — rolled back, `error` null —
    * immediately AFTER its next write lands.
    *
@@ -169,6 +192,12 @@ export type FakeIndexedDb = IdbFactory & {
    * anything.
    */
   readonly abortAfterNextWrite: () => void
+  /**
+   * Make the NEXT call to `transaction.abort()` throw this `DOMException`
+   * instead of performing the abort — see the doc comment on `abort` itself
+   * for why this is injected rather than reached.
+   */
+  readonly corruptNextAbort: (failure: IdbDomException) => void
   /** Hold `name` open at `version`, so the next open of a higher version blocks. */
   readonly holdOpenAt: (name: string, version: number) => void
   /** Every database name that exists, for the row #9 port. */
@@ -181,12 +210,58 @@ export type FakeIndexedDb = IdbFactory & {
   readonly recordsOf: (name: string, store: string) => ReadonlyArray<unknown> | undefined
   /** Seed a database as an older build would have left it. */
   readonly seed: (name: string, version: number, store: string, records: ReadonlyArray<unknown>) => void
+  /**
+   * Seed a store the way `seed` does, but index each record under an EXPLICIT
+   * key rather than a `key` field the record itself must carry.
+   *
+   * `seed` (and `put`'s `primaryKeyOf`) both require the stored value's own
+   * `key` field to be a string, because that is the only shape this adapter
+   * ever writes — so `readEnvelope`'s own defensive check for a record
+   * present at a real IndexedDB key but with no string `key` field of its own
+   * (`domain/indexeddb-storage.ts`) can never be reached through either. Real
+   * IndexedDB does not share that restriction: a `keyPath` store only
+   * requires SOME value at the key path, of any valid IndexedDB key type, so
+   * a foreign or legacy writer could leave a record whose own `key` field
+   * disagrees with the key IndexedDB actually stored it under. This is that.
+   */
+  readonly seedAt: (
+    name: string,
+    version: number,
+    store: string,
+    entries: ReadonlyArray<{ readonly key: string; readonly value: unknown }>,
+  ) => void
+  /**
+   * Make the next `by-insertion` index `getAllKeys()` answer THIS instead of
+   * the real key list.
+   *
+   * The only way to exercise `readKeys`'s two throws in
+   * `domain/indexeddb-storage.ts`: under this fake's own invariants
+   * (`primaryKeyOf` on `put`, and the string-key guard in `seed`), the real
+   * path can never produce anything but a well-formed array of string keys, so
+   * there is no legitimate sequence of `put`/`seed` calls that reaches either
+   * throw. This overrides the medium's answer for exactly one call, the same
+   * way `failNextWrite` and `abortAfterNextWrite` inject a medium fault rather
+   * than a domain one.
+   */
+  readonly corruptNextIndexKeys: (value: unknown) => void
 }
 
 export const makeFakeIndexedDb = (): FakeIndexedDb => {
   const databases = new Map<string, DatabaseState>()
   let pendingWriteFailure: IdbDomException | undefined
+  /**
+   * Like `pendingWriteFailure`, but not run through `domException`'s
+   * string-typed `name` parameter — so a value that is NOT DOMException-shaped
+   * can be injected verbatim. `readString` (`domain/indexeddb-storage.ts`)
+   * defensively re-checks that a cause's `name` is actually a string before
+   * trusting it for the quota comparison; every cause this fake otherwise
+   * produces already satisfies that, by construction, so there is no other
+   * way to exercise the defensive check being false.
+   */
+  let pendingMalformedWriteFailure: { readonly value: unknown } | undefined
   let pendingAbort = false
+  let pendingIndexKeysOverride: { readonly value: unknown } | undefined
+  let pendingAbortFailure: IdbDomException | undefined
 
   const stringList = (names: ReadonlyArray<string>): IdbStringList => ({
     length: names.length,
@@ -199,7 +274,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     if (existing !== undefined) {
       return existing
     }
-    const created: DatabaseState = { name, version: 0, stores: new Map(), connections: new Set() }
+    const created: DatabaseState = { name, version: 0, stores: new Map(), connections: new Set(), pendingRetry: [] }
     databases.set(name, created)
     return created
   }
@@ -244,6 +319,24 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         return objectStore
       },
       abort: () => {
+        // Real IndexedDB throws `InvalidStateError` when `abort()` is called
+        // on a transaction whose state is already committing or finished —
+        // the case `domain/indexeddb-storage.ts`'s `guard` and `onResult`
+        // handle by falling back to reporting the ORIGINAL failure rather
+        // than losing it to a second, unrelated error. Nothing this adapter
+        // does can make that race happen through legitimate use (it issues
+        // one request at a time and aborts at most once per transaction), so
+        // this injects the medium-level failure directly, the same way
+        // `failNextWrite` injects a write failure the request layer alone
+        // cannot produce.
+        if (pendingAbortFailure !== undefined) {
+          const failure = pendingAbortFailure
+          pendingAbortFailure = undefined
+          // `IdbDomException` is a plain `{ name, message }` shape (see
+          // `indexeddb-surface.ts`), not an `Error`; a real `abort()` throws
+          // an actual `DOMException` instance, so wrap it the same way here.
+          throw new DOMException(failure.message, failure.name)
+        }
         abortWith(null)
       },
       error: null,
@@ -321,6 +414,17 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           return
         }
 
+        if (isWrite && pendingMalformedWriteFailure !== undefined) {
+          const { value } = pendingMalformedWriteFailure
+          pendingMalformedWriteFailure = undefined
+          // Cast deliberately: this is the one path that bypasses the
+          // DOMException shape the rest of the fake enforces, on purpose.
+          request.error = value as IdbDomException
+          request.onerror?.(undefined as never)
+          failWith(value as IdbDomException)
+          return
+        }
+
         const injected = isWrite ? pendingWriteFailure : undefined
         if (injected !== undefined) {
           pendingWriteFailure = undefined
@@ -392,7 +496,15 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           })
 
       return {
-        getAllKeys: () => submit(() => ordered().map((record) => record.key), false),
+        getAllKeys: () =>
+          submit(() => {
+            if (pendingIndexKeysOverride !== undefined) {
+              const { value } = pendingIndexKeysOverride
+              pendingIndexKeysOverride = undefined
+              return value
+            }
+            return ordered().map((record) => record.key)
+          }, false),
         openCursor: (_query, direction) =>
           submit(() => {
             const rows = ordered()
@@ -465,7 +577,17 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       onblocked: null,
     }
 
-    later(() => {
+    /**
+     * One attempt to complete this open. Re-invoked, via `state.pendingRetry`,
+     * when a connection that was blocking this exact request later closes —
+     * mirroring the real DOM: `blocked` does not kill the request, it stays
+     * pending and can still fire `upgradeneeded`/`success` once whatever was
+     * in the way leaves. Without a retry path, `settle`'s own "already
+     * settled" guard (`domain/indexeddb-storage.ts`) — there specifically
+     * because a real request CAN report twice — would have nothing to guard
+     * against here.
+     */
+    const attempt = (): void => {
       const state = ensureDatabase(name)
       const wanted = version ?? Math.max(state.version, 1)
 
@@ -478,16 +600,38 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         return
       }
 
+      if (wanted > state.version) {
+        // The real DOM fires `versionchange` on every OTHER live connection
+        // BEFORE deciding whether the open is blocked, giving each one a
+        // chance to `close()` itself in response — which is the entire reason
+        // `domain/indexeddb-storage.ts` registers `database.onversionchange`.
+        // A cooperative connection (this adapter's) closes synchronously here
+        // and so is gone from `state.connections` by the time `blocking` is
+        // computed below; an uncooperative one (no handler, e.g. one
+        // synthesised by `holdOpenAt`) is not, and genuinely blocks.
+        for (const other of state.connections) {
+          other.database?.onversionchange?.(undefined as never)
+        }
+      }
+
       const blocking = [...state.connections].some((connection) => !connection.closed)
       if (wanted > state.version && blocking) {
         // Exactly the DOM's behaviour: the open does NOT fail and does NOT
-        // proceed. It simply stays pending, forever if nobody closes. The
-        // adapter refuses to wait, and this is what it is refusing.
+        // proceed on its own. It reports `blocked` and stays pending — retried
+        // from `close()` below once every connection in the way has left.
+        //
+        // Registered BEFORE `onblocked` fires, deliberately: a handler that
+        // closes the blocking connection synchronously (as this adapter's own
+        // `onversionchange` does) must find the retry already queued, or the
+        // wake-up it just caused has nothing to wake.
+        state.pendingRetry.push(() => {
+          later(attempt)
+        })
         request.onblocked?.(undefined as never)
         return
       }
 
-      const connection = { closed: false }
+      const connection: Connection = { closed: false, database: undefined }
       state.connections.add(connection)
 
       const database: IdbDatabase & { onversionchange: ((event: never) => void) | null } = {
@@ -530,26 +674,31 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         close: () => {
           connection.closed = true
           state.connections.delete(connection)
+          // Wake up anyone whose `open()` reported `blocked` on account of
+          // this connection. Snapshot-and-clear rather than iterate-in-place:
+          // a retry that blocks again pushes a NEW entry onto `pendingRetry`,
+          // and running that in the same pass would be an infinite loop.
+          if (state.pendingRetry.length > 0) {
+            const retries = state.pendingRetry
+            state.pendingRetry = []
+            for (const retry of retries) retry()
+          }
         },
         onversionchange: null,
       }
 
+      connection.database = database
       opened = database
 
       if (wanted > state.version) {
-        // Other connections are told to get out of the way first — this is what
-        // makes the adapter's `onversionchange` handler observable.
-        for (const other of state.connections) {
-          if (other !== connection) {
-            other.closed = true
-          }
-        }
         state.version = wanted
         request.onupgradeneeded?.(undefined as never)
       }
 
       request.onsuccess?.(undefined as never)
-    })
+    }
+
+    later(attempt)
 
     return request
   }
@@ -569,13 +718,21 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     failNextWrite: (name, message = name) => {
       pendingWriteFailure = domException(name, message)
     },
+    corruptNextWriteWithMalformedCause: (cause) => {
+      pendingMalformedWriteFailure = { value: cause }
+    },
     abortAfterNextWrite: () => {
       pendingAbort = true
+    },
+    corruptNextAbort: (failure) => {
+      pendingAbortFailure = failure
     },
     holdOpenAt: (name, version) => {
       const state = ensureDatabase(name)
       state.version = version
-      state.connections.add({ closed: false })
+      // No `database`, deliberately: this connection has no handler to call,
+      // the uncooperative tab this method exists to model.
+      state.connections.add({ closed: false, database: undefined })
     },
     databaseNames: () => [...databases.keys()],
     storeNamesOf: (name) => {
@@ -609,6 +766,23 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         }
       }
       state.stores.set(store, created)
+    },
+    seedAt: (name, version, store, entries) => {
+      const state = ensureDatabase(name)
+      state.version = version
+      const created: StoreState = {
+        name: store,
+        keyPath: 'key',
+        indexes: new Map([['by-insertion', 'seq']]),
+        records: new Map(),
+      }
+      for (const { key, value } of entries) {
+        created.records.set(key, { key, value })
+      }
+      state.stores.set(store, created)
+    },
+    corruptNextIndexKeys: (value) => {
+      pendingIndexKeysOverride = { value }
     },
   }
 }

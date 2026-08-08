@@ -5,7 +5,7 @@
 | コマンド | 内容 |
 | --- | --- |
 | `pnpm typecheck` | `tsconfig.build.json`（出荷ソース）と `tsconfig.test.json`（テスト+ツール）の両方 |
-| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
+| `pnpm lint` | oxlint。このリポジトリ唯一の lint/format 設定（prettier も biome も .editorconfig も置かない）。package.json の devDependency ではなく flake.nix の devShell が提供する（org 全体で単一バージョンに固定するため。CI では `nix develop --command pnpm lint` として実行する）。**`--deny-warnings` 付きで走る**ため、`warn` のルールもビルドを落とす（`.oxlintrc.json` は `correctness`/`suspicious`/`perf` の3カテゴリを丸ごと `warn` にし、`style`/`restriction` は個別に選んだルールだけを `warn` にしている(合計87ルールが `warn`)。`error` は2つだけ。このフラグが無かった頃は実質その2つしかゲートになっていなかった）。`@nerima-games/*` の依存境界も `no-restricted-imports` としてここに含まれる（[DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md) §5） |
 | `pnpm test` | vitest（`@effect/vitest` の `it.effect` が主 API） |
 | `pnpm test:coverage` | カバレッジ計測 + 99% 閾値ゲート（後述）。`verify` には含めない |
 | `pnpm verify` | `typecheck && lint && test` の 3 段。CI と同一内容（[TEST_STANDARD.md](https://github.com/nerima-games/.github/blob/main/TEST_STANDARD.md) §1） |
@@ -22,17 +22,20 @@ raw clock read 禁止は、oxlint がそれを表現できるルールを実装�
 
 `test/dependency-policy.test.ts`（旧・`scripts/check-dependency-whitelist.ts` の単体テスト）と
 `test/api-lock.test.ts`（旧・`scripts/api-lock.ts` の単体テスト）は、それぞれが検証対象としていた
-スクリプトの廃止に伴い削除した。現状の6ファイル・70 tests:
+スクリプトの廃止に伴い削除した。現状の9ファイル・93 tests:
 
 ```
 test/format-roundtrip.test.ts       12 tests   コーデックのラウンドトリップ、連鎖検証
 test/migration.test.ts               8 tests   マイグレーション（リネームを含む）、Port 経由のロード
-test/storage-port.test.ts            8 tests   StoragePort の契約テスト（インメモリ）
+test/storage-port.test.ts            10 tests  StoragePort の契約テスト（インメモリ）
 test/binary-roundtrip.test.ts        5 tests   バイナリペイロードのラウンドトリップ
 test/legacy-save-compat.test.ts     10 tests   旧セーブ fixture との互換性（§3）
-test/indexeddb-storage.test.ts      27 tests   IndexedDB アダプタ + 契約テスト（fake 経由）
+test/persistence-listing.test.ts      4 tests   一覧取得時の破損隔離とストレージエラー
+test/durable-save.test.ts             11 tests  耐久チェックポイントとセーブ整合性
+test/indexeddb-storage.test.ts       31 tests  IndexedDB アダプタ + 契約テスト（fake 経由）
+test/public-api.test.ts                2 tests  バレルの実行時 export と StorageService 境界
                                     ─────
-                                     70 tests   全て green
+                                     93 tests   全て green
 ```
 
 ### 契約テストという書き方
