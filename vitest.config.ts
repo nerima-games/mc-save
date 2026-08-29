@@ -5,14 +5,8 @@ export default defineConfig({
     environment: 'node',
     globals: false,
     pool: 'forks',
-    poolOptions: {
-      forks: {
-        maxForks: '50%',
-        minForks: 1,
-        isolate: true,
-        singleFork: false,
-      },
-    },
+    maxWorkers: '50%',
+    isolate: true,
     include: ['test/**/*.test.ts'],
     exclude: ['**/node_modules/**', '**/dist/**', '**/coverage/**', '**/.git/**'],
     testTimeout: 10000,
@@ -42,14 +36,12 @@ export default defineConfig({
         // `lib.dom.d.ts`) rather than by executing it.
         'src/domain/indexeddb-surface.ts',
       ],
-      all: true,
       reporter: ['text', 'json', 'html', 'lcov'],
       reportsDirectory: './coverage',
-      // Org-wide decision (TEST_STANDARD.md §3): 99% on all four metrics,
-      // enabled immediately and uniformly, no staged rollout. See
-      // docs/testing.md §5 for this repository's measured baseline at the time
-      // this gate was turned on.
-      thresholds: { branches: 99, functions: 99, lines: 99, statements: 99 },
+      // Every executable path in this small package is part of the public
+      // contract. Keep all four metrics at 100% so a new branch cannot ship
+      // without an executable test.
+      thresholds: { branches: 100, functions: 100, lines: 100, statements: 100 },
     },
   },
   esbuild: {

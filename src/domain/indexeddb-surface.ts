@@ -17,16 +17,13 @@
  * a DOM-wide lib is the same mistake one level down, about WHERE.
  *
  * `docs/responsibility.md` (§ the risk table) proposed isolating the adapter in
- * a second tsconfig instead. That is rejected here on a mechanical consequence
- * rather than on taste, the same one mc-render found. At the time this
- * decision was made, `scripts/api-lock.ts` built its report from
- * `REPOSITORY_POLICY.tsconfigFile` = `tsconfig.build.json`, and
- * `scripts/check-dependency-whitelist.ts` classified shipped source as
- * `index.ts` plus `domain/` (both scripts have since been retired in favour of
- * org-standard tooling — see docs/testing.md — but the shipped-source
- * boundary they enforced is now `tsconfig.build.json` / `.oxlintrc.json`'s `src`
- * target, and the argument is unchanged). An adapter outside
- * `tsconfig.build.json` could not be re-exported from `src/index.ts` without
+ * a second tsconfig instead. The current release build keeps the structural
+ * surface inside the release source graph (`tsconfig.release.json`) while
+ * `tsconfig.base.json` remains platform-free. The fixture at
+ * `test/fixtures/indexeddb-surface.ts` compiles the adapter's expected surface
+ * against `lib.dom.d.ts`, and lint plus package verification cover the shipped
+ * source and output boundaries. An adapter outside the release source graph
+ * could not be re-exported from `src/index.ts` without
  * silently falling outside every gate that scans shipped source — so the one
  * file in this repository that talks to a real medium would be the one file
  * no gate could see.
@@ -88,12 +85,9 @@
  *   > mc-save ではスキーマ移行は `defineFormat` の連鎖が担い、
  *   > IndexedDB の `upgrade` はストア構造の変更だけに限定する（責務を混ぜない）。
  *
- * The reference implementation broke that rule by accident and got away with
- * it: `idb-utils.ts:222` passed `event.oldVersion` to a callback whose only
- * caller (`storage-service.ts:55-62`) discarded the argument, so its data-rewrite
- * path never ran once in production. Making the event unreadable turns "do not
- * branch the upgrade on the old version" from a convention someone must
- * remember into something the type system refuses to express.
+ * Making the event unreadable turns "do not branch the upgrade on the old
+ * version" from a convention someone must remember into something the type
+ * system refuses to express.
  *
  * If a future layout change genuinely needs the old version, the fix is NOT to
  * widen this parameter — it is to reconsider, and only then to move that one
@@ -112,8 +106,8 @@
  * type whose members are all optional is a "weak type" that TypeScript refuses
  * to accept an unrelated source for.
  *
- * `code` is deliberately absent. It is the deprecated numeric legacy of the
- * same information, and reading it would give the mapping a second, older
+ * `code` is deliberately absent. It is an obsolete numeric representation of
+ * the same information, and reading it would give the mapping a second
  * spelling of a question `name` already answers.
  */
 export type IdbDomException = {
@@ -156,17 +150,19 @@ export type IdbRequest = {
  */
 export type IdbOpenRequest = IdbRequest & {
   readonly result: IdbDatabase
+  /** The active version-change transaction, or `null` outside the upgrade callback. */
+  readonly transaction: IdbTransaction | null
   onupgradeneeded: ((event: never) => void) | null
   onblocked: ((event: never) => void) | null
 }
 
 /**
- * `DOMStringList`, as `objectStoreNames` returns it.
+ * `DOMStringList`, as `objectStoreNames` and `indexNames` return it.
  *
  * Modelled with `contains` rather than by iterating, because the only questions
- * the adapter and its tests ask are "is our store there" and "what is in this
- * database". `DOMStringList` is not declared iterable in `lib.dom.d.ts`, so
- * spreading it would not have compiled against the real thing anyway — the
+ * the adapter and its tests ask are "is our store/index there" and "what is
+ * in this database". `DOMStringList` is not declared iterable in `lib.dom.d.ts`,
+ * so spreading it would not have compiled against the real thing anyway — the
  * fixture would have caught it.
  */
 export type IdbStringList = {
@@ -204,6 +200,8 @@ export type IdbIndex = {
  * ranges it would never be asked for.
  */
 export type IdbObjectStore = {
+  /** The indexes currently present; used to repair an older structural layout. */
+  readonly indexNames: IdbStringList
   readonly get: (key: string) => IdbRequest
   /** In-line keys: the record carries its own key at `keyPath`, so no second argument. */
   readonly put: (value: unknown) => IdbRequest
@@ -220,9 +218,8 @@ export type IdbObjectStore = {
  *
  *   - `oncomplete` — the write is durable. ONLY here may a write be reported as
  *     having succeeded. A `put` request firing `onsuccess` means the value
- *     reached the transaction, not the disk; the reference implementation
- *     resolved on the request (`idb-utils.ts`) and therefore told the caller a
- *     save had happened while it could still be rolled back.
+ *     reached the transaction, not durable storage; this adapter reports
+ *     success only after `oncomplete` fires.
  *   - `onerror` — a request failed and the transaction is unwinding.
  *   - `onabort` — the transaction was rolled back, possibly by the browser
  *     under storage pressure and possibly with `error` null.

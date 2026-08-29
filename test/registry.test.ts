@@ -1,33 +1,26 @@
-import { describe, expect, it } from '@effect/vitest'
+import { describe, expect } from 'vitest'
+import { effect } from './support/effect-test.js'
 import { Effect, Either, Option, Schema } from 'effect'
-import { DuplicateFormatError } from '../src/domain/errors'
-import { defineFormat } from '../src/domain/format'
+import { DuplicateFormatError } from '../src/domain/errors.js'
+import { defineFormat } from '../src/domain/format.js'
 import {
   describeRegistry,
   emptyRegistry,
   lookupFormat,
   registerFormat,
   registerFormats,
-  type AnySaveFormat,
-} from '../src/domain/registry'
+  type RegisteredSaveFormat,
+} from '../src/domain/registry.js'
 
-const formatNamed = (name: string, version = 1): AnySaveFormat =>
+const formatNamed = (name: string, version = 1): RegisteredSaveFormat =>
   defineFormat({
     name,
     version,
     schema: Schema.Unknown,
-    // A complete, trivial chain so a version above 1 stays well-formed;
-    // `defineFormat` refuses a gap, and these tests are about the registry,
-    // not about migrations.
-    migrations: Array.from({ length: version - 1 }, (_unused, index) => ({
-      from: index + 1,
-      describe: 'noop',
-      migrate: (payload: unknown) => Effect.succeed(payload),
-    })),
   })
 
 describe('registerFormat', () => {
-  it.effect('adds a format to an empty registry, findable by name afterwards', () =>
+  effect('adds a format to an empty registry, findable by name afterwards', () =>
     Effect.sync(() => {
       const alpha = formatNamed('mc-save/test/alpha')
       const result = registerFormat(emptyRegistry, alpha)
@@ -39,7 +32,7 @@ describe('registerFormat', () => {
     }),
   )
 
-  it.effect('refuses a second format registered under a name already taken', () =>
+  effect('refuses a second format registered under a name already taken', () =>
     Effect.sync(() => {
       const first = formatNamed('mc-save/test/dup')
       const second = formatNamed('mc-save/test/dup', 2)
@@ -52,7 +45,7 @@ describe('registerFormat', () => {
     }),
   )
 
-  it.effect('does not mutate the registry it was given', () =>
+  effect('does not mutate the registry it was given', () =>
     Effect.sync(() => {
       // The header says registration "never mutates in place and never
       // silently overwrites" — worth its own assertion since a mutating bug
@@ -67,7 +60,7 @@ describe('registerFormat', () => {
 })
 
 describe('registerFormats', () => {
-  it.effect('registers every format when none collide', () =>
+  effect('registers every format when none collide', () =>
     Effect.sync(() => {
       const alpha = formatNamed('mc-save/test/alpha')
       const beta = formatNamed('mc-save/test/beta')
@@ -82,7 +75,7 @@ describe('registerFormats', () => {
     }),
   )
 
-  it.effect('stops at the first duplicate, via Either.flatMap short-circuiting the reduce', () =>
+  effect('stops at the first duplicate, via Either.flatMap short-circuiting the reduce', () =>
     Effect.sync(() => {
       const alpha = formatNamed('mc-save/test/alpha')
       const alphaAgain = formatNamed('mc-save/test/alpha', 2)
@@ -98,7 +91,7 @@ describe('registerFormats', () => {
 })
 
 describe('lookupFormat', () => {
-  it.effect('finds a registered format', () =>
+  effect('finds a registered format', () =>
     Effect.sync(() => {
       const alpha = formatNamed('mc-save/test/alpha')
       const registry = registerFormat(emptyRegistry, alpha)
@@ -108,7 +101,7 @@ describe('lookupFormat', () => {
     }),
   )
 
-  it.effect('reports an unregistered name as none', () =>
+  effect('reports an unregistered name as none', () =>
     Effect.sync(() => {
       expect(lookupFormat(emptyRegistry, 'mc-save/test/never-registered')).toStrictEqual(Option.none())
     }),
@@ -116,13 +109,13 @@ describe('lookupFormat', () => {
 })
 
 describe('describeRegistry', () => {
-  it.effect('is empty for an empty registry', () =>
+  effect('is empty for an empty registry', () =>
     Effect.sync(() => {
       expect(describeRegistry(emptyRegistry)).toStrictEqual([])
     }),
   )
 
-  it.effect('sorts every registered format by name, regardless of registration order', () =>
+  effect('sorts every registered format by name, regardless of registration order', () =>
     Effect.sync(() => {
       // Registered out of alphabetical order on purpose: the comparator at the
       // bottom of describeRegistry is what this test is actually exercising.
@@ -141,7 +134,7 @@ describe('describeRegistry', () => {
     }),
   )
 
-  it.effect('the comparator does not reorder two equally-named entries', () =>
+  effect('the comparator does not reorder two equally-named entries', () =>
     Effect.sync(() => {
       // `registerFormat`/`registerFormats` enforce name-uniqueness (a Map keyed
       // by name), so this state cannot arise through the module's own public
@@ -169,7 +162,7 @@ describe('describeRegistry', () => {
 })
 
 describe('DuplicateFormatError', () => {
-  it.effect('renders a message naming the format that collided', () =>
+  effect('renders a message naming the format that collided', () =>
     Effect.sync(() => {
       expect(new DuplicateFormatError({ format: 'x' }).message).toBe('save format "x" is already registered')
     }),

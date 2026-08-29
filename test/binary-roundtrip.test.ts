@@ -1,11 +1,6 @@
 /**
- * PORTED E2E: `storage-service IndexedDB roundtrip works in Chromium`.
- *
- * Reference: ts-minecraft/e2e/contracts/browser-api-contracts.e2e.ts:55-67 and
- * its in-page runner, e2e/contracts/storage-service-contract-runner.ts.
- * mc-compose/docs/e2e-triage.md §3.2 row #8 sends it here, and states why: the
- * reference put it under `e2e/contracts/` only because it had no boundary that
- * owned persistence. mc-save is that boundary.
+ * Browser-facing persistence contract: an encoded binary payload survives a
+ * storage round trip without losing its byte representation.
  *
  * ---------------------------------------------------------------------------
  * The claim, restated
@@ -21,8 +16,8 @@
  *   'StorageService.loadChunk returned none after saveChunk' otherwise.
  *
  * Not one of those four needs IndexedDB to be *asked*. What needs IndexedDB is
- * only the medium the bytes cross, and see `throughStructuredClone` below for
- * exactly how much of that medium is reproduced here and how much is not.
+ * only the medium the bytes cross, and the canonical in-memory adapter applies
+ * the same structured-clone value boundary as IndexedDB.
  *
  * A chunk is also the payload mc-save exists to serve and the only one it had
  * never been tested with: every existing test in this repository saves a plain
@@ -40,12 +35,14 @@
  * point was to regenerate the chunk — the house the player built, replaced by
  * fresh terrain, with a console line as the only notice.
  */
-import { describe, expect, it } from '@effect/vitest'
-import { Effect, Layer, Option, Schema } from 'effect'
-import type { SaveEnvelope } from '../src/domain/envelope'
-import { defineFormat, encodeSave } from '../src/domain/format'
-import { loadFrom, saveTo } from '../src/domain/persistence'
-import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage-port'
+import { describe, expect } from 'vitest'
+import { effect } from './support/effect-test.js'
+import { Effect, Option, Schema } from 'effect'
+import { defineFormat, encodeSave } from '../src/domain/format.js'
+import { loadFrom, saveTo } from '../src/domain/persistence.js'
+import { InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port.js'
+import { fixedUint8Array } from '../src/domain/binary.js'
+import { sealedTestEnvelope } from './support/save-envelope.js'
 
 /**
  * A chunk, as mc-worldgen would define it.
@@ -57,14 +54,13 @@ import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage
  * that has an optional field and never proves it survives a round trip has not
  * tested the mechanism the whole save system rested on.
  *
- * `Schema.Uint8Array` and not `Schema.Uint8ArrayFromSelf`: the encoded payload
- * is the WIRE shape, on the same rule `test/format-roundtrip.test.ts` states
- * for `Date`. A save file that can only be read by a JavaScript runtime is the
- * reference's mistake, not a constraint.
+ * `fixedUint8Array` retains the WIRE shape of `Schema.Uint8Array` while making
+ * the dimension invariant executable. A save file that can only be read by a
+ * JavaScript runtime is the reference's mistake, not a constraint.
  */
 const ChunkSchema = Schema.Struct({
-  blocks: Schema.Uint8Array,
-  fluid: Schema.optional(Schema.Uint8Array),
+  blocks: fixedUint8Array(4),
+  fluid: Schema.optional(fixedUint8Array(4)),
 })
 
 type Chunk = Schema.Schema.Type<typeof ChunkSchema>
@@ -90,48 +86,35 @@ const SAVED_BLOCKS = new Uint8Array([1, 2, 3, 4])
 const SAVED_FLUID = new Uint8Array([9, 8, 7, 6])
 
 /**
- * A `StoragePort` that puts every envelope through the structured clone
- * algorithm on the way in and on the way out.
- *
- * WHAT THIS DOES REPRODUCE. IndexedDB stores values by the structured clone
- * algorithm, so "will this envelope survive being written to a store and read
- * back" is, for the value itself, the same question `structuredClone` answers.
- * A payload holding something unclonable — a function, a closure, a class
- * instance whose prototype matters — fails here for the same reason and with
- * the same shape of error it fails in a browser. The plain in-memory adapter
- * cannot catch any of that: it hands back the identical object it was given, so
- * a round-trip test written against it asserts nothing about serialisation and
- * would go green on a format that no medium could store.
- *
- * WHAT THIS DOES NOT REPRODUCE: transactions, `onupgradeneeded` and store
- * creation, quota, key ordering under a real index, and error mapping from
- * `DOMException`.
- *
- * Those belong to the IndexedDB adapter, and they are no longer a browser
- * question: the adapter exists (`domain/indexeddb-storage.ts`) and every one of
- * them is tested against `test/fake-indexeddb.ts`, whose own header draws this
- * same line for what IT does and does not stand in for. What remains a browser
- * question is only real durability across a reload and real quota pressure.
- *
- * This file is still deliberately written against `StoragePort` rather than
- * against a database, because its claim is about the CODEC and the value that
- * crosses the medium, not about the medium. `domain/storage-port.ts` promised
- * the contract block would be "re-run against the IndexedDB adapter when it
- * lands"; it landed, and that promise is kept in
- * `test/storage-port-contract.ts`.
+ * This file stays against `StoragePort` because its claim is about the codec
+ * and the value crossing the medium, not about IndexedDB transactions. The
+ * canonical in-memory adapter applies structured clone on both sides of the
+ * port, while the adapter-specific transaction and DOM error behavior is
+ * covered by the IndexedDB tests.
  */
-const throughStructuredClone: Layer.Layer<StoragePort> = Layer.effect(
-  StoragePort,
-  Effect.map(makeInMemoryStorage, (inner) => ({
-    ...inner,
-    put: (key: SaveKey, envelope: SaveEnvelope) => inner.put(key, structuredClone(envelope)),
-    get: (key: SaveKey) =>
-      Effect.map(inner.get(key), Option.map((envelope: SaveEnvelope) => structuredClone(envelope))),
-  })),
-)
+const storageLayer = InMemoryStorageLayer
 
 describe('a chunk across the storage medium', () => {
-  it.effect('the bytes come back byte-for-byte', () =>
+  effect('rejects a chunk buffer with the wrong exact length', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+
+      yield* storage.put(CHUNK_KEY, sealedTestEnvelope(ChunkFormat.name, ChunkFormat.version, { blocks: [1, 2, 3] }))
+
+      const loaded = yield* Effect.either(loadFrom(ChunkFormat, CHUNK_KEY))
+
+      expect(loaded).toMatchObject({
+        _tag: 'Left',
+        left: {
+          _tag: 'SaveDecodeError',
+          format: ChunkFormat.name,
+          version: ChunkFormat.version,
+        },
+      })
+    }).pipe(Effect.provide(storageLayer)),
+  )
+
+  effect('the bytes come back byte-for-byte', () =>
     Effect.gen(function* () {
       const chunk: Chunk = { blocks: SAVED_BLOCKS, fluid: SAVED_FLUID }
 
@@ -149,10 +132,10 @@ describe('a chunk across the storage medium', () => {
         // assertions above and be useless to a mesher.
         expect(loaded.value.blocks).toBeInstanceOf(Uint8Array)
       }
-    }).pipe(Effect.provide(throughStructuredClone)),
+    }).pipe(Effect.provide(storageLayer)),
   )
 
-  it.effect('a save that reads back as absent is a lost world, so it must not', () =>
+  effect('a save that reads back as absent is a lost world, so it must not', () =>
     Effect.gen(function* () {
       // The runner's own failure case, verbatim in intent:
       //   Effect.fail(new Error('StorageService.loadChunk returned none after saveChunk'))
@@ -163,10 +146,10 @@ describe('a chunk across the storage medium', () => {
       const loaded = yield* loadFrom(ChunkFormat, CHUNK_KEY)
 
       expect(Option.isNone(loaded)).toBe(false)
-    }).pipe(Effect.provide(throughStructuredClone)),
+    }).pipe(Effect.provide(storageLayer)),
   )
 
-  it.effect('an omitted optional buffer stays omitted; nothing is invented for it', () =>
+  effect('an omitted optional buffer stays omitted; nothing is invented for it', () =>
     Effect.gen(function* () {
       // The reference only ever wrote `fluid`, so the branch where a chunk has
       // no fluid at all — every chunk above sea level — was never exercised.
@@ -181,10 +164,10 @@ describe('a chunk across the storage medium', () => {
         expect(loaded.value.fluid).toBeUndefined()
         expect([...loaded.value.blocks]).toStrictEqual([1, 2, 3, 4])
       }
-    }).pipe(Effect.provide(throughStructuredClone)),
+    }).pipe(Effect.provide(storageLayer)),
   )
 
-  it.effect('what crosses the medium is a wire array, not a runtime buffer', () =>
+  effect('what crosses the medium is a wire array, not a runtime buffer', () =>
     Effect.gen(function* () {
       // The reference asserted `[1, 2, 3, 4]` on the far side of the browser
       // and never looked at what was stored, because what was stored was a
@@ -206,7 +189,7 @@ describe('a chunk across the storage medium', () => {
    * of that row's claim mc-save can state at all: a save that was written is
    * enumerable afterwards.
    */
-  it.effect('a written chunk shows up in the enumeration, not only under its own key', () =>
+  effect('a written chunk shows up in the enumeration, not only under its own key', () =>
     Effect.gen(function* () {
       const storage = yield* StoragePort
 
@@ -215,63 +198,24 @@ describe('a chunk across the storage medium', () => {
       yield* saveTo(ChunkFormat, CHUNK_KEY, { blocks: SAVED_BLOCKS })
 
       expect(yield* storage.keys).toStrictEqual([CHUNK_KEY])
-    }).pipe(Effect.provide(throughStructuredClone)),
+    }).pipe(Effect.provide(storageLayer)),
+  )
+})
+
+describe('fixedUint8Array', () => {
+  effect('rejects invalid lengths before a format can ship', () =>
+    Effect.sync(() => {
+      expect(() => fixedUint8Array(-1)).toThrow(RangeError)
+      expect(() => fixedUint8Array(1.5)).toThrow(RangeError)
+      expect(() => fixedUint8Array(Number.POSITIVE_INFINITY)).toThrow(RangeError)
+    }),
   )
 })
 
 /**
- * ---------------------------------------------------------------------------
- * Triage row #9 — WHY IT IS NOT PORTED *HERE*
- * ---------------------------------------------------------------------------
- *
- * UPDATE. Reason (a) below has since been answered: the IndexedDB adapter was
- * written (`domain/indexeddb-storage.ts`), and row #9 is now ported, in
- * `test/indexeddb-storage.test.ts`, as the ADAPTER TEST the triage said it
- * should become. Reason (b) was NOT answered and never will be — it is a
- * design decision, not a gap — so the port asserts this adapter's own store
- * layout and deliberately does not assert `chunks` and `metadata`.
- *
- * The test above is still NOT that port, and its label is still correct. It
- * makes the one claim in row #9 that is about PERSISTENCE rather than about the
- * MEDIUM — that a save which was written is enumerable afterwards — and it makes
- * it through `StoragePort` with no database anywhere in sight. That is why it
- * belongs in this file and not in that one.
- *
- * The original reasoning is kept verbatim below, because it is what the port
- * was built to satisfy.
- *
- * `'minecraft-worlds' IndexedDB is created after game starts`
- * (ts-minecraft/e2e/persistence/save-load.e2e.ts:37-46) asserts three things
- * through `e2e/helpers/db-helpers.ts`:
- *
- *   1. a database NAMED `minecraft-worlds` exists      — `indexedDB.databases()`
- *   2. it has object stores named `chunks` and `metadata`
- *                                                      — `IDBDatabase.objectStoreNames`
- *   3. the `metadata` store is non-empty               — `IDBObjectStore.count()`
- *
- * Two independent things block it, and neither is a matter of effort:
- *
- * (a) THERE IS NO ADAPTER TO ASK. `StoragePort` has exactly two
- *     implementations in this repository, `makeInMemoryStorage` and
- *     `failingStorageLayer`. Neither has a database name or an object store,
- *     because neither has a database. `tsconfig.base.json` says the same thing
- *     from the other side: `lib` is `["ES2024"]` with no `"DOM"`, and its
- *     comment records that the IndexedDB adapter is the one thing that would
- *     add it.
- *
- * (b) EVEN WITH THE ADAPTER, ASSERTIONS 1 AND 2 WOULD NOT SURVIVE THE PORT.
- *     They are assertions about a SCHEMA that mc-save deliberately does not
- *     have. The reference's storage service knew `chunks` and `metadata` by
- *     name (`storage-service.ts:96-139`), and removing exactly that knowledge
- *     is mc-save's design — the header of `domain/storage-port.ts` and of
- *     `index.ts` both say so. A port that asserted "there are stores named
- *     chunks and metadata" would be asserting the reference's design against a
- *     repository built to not have it.
- *
- * So row #9 belongs to whoever writes the IndexedDB adapter — as an adapter
- * test, phrased about that adapter's own store layout, not about the
- * reference's. The part of it that is really about persistence rather than
- * about IndexedDB is `keys`, and that is the test directly above.
- *
- * That is exactly what happened. See the UPDATE at the top of this note.
+ * Triage row #9 is covered by `test/indexeddb-layout.test.ts`, which verifies
+ * the adapter's actual database and object-store layout. This file keeps only
+ * the generic `StoragePort` assertion: a written save is enumerable. Store
+ * names intentionally stay out of this codec/port test because they are an
+ * adapter implementation detail.
  */

@@ -1,15 +1,17 @@
-import { describe, expect, it } from '@effect/vitest'
+import { describe, expect, it } from 'vitest'
+import { effect } from './support/effect-test.js'
 import { Effect, Option, Schema } from 'effect'
 import {
   loadDurably,
   saveDurably,
   sealSaveEnvelope,
   validateSaveEnvelope,
-} from '../src/domain/durable-save'
-import { saveEnvelope } from '../src/domain/envelope'
-import { StorageError } from '../src/domain/errors'
-import { defineFormat, type Migration } from '../src/domain/format'
-import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage-port'
+} from '../src/domain/durable-save.js'
+import { saveEnvelope, type SaveEnvelope } from '../src/domain/envelope.js'
+import { StorageError } from '../src/domain/errors.js'
+import { defineFormat } from '../src/domain/format.js'
+import { DEFAULT_MAX_SAVE_BYTES, sameSaveEnvelope, sealAndValidateSaveEnvelope } from '../src/domain/integrity.js'
+import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage-port.js'
 
 const State = defineFormat({
   name: 'mc-save/test/durable',
@@ -41,7 +43,7 @@ const key = SaveKey('world-1')
 const previousKey = SaveKey('world-1::previous')
 
 describe('durable save checkpoints', () => {
-  it.effect('falls back to the previous known-good checkpoint when latest is corrupt', () =>
+  effect('falls back to the previous known-good checkpoint when latest is corrupt', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
@@ -56,7 +58,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('falls back to the previous known-good checkpoint when latest is missing', () =>
+  effect('falls back to the previous known-good checkpoint when latest is missing', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
@@ -68,12 +70,27 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('does not fall back when latest is a valid checkpoint from a newer build', () =>
+  effect('decodes a valid checkpoint above the default byte limit with the caller limit', () =>
+    Effect.gen(function* () {
+      const maxBytes = DEFAULT_MAX_SAVE_BYTES + 1_024
+      const value = { score: 1, label: 'x'.repeat(DEFAULT_MAX_SAVE_BYTES) }
+      const envelope = sealSaveEnvelope(saveEnvelope(State.name, State.version, value))
+      expect(envelope.integrity.byteLength).toBeGreaterThan(DEFAULT_MAX_SAVE_BYTES)
+
+      const storage = yield* makeInMemoryStorage
+      yield* storage.put(key, envelope)
+
+      const restored = yield* loadDurably(State, key, maxBytes).pipe(Effect.provideService(StoragePort, storage))
+      expect(restored).toStrictEqual(Option.some(value))
+    }),
+  )
+
+  effect('does not fall back when latest is a valid checkpoint from a newer build', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
-      yield* storage.put(key, saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' }))
+      yield* storage.put(key, sealSaveEnvelope(saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' })))
 
       const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
       expect(result._tag).toBe('Left')
@@ -84,13 +101,13 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('does not overwrite a valid checkpoint from a newer build', () =>
+  effect('does not overwrite a valid checkpoint from a newer build', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
       const previous = yield* storage.get(previousKey)
-      const future = saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' })
+      const future = sealSaveEnvelope(saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' }))
       yield* storage.put(key, future)
 
       const result = yield* Effect.either(
@@ -106,14 +123,14 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('does not replace a good previous checkpoint with a corrupt latest', () =>
+  effect('does not replace a good previous checkpoint with a corrupt latest', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
       const latest = yield* storage.get(key)
       if (Option.isNone(latest)) throw new Error('latest checkpoint was not written')
-      yield* storage.put(key, { ...latest.value, integrity: { ...latest.value.integrity!, checksum: '00000000' } })
+      yield* storage.put(key, { ...latest.value, integrity: { ...latest.value.integrity, checksum: '00000000' } })
 
       yield* saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage))
       const previous = yield* storage.get(previousKey)
@@ -121,7 +138,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('keeps the existing checkpoint when the atomic commit is interrupted', () =>
+  effect('keeps the existing checkpoint when the atomic commit is interrupted', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'stable' }).pipe(Effect.provideService(StoragePort, storage))
@@ -140,7 +157,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('retains opaque extensions across later checkpoints', () =>
+  effect('retains opaque extensions across later checkpoints', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       const extensions = { futureInventory: { slots: [1, 2, 3] } }
@@ -154,7 +171,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('does not decode the previous checkpoint when latest is healthy', () =>
+  effect('does not decode the previous checkpoint when latest is healthy', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'previous' }).pipe(
@@ -164,11 +181,7 @@ describe('durable save checkpoints', () => {
         Effect.provideService(StoragePort, storage),
       )
 
-      const inaccessiblePayload = Object.defineProperty({}, 'score', {
-        get: () => {
-          throw new Error('the previous payload was needlessly decoded')
-        },
-      })
+      const inaccessiblePayload = { score: 'not-a-number', label: 'previous payload must remain opaque' }
       const previous = yield* storage.get(previousKey)
       if (Option.isNone(previous)) throw new Error('previous checkpoint was not written')
       yield* storage.put(previousKey, { ...previous.value, payload: inaccessiblePayload })
@@ -182,7 +195,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('serializes concurrent checkpoints for the same world', () =>
+  effect('serializes concurrent checkpoints for the same world', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 0, label: 'initial' }).pipe(
@@ -227,7 +240,43 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('round-trips dimension, player, entity, vehicle, and boss state', () =>
+  effect('keeps independent world locks independent', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      let activeCommits = 0
+      let maximumActiveCommits = 0
+      const delayed = {
+        ...storage,
+        commitBatch: (mutations: Parameters<typeof storage.commitBatch>[0]) =>
+          Effect.gen(function* () {
+            activeCommits += 1
+            maximumActiveCommits = Math.max(maximumActiveCommits, activeCommits)
+            yield* Effect.async<void>((resume) => {
+              queueMicrotask(() => resume(Effect.void))
+            })
+            yield* storage.commitBatch(mutations)
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                activeCommits -= 1
+              }),
+            ),
+          ),
+      }
+
+      yield* Effect.all(
+        [
+          saveDurably(State, key, { score: 1, label: 'world-1' }),
+          saveDurably(State, SaveKey('world-2'), { score: 2, label: 'world-2' }),
+        ].map((save) => save.pipe(Effect.provideService(StoragePort, delayed))),
+        { concurrency: 'unbounded', discard: true },
+      )
+
+      expect(maximumActiveCommits).toBe(2)
+    }),
+  )
+
+  effect('round-trips dimension, player, entity, vehicle, and boss state', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       const complete = {
@@ -258,17 +307,22 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('loads legacy envelopes without integrity metadata', () =>
+  effect('rejects envelopes without integrity metadata', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
-      yield* storage.put(key, saveEnvelope(State.name, 1, { score: 7, label: 'legacy' }))
-      expect(yield* loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage))).toStrictEqual(
-        Option.some({ score: 7, label: 'legacy' }),
-      )
+      const draft = saveEnvelope(State.name, 1, { score: 7, label: 'draft' }) as unknown as SaveEnvelope
+      yield* storage.put(key, draft)
+
+      const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
+      expect(result._tag).toBe('Left')
+      if (result._tag === 'Left') {
+        expect(result.left._tag).toBe('SaveDecodeError')
+        if (result.left._tag === 'SaveDecodeError') expect(result.left.reason).toContain('well-formed')
+      }
     }),
   )
 
-  it.effect('treats a key that was never written as a new world, not an error', () =>
+  effect('treats a key that was never written as a new world, not an error', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       expect(
@@ -277,7 +331,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('refuses to write a value that seals to a non-finite number, before anything is stored', () =>
+  effect('refuses to write a value that seals to a non-finite number, before anything is stored', () =>
     Effect.gen(function* () {
       // `saveDurably`'s own `sealAndValidateSaveEnvelope`, distinct from the
       // standalone `validateSaveEnvelope` exercised in "save integrity" below —
@@ -299,7 +353,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('refuses to write a value whose sealed envelope exceeds the configured byte limit', () =>
+  effect('refuses to write a value whose sealed envelope exceeds the configured byte limit', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
 
@@ -319,7 +373,7 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('does not carry forward a latest that parses but fails to decode (SaveDecodeError, non-future)', () =>
+  effect('does not carry forward a latest that parses but fails to decode (SaveDecodeError, non-future)', () =>
     Effect.gen(function* () {
       // Distinct from `loadDurably`'s own fallback block: this is
       // `saveDurably`'s `recoverableCheckpoint`, which decides whether the
@@ -341,50 +395,16 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  it.effect('does not carry forward a latest that parses but fails to decode (MigrationError)', () =>
-    Effect.gen(function* () {
-      const alwaysFailsMigration: Migration = {
-        from: 1,
-        describe: 'deliberately fails, to exercise recoverableCheckpoint’s MigrationError arm',
-        migrate: () => Effect.fail('boom'),
-      }
-      const Migrating = defineFormat({
-        name: 'mc-save/test/migrating-on-save',
-        version: 2,
-        schema: Schema.Struct({ value: Schema.String }),
-        migrations: [alwaysFailsMigration],
-      })
-      const migratingKey = SaveKey('world-migrating-on-save')
-      const migratingPreviousKey = SaveKey('world-migrating-on-save::previous')
-
-      const storage = yield* makeInMemoryStorage
-      yield* saveDurably(Migrating, migratingKey, { value: 'first' }).pipe(Effect.provideService(StoragePort, storage))
-      yield* saveDurably(Migrating, migratingKey, { value: 'second' }).pipe(Effect.provideService(StoragePort, storage))
-
-      // A v1 envelope: decoding it must migrate first, and the v1 → v2 step
-      // always fails, so this is "not good" via MigrationError rather than
-      // SaveDecodeError.
-      const migrationFails = sealSaveEnvelope(saveEnvelope(Migrating.name, 1, { value: 'irrelevant' }))
-      yield* storage.put(migratingKey, migrationFails)
-
-      yield* saveDurably(Migrating, migratingKey, { value: 'third' }).pipe(Effect.provideService(StoragePort, storage))
-
-      const previous = yield* storage.get(migratingPreviousKey)
-      expect(Option.isSome(previous) && previous.value.payload).toStrictEqual({ value: 'first' })
-    }),
-  )
-
   /**
    * The four fallback branches of `loadDurably`'s `Effect.catchTags` block:
    * `latest` parses as a well-formed, integrity-valid envelope (so it clears
    * `readStoredEnvelope`, unlike the "corrupt"/"missing" cases above, which
-   * fail earlier) but `decodeSave` itself then rejects it — either because the
-   * payload does not satisfy the current schema (`SaveDecodeError`) or because
-   * a migration step fails (`MigrationError`) — crossed with whether a
-   * `previous` checkpoint exists to fall back to.
+   * fail earlier) but `decodeSave` itself then rejects it because the payload
+   * does not satisfy the current schema (`SaveDecodeError`) — crossed with
+   * whether a `previous` checkpoint exists to fall back to.
    */
   describe('falling back past a latest that parses but does not decode', () => {
-    it.effect('SaveDecodeError + a previous checkpoint: falls back to previous', () =>
+    effect('SaveDecodeError + a previous checkpoint: falls back to previous', () =>
       Effect.gen(function* () {
         const storage = yield* makeInMemoryStorage
         yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
@@ -400,7 +420,7 @@ describe('durable save checkpoints', () => {
       }),
     )
 
-    it.effect('latest is not even a well-formed envelope, and there is no previous: fails with that error', () =>
+    effect('latest is not even a well-formed envelope, and there is no previous: fails with that error', () =>
       Effect.gen(function* () {
         // One level earlier than the two cases above: this fails inside
         // `readStoredEnvelope` itself (line ~200), before `decodeSave` is ever
@@ -409,7 +429,7 @@ describe('durable save checkpoints', () => {
         // `Left` directly, so `loadDurably` never reaches its
         // `Effect.catchTags` block at all for this one.
         const storage = yield* makeInMemoryStorage
-        yield* storage.put(key, { format: '', version: 0, payload: null })
+        yield* storage.put(key, { format: '', version: 0, payload: null } as unknown as SaveEnvelope)
 
         const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
         expect(result._tag).toBe('Left')
@@ -420,7 +440,7 @@ describe('durable save checkpoints', () => {
       }),
     )
 
-    it.effect('SaveDecodeError + no previous checkpoint: fails with the latest error', () =>
+    effect('SaveDecodeError + no previous checkpoint: fails with the latest error', () =>
       Effect.gen(function* () {
         const storage = yield* makeInMemoryStorage
         const badSchema = sealSaveEnvelope(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
@@ -435,55 +455,52 @@ describe('durable save checkpoints', () => {
       }),
     )
 
-    const alwaysFailsMigration: Migration = {
-      from: 1,
-      describe: 'deliberately fails, to exercise the MigrationError fallback',
-      migrate: () => Effect.fail('boom'),
-    }
-    const Migrating = defineFormat({
-      name: 'mc-save/test/migrating',
-      version: 2,
-      schema: Schema.Struct({ value: Schema.String }),
-      migrations: [alwaysFailsMigration],
-    })
-    const migratingKey = SaveKey('world-migrating')
-    const migratingPreviousKey = SaveKey('world-migrating::previous')
-
-    it.effect('MigrationError + a previous checkpoint: falls back to previous', () =>
-      Effect.gen(function* () {
-        const storage = yield* makeInMemoryStorage
-        const good = sealSaveEnvelope(saveEnvelope(Migrating.name, Migrating.version, { value: 'good' }))
-        // A v1 envelope: `decodeSave` must migrate before it can decode, and the
-        // v1 → v2 step always fails.
-        const migrationFails = sealSaveEnvelope(saveEnvelope(Migrating.name, 1, { value: 'irrelevant' }))
-        yield* storage.put(migratingPreviousKey, good)
-        yield* storage.put(migratingKey, migrationFails)
-
-        const restored = yield* loadDurably(Migrating, migratingKey).pipe(Effect.provideService(StoragePort, storage))
-        expect(restored).toStrictEqual(Option.some({ value: 'good' }))
-      }),
-    )
-
-    it.effect('MigrationError + no previous checkpoint: fails with the latest error', () =>
-      Effect.gen(function* () {
-        const storage = yield* makeInMemoryStorage
-        const migrationFails = sealSaveEnvelope(saveEnvelope(Migrating.name, 1, { value: 'irrelevant' }))
-        yield* storage.put(migratingKey, migrationFails)
-
-        const result = yield* Effect.either(
-          loadDurably(Migrating, migratingKey).pipe(Effect.provideService(StoragePort, storage)),
-        )
-        expect(result._tag).toBe('Left')
-        if (result._tag === 'Left') {
-          expect(result.left._tag).toBe('MigrationError')
-          expect(result.left.message).toContain('mc-save/test/migrating')
-        }
-      }),
-    )
   })
 })
 
 describe('save integrity', () => {
+  it('compares supported envelopes by their canonical content', () => {
+    const ordered = sealSaveEnvelope(saveEnvelope(State.name, 1, {
+      nested: { first: 1, second: [true, null] },
+      bytes: new Uint8Array([1, 2]),
+    }))
+    const reordered = sealSaveEnvelope(saveEnvelope(State.name, 1, {
+      bytes: { '0': 1, '1': 2 },
+      nested: { second: [true, null], first: 1 },
+    }))
+    expect(sameSaveEnvelope(ordered, reordered)).toBe(true)
+    expect(sameSaveEnvelope(ordered, { ...reordered, version: 2 })).toBe(false)
+    expect(sameSaveEnvelope(ordered, { ...reordered, payload: { different: true } })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: { left: 1 } }, { ...ordered, payload: { right: 1 } })).toBe(false)
+    expect(sameSaveEnvelope(ordered, { ...reordered, payload: 'different' })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: null }, { ...ordered, payload: Number.POSITIVE_INFINITY })).toBe(true)
+    expect(sameSaveEnvelope({ ...ordered, payload: Number.NaN }, { ...ordered, payload: Number.NEGATIVE_INFINITY })).toBe(true)
+
+    const cyclic: { self?: unknown } = {}
+    cyclic.self = cyclic
+    const sparse = new Array(1)
+    const symbols = { [Symbol('private')]: true }
+    const functionValue = () => undefined
+    const throwingEnvelope = Object.defineProperty({}, 'format', {
+      get: () => {
+        throw new Error('format getter failed')
+      },
+    }) as Parameters<typeof sameSaveEnvelope>[0]
+    expect(sameSaveEnvelope(ordered, { ...ordered, payload: cyclic })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: cyclic }, { ...ordered, payload: cyclic })).toBe(false)
+    expect(sameSaveEnvelope(ordered, { ...ordered, payload: sparse })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: [1] }, { ...ordered, payload: [1, 2] })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: [[1]] }, { ...ordered, payload: [[2]] })).toBe(false)
+    expect(sameSaveEnvelope(ordered, { ...ordered, payload: symbols })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: symbols }, ordered)).toBe(false)
+    expect(sameSaveEnvelope(ordered, { ...ordered, payload: new Date() })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: new Date() }, ordered)).toBe(false)
+    expect(sameSaveEnvelope(ordered, { ...ordered, payload: undefined })).toBe(false)
+    expect(sameSaveEnvelope({ ...ordered, payload: functionValue }, { ...ordered, payload: functionValue })).toBe(false)
+    expect(sameSaveEnvelope(reordered, ordered)).toBe(true)
+    expect(sameSaveEnvelope(throwingEnvelope, ordered)).toBe(false)
+  })
+
   it('is deterministic across object insertion order and repeated round trips', () => {
     for (let index = 0; index < 100; index += 1) {
       const left = sealSaveEnvelope(saveEnvelope(State.name, 1, { a: index, b: `value-${String(index)}` }))
@@ -493,7 +510,7 @@ describe('save integrity', () => {
     }
   })
 
-  it.effect('uses canonical UTF-8 bytes for multi-byte payloads', () =>
+  effect('uses canonical UTF-8 bytes for multi-byte payloads', () =>
     Effect.gen(function* () {
       const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'é漢🦊' }))
       expect(sealed.integrity).toStrictEqual({ algorithm: 'fnv1a32', byteLength: 87, checksum: '08574854' })
@@ -501,30 +518,121 @@ describe('save integrity', () => {
     }),
   )
 
-  it.effect('rejects non-finite values and saves above the configured byte limit', () =>
+  effect('rejects an unsealed draft before it can be treated as valid', () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(validateSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'draft' })))
+      expect(error.reason).toContain('checksum')
+    }),
+  )
+
+  effect('rejects an unknown or malformed integrity record', () =>
+    Effect.gen(function* () {
+      const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'sealed' }))
+      const unknownAlgorithm = {
+        ...sealed,
+        integrity: { ...sealed.integrity, algorithm: 'sha256' },
+      } as unknown as SaveEnvelope
+      const malformed = { ...sealed, integrity: null } as unknown as SaveEnvelope
+
+      expect((yield* Effect.either(validateSaveEnvelope(unknownAlgorithm)))._tag).toBe('Left')
+      expect((yield* Effect.either(validateSaveEnvelope(malformed)))._tag).toBe('Left')
+    }),
+  )
+
+  effect('rejects non-finite values and saves above the configured byte limit', () =>
     Effect.gen(function* () {
       const nonFinite = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: Number.NaN }))
       expect((yield* Effect.either(validateSaveEnvelope(nonFinite)))._tag).toBe('Left')
 
+      const sealingNonFinite = yield* Effect.flip(
+        sealAndValidateSaveEnvelope(nonFinite, undefined, DEFAULT_MAX_SAVE_BYTES),
+      )
+      expect(sealingNonFinite.reason).toBe('save contains a non-finite number')
+
       const oversized = sealSaveEnvelope(saveEnvelope(State.name, 1, { text: 'too large' }))
       expect((yield* Effect.either(validateSaveEnvelope(oversized, 1)))._tag).toBe('Left')
+
+      const sealingOversize = yield* Effect.flip(sealAndValidateSaveEnvelope(oversized, undefined, 1))
+      expect(sealingOversize.reason).toContain('save exceeds the 1 byte limit')
+
+      const invalidValidationBudget = yield* Effect.flip(validateSaveEnvelope(oversized, Number.NaN))
+      expect(invalidValidationBudget.reason).toContain('maxBytes must be a non-negative safe integer')
+
+      const invalidSealingBudget = yield* Effect.flip(
+        sealAndValidateSaveEnvelope(oversized, undefined, -1),
+      )
+      expect(invalidSealingBudget.reason).toContain('maxBytes must be a non-negative safe integer')
     }),
   )
 
-  it.effect('seals its own extensions argument in, and folds a literal undefined leaf into the checksum text', () =>
+  effect('seals its own extensions argument in and rejects unsupported values', () =>
     Effect.gen(function* () {
       // `sealSaveEnvelope`'s own `extensions` parameter, as opposed to
       // `saveDurably`'s inherited-extensions plumbing exercised elsewhere: a
-      // direct caller can attach extensions at seal time too. A value of
-      // `undefined` on one of those extension keys is what drives canonicalize
-      // through `JSON.stringify(value) ?? 'undefined'` — `JSON.stringify`
-      // returns the actual `undefined` value (not the string) for it.
+      // direct caller can attach extensions at seal time too.
       const withExtensions = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'x' }), {
-        note: undefined,
+        note: 'manual-seal',
       })
 
-      expect(withExtensions.extensions).toStrictEqual({ note: undefined })
+      expect(withExtensions.extensions).toStrictEqual({ note: 'manual-seal' })
       expect(yield* validateSaveEnvelope(withExtensions)).toStrictEqual(withExtensions)
+
+      const cyclic: { self?: unknown } = {}
+      cyclic.self = cyclic
+      const sparse: Array<unknown> = []
+      sparse[1] = 'value'
+
+      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, undefined))).toThrow('undefined')
+      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, cyclic))).toThrow('cyclic data')
+      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, new Date()))).toThrow(
+        'only plain objects and Uint8Array values are supported',
+      )
+      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, sparse))).toThrow(
+        'sparse arrays and custom array properties are not supported',
+      )
+      expect(() =>
+        sealSaveEnvelope(saveEnvelope(State.name, 1, { [Symbol('private')]: 'value' })),
+      ).toThrow('symbol-keyed object properties are not supported')
+    }),
+  )
+
+  effect('canonicalizes Uint8Array payloads consistently', () =>
+    Effect.gen(function* () {
+      const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, new Uint8Array([1, 2, 255])))
+
+      expect(sealed.integrity.byteLength).toBeGreaterThan(0)
+      expect(yield* validateSaveEnvelope(sealed)).toStrictEqual(sealed)
+    }),
+  )
+
+  effect('normalizes non-Error canonicalization failures into decode errors', () =>
+    Effect.gen(function* () {
+      const throwingPayload = new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw Object.create(null)
+          },
+        },
+      )
+      const envelope = saveEnvelope(State.name, 1, throwingPayload)
+
+      const validationError = yield* Effect.flip(validateSaveEnvelope(envelope))
+      expect(validationError.reason).toBe('save contains an unsupported value')
+
+      const sealingError = yield* Effect.flip(
+        sealAndValidateSaveEnvelope(envelope, undefined, DEFAULT_MAX_SAVE_BYTES),
+      )
+      expect(sealingError.reason).toBe('save contains an unsupported value')
+
+      const unsupportedEnvelope = saveEnvelope(State.name, 1, new Date())
+      const unsupportedValidation = yield* Effect.flip(validateSaveEnvelope(unsupportedEnvelope))
+      expect(unsupportedValidation.reason).toContain('only plain objects')
+
+      const unsupportedSealing = yield* Effect.flip(
+        sealAndValidateSaveEnvelope(unsupportedEnvelope, undefined, DEFAULT_MAX_SAVE_BYTES),
+      )
+      expect(unsupportedSealing.reason).toContain('only plain objects')
     }),
   )
 })

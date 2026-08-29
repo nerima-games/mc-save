@@ -1,19 +1,17 @@
 /**
  * @nerima-games/mc-save — the persistence toolkit.
  *
- * PRE-AUDIT FIRST CUT (叩き台). See README.md 現状.
+ * The public entry point for the persistence toolkit.
  *
- * mc-save is tier 1 of the four-tier architecture (plan.md §2.2): a stable
- * library with a narrow interface and no opinion about what is being saved. It
- * provides a way to *define* a versioned format and a Port to write one
- * somewhere. The chunk format belongs to mc-worldgen, the settings format to
- * whoever owns settings, and so on — each defines its own with `defineFormat`.
+ * mc-save is a stable persistence library with a narrow interface. It provides
+ * current-version application formats, storage ports, and lossless Java
+ * NBT/Anvil codecs plus a typed file-level boundary for official Minecraft
+ * saves. Version-specific game semantics remain in NBT documents so unknown
+ * fields survive a read/write cycle.
  *
- * That inversion is the entire design. In the reference implementation the
- * storage service knew about chunks and about world metadata by name
- * (`packages/world/infrastructure/storage-service.ts:96-139`), so persistence
- * and world generation could not be separated. Here mc-save depends on nobody
- * but mc-kernel, and mc-worldgen depends on mc-save.
+ * The storage service has no dependency on game-domain modules, so persistence
+ * and world generation remain separate. The Java save façade covers the
+ * official on-disk file categories without coupling IndexedDB to world logic.
  *
  * The IndexedDB adapter ships from here too, and it does NOT cost the toolkit
  * its platform-freedom. `tsconfig.base.json` still says `lib: ["ES2024"]` with
@@ -24,12 +22,31 @@
  * has never heard of a browser.
  */
 
-export * from './domain/envelope'
-export * from './domain/durable-save'
-export * from './domain/errors'
-export * from './domain/format'
-export * from './domain/indexeddb-storage'
-export * from './domain/indexeddb-surface'
-export * from './domain/persistence'
-export * from './domain/registry'
-export * from './domain/storage-port'
+export * from './domain/envelope.js'
+export * from './domain/binary.js'
+export * from './domain/batch-save.js'
+export * from './domain/durable-save.js'
+export * from './domain/errors.js'
+export * from './domain/format.js'
+export * from './domain/indexeddb-storage.js'
+export * from './domain/indexeddb-surface.js'
+export * from './domain/anvil-region.js'
+export * from './domain/minecraft-compression.js'
+export * from './domain/minecraft-java-save-decode.js'
+export * from './domain/minecraft-java-save-encode.js'
+export * from './domain/minecraft-java-save-errors.js'
+export * from './domain/minecraft-java-save-json.js'
+export * from './domain/minecraft-java-save-paths.js'
+export * from './domain/minecraft-java-save-types.js'
+export * from './domain/minecraft-java-save-validation.js'
+export * from './domain/minecraft-lz4.js'
+export * from './domain/minecraft-nbt.js'
+export * from './domain/minecraft-nbt-compression.js'
+export * from './domain/minecraft-save-files.js'
+export * from './domain/minecraft-paths.js'
+export * from './domain/minecraft-region-files.js'
+export * from './domain/persistence.js'
+export * from './domain/registry.js'
+export * from './domain/save-key.js'
+export * from './domain/storage-port.js'
+export * from './domain/storage-retry.js'

@@ -1,35 +1,15 @@
 /**
  * The versioned envelope: the one thing that is written to storage.
  *
- * PRE-AUDIT FIRST CUT (叩き台).
- *
  * ---------------------------------------------------------------------------
  * Why this type exists at all
  * ---------------------------------------------------------------------------
  *
- * In the reference implementation a chunk was persisted by handing the raw
- * `Uint8Array` straight to IndexedDB and letting structured clone do the rest
- * (`packages/world/infrastructure/storage-service.ts:101-106` →
- * `packages/world/infrastructure/idb-utils.ts:92-96`). Nothing was written
- * alongside it: no format name, no version, no length header. The consequences
- * were exactly what you would predict:
- *
- *  - A stored buffer of the wrong size could only be detected by comparing it
- *    against a hard-coded expected length, and the only available recovery was
- *    to throw the save away
- *    (`packages/world/application/chunk-manager-ops-storage.ts:47-50`:
- *    "has invalid buffer length ... regenerating").
- *  - `WORLD_SCHEMA_VERSION = 3` was declared twice
- *    (`storage-idb-model.ts:7` and `packages/world/domain/chunk.ts:9`) and read
- *    by nobody.
- *  - The separate `saveVersion` field on world metadata was written
- *    (`session-save-metadata.ts:40`) and read exactly once, in a log line
- *    (`session-world-loader.ts:174`). No code ever branched on it.
- *
- * So the reference had two version numbers, neither of which did anything. The
- * envelope makes the version the *outermost* thing rather than a field buried
- * inside the payload, which is what allows `decodeSave` to migrate before
- * `Schema` ever sees the data — the ordering the reference could not achieve.
+ * The envelope keeps the format identity, version, payload, and integrity
+ * metadata together at the storage boundary. `decodeSave` can therefore reject
+ * an unknown or non-current format before the payload schema sees the data,
+ * while storage adapters can validate the same boundary without knowing the
+ * payload's domain type.
  */
 import { Schema } from 'effect'
 
@@ -47,44 +27,78 @@ export const FIRST_VERSION = 1
  * What is actually handed to `StoragePort`.
  *
  * `payload` is `unknown` on purpose: the envelope is opened before the format
- * is known, and migrations operate on untyped data by nature — a migration from
- * v1 to v2 must accept a shape that no current schema describes.
+ * is known, and the payload is decoded only after the envelope's strict
+ * current-version checks have completed.
  */
-export type SaveEnvelope = {
-  readonly format: string
-  readonly version: number
-  readonly payload: unknown
-  /** Optional because envelopes written before integrity support remain readable. */
-  readonly integrity?: SaveIntegrity | undefined
-  /** Game-owned state unknown to mc-save, retained verbatim across checkpoints. */
-  readonly extensions?: Readonly<Record<string, unknown>> | undefined
-}
-
 export type SaveIntegrity = {
   readonly algorithm: 'fnv1a32'
   readonly byteLength: number
   readonly checksum: string
 }
 
+export type SaveEnvelope = {
+  readonly format: string
+  readonly version: number
+  readonly payload: unknown
+  readonly integrity: SaveIntegrity
+  /** Game-owned state unknown to mc-save, retained verbatim across checkpoints. */
+  readonly extensions?: Readonly<Record<string, unknown>> | undefined
+}
+
+export type SaveEnvelopeDraft = Omit<SaveEnvelope, 'integrity'>
+
+const safeVersionSchema = Schema.Number.pipe(
+  Schema.greaterThanOrEqualTo(FIRST_VERSION),
+  Schema.filter((value): value is number => Number.isSafeInteger(value), {
+    message: () => 'Save envelope version must be a safe integer',
+  }),
+)
+
+const safeByteLengthSchema = Schema.Number.pipe(
+  Schema.greaterThanOrEqualTo(0),
+  Schema.filter((value): value is number => Number.isSafeInteger(value), {
+    message: () => 'Save integrity byte length must be a safe integer',
+  }),
+)
+
 export const SaveEnvelopeSchema: Schema.Schema<SaveEnvelope> = Schema.Struct({
-  format: Schema.String.pipe(Schema.minLength(1)),
-  version: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(FIRST_VERSION)),
+  format: Schema.String.pipe(
+    Schema.minLength(1),
+    Schema.filter((value): value is string => value.trim().length > 0, {
+      message: () => 'Save envelope format must be a non-blank string',
+    }),
+  ),
+  version: safeVersionSchema,
   payload: Schema.Unknown.pipe(
     Schema.filter((value): value is unknown => value !== undefined, {
       message: () => 'Save envelope payload must be present',
     }),
   ),
-  integrity: Schema.optional(
-    Schema.Struct({
-      algorithm: Schema.Literal('fnv1a32'),
-      byteLength: Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(0)),
-      checksum: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{8}$/u)),
+  integrity: Schema.Struct({
+    algorithm: Schema.Literal('fnv1a32'),
+    byteLength: safeByteLengthSchema,
+    checksum: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{8}$/u)),
+  }),
+  extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+})
+
+export const SaveEnvelopeDraftSchema: Schema.Schema<SaveEnvelopeDraft> = Schema.Struct({
+  format: Schema.String.pipe(
+    Schema.minLength(1),
+    Schema.filter((value): value is string => value.trim().length > 0, {
+      message: () => 'Save envelope format must be a non-blank string',
+    }),
+  ),
+  version: safeVersionSchema,
+  payload: Schema.Unknown.pipe(
+    Schema.filter((value): value is unknown => value !== undefined, {
+      message: () => 'Save envelope payload must be present',
     }),
   ),
   extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
 })
 
-export const saveEnvelope = (format: string, version: number, payload: unknown): SaveEnvelope => ({
+export const saveEnvelope = (format: string, version: number, payload: unknown): SaveEnvelopeDraft => ({
   format,
   version,
   payload,
@@ -93,11 +107,9 @@ export const saveEnvelope = (format: string, version: number, payload: unknown):
 /**
  * True when the envelope was written by a build newer than this one.
  *
- * Worth its own predicate because it is the case that must NOT be treated as
- * corruption. A player who opens a save from a newer build deserves "this world
- * needs a newer version of the game", not the reference implementation's
- * `"${worldId} (corrupt)"` with a delete button as the only affordance
- * (`packages/presentation/menu/main-menu-handlers.ts:137-142`).
+ * Worth its own predicate because it must not be treated as corruption. A
+ * caller can present a newer save as unavailable until a compatible build is
+ * installed instead of offering destructive recovery actions.
  */
-export const isFromFuture = (envelope: SaveEnvelope, currentVersion: number): boolean =>
+export const isFromFuture = (envelope: Pick<SaveEnvelope, 'version'>, currentVersion: number): boolean =>
   envelope.version > currentVersion

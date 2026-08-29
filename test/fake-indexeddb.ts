@@ -78,7 +78,7 @@ import type {
   IdbRequest,
   IdbStringList,
   IdbTransaction,
-} from '../src/domain/indexeddb-surface'
+} from '../src/domain/indexeddb-surface.js'
 
 /** A `DOMException` as far as the surface is concerned. */
 export const domException = (name: string, message: string): IdbDomException => ({ name, message })
@@ -130,9 +130,10 @@ type DatabaseState = {
  * Every callback goes through here, and nothing is ever called synchronously.
  *
  * `queueMicrotask` and not `setTimeout`: a real IndexedDB request settles
- * without yielding to the macrotask queue, and `it.effect` would otherwise need
- * fake timers to see any of it. `docs/testing.md` records the related trap —
- * `Effect.fork` plus `Deferred.await` inside `it.effect` deadlocks on DOM event
+ * without yielding to the macrotask queue, and an Effect-aware test helper
+ * would otherwise need fake timers to see any of it. `docs/testing.md` records
+ * the related trap — `Effect.fork` plus `Deferred.await` inside an Effect-aware
+ * test deadlocks on DOM event
  * flows — and staying on the microtask queue is what keeps these tests clear of
  * it: the adapter's `Effect.async` resumes from a microtask, which the Effect
  * runtime handles without a fibre of its own.
@@ -210,6 +211,13 @@ export type FakeIndexedDb = IdbFactory & {
   readonly recordsOf: (name: string, store: string) => ReadonlyArray<unknown> | undefined
   /** Seed a database as an older build would have left it. */
   readonly seed: (name: string, version: number, store: string, records: ReadonlyArray<unknown>) => void
+  /** Seed a database whose store predates the insertion index. */
+  readonly seedWithoutIndexes: (
+    name: string,
+    version: number,
+    store: string,
+    records: ReadonlyArray<unknown>,
+  ) => void
   /**
    * Seed a store the way `seed` does, but index each record under an EXPLICIT
    * key rather than a `key` field the record itself must carry.
@@ -221,7 +229,7 @@ export type FakeIndexedDb = IdbFactory & {
    * (`domain/indexeddb-storage.ts`) can never be reached through either. Real
    * IndexedDB does not share that restriction: a `keyPath` store only
    * requires SOME value at the key path, of any valid IndexedDB key type, so
-   * a foreign or legacy writer could leave a record whose own `key` field
+   * a foreign writer could leave a record whose own `key` field
    * disagrees with the key IndexedDB actually stored it under. This is that.
    */
   readonly seedAt: (
@@ -267,6 +275,41 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     length: names.length,
     contains: (name) => names.includes(name),
     item: (index) => names[index] ?? null,
+  })
+
+  const makeUpgradeTransaction = (state: DatabaseState): IdbTransaction => ({
+    objectStore: (name) => {
+      const store = state.stores.get(name)
+      if (store === undefined) {
+        throw domException('NotFoundError', `no object store named "${name}"`)
+      }
+      return {
+        indexNames: stringList([...store.indexes.keys()]),
+        get: () => {
+          throw domException('InvalidStateError', 'upgrade object stores cannot read records in this fake')
+        },
+        put: () => {
+          throw domException('InvalidStateError', 'upgrade object stores cannot write records in this fake')
+        },
+        delete: () => {
+          throw domException('InvalidStateError', 'upgrade object stores cannot delete records in this fake')
+        },
+        index: () => {
+          throw domException('NotFoundError', 'upgrade object stores cannot open indexes in this fake')
+        },
+        createIndex: (indexName, keyPath) => {
+          store.indexes.set(indexName, keyPath)
+          return undefined
+        },
+      }
+    },
+    abort: () => {
+      throw domException('InvalidStateError', 'the upgrade transaction cannot be aborted by this fake')
+    },
+    error: null,
+    oncomplete: null,
+    onerror: null,
+    onabort: null,
   })
 
   const ensureDatabase = (name: string): DatabaseState => {
@@ -517,6 +560,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     }
 
     const objectStore: IdbObjectStore = {
+      get indexNames(): IdbStringList {
+        return stringList([...store.indexes.keys()])
+      },
       get: (key) => submit(() => clone(store.records.get(key)?.value), false),
       put: (value) =>
         submit(() => {
@@ -561,6 +607,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
 
     const request: Omit<MutableRequest, 'result'> & {
       readonly result: IdbDatabase
+      transaction: IdbTransaction | null
       onupgradeneeded: ((event: never) => void) | null
       onblocked: ((event: never) => void) | null
     } = {
@@ -573,6 +620,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       error: null,
       onsuccess: null,
       onerror: null,
+      transaction: null,
       onupgradeneeded: null,
       onblocked: null,
     }
@@ -657,6 +705,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           // transaction machinery is not involved: an upgrade in this fake is
           // synchronous, which is the one place it is SIMPLER than a browser.
           return {
+            get indexNames(): IdbStringList {
+              return stringList([...created.indexes.keys()])
+            },
             get: () => makeRequest(),
             put: () => makeRequest(),
             delete: () => makeRequest(),
@@ -692,7 +743,12 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
 
       if (wanted > state.version) {
         state.version = wanted
-        request.onupgradeneeded?.(undefined as never)
+        request.transaction = makeUpgradeTransaction(state)
+        try {
+          request.onupgradeneeded?.(undefined as never)
+        } finally {
+          request.transaction = null
+        }
       }
 
       request.onsuccess?.(undefined as never)
@@ -709,6 +765,33 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         ? (value as Readonly<Record<string, unknown>>)[keyPath]
         : undefined
     return typeof holder === 'number' ? holder : undefined
+  }
+
+  const seedStore = (
+    name: string,
+    version: number,
+    store: string,
+    records: ReadonlyArray<unknown>,
+    indexes: ReadonlyArray<readonly [string, string]>,
+  ): void => {
+    const state = ensureDatabase(name)
+    state.version = version
+    const created: StoreState = {
+      name: store,
+      keyPath: 'key',
+      indexes: new Map(indexes),
+      records: new Map(),
+    }
+    for (const record of records) {
+      const holder =
+        typeof record === 'object' && record !== null
+          ? (record as Readonly<Record<string, unknown>>)['key']
+          : undefined
+      if (typeof holder === 'string') {
+        created.records.set(holder, { key: holder, value: record })
+      }
+    }
+    state.stores.set(store, created)
   }
 
   return {
@@ -747,26 +830,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       const found = databases.get(name)?.stores.get(store)
       return found === undefined ? undefined : [...found.records.values()].map((record) => record.value)
     },
-    seed: (name, version, store, records) => {
-      const state = ensureDatabase(name)
-      state.version = version
-      const created: StoreState = {
-        name: store,
-        keyPath: 'key',
-        indexes: new Map([['by-insertion', 'seq']]),
-        records: new Map(),
-      }
-      for (const record of records) {
-        const holder =
-          typeof record === 'object' && record !== null
-            ? (record as Readonly<Record<string, unknown>>)['key']
-            : undefined
-        if (typeof holder === 'string') {
-          created.records.set(holder, { key: holder, value: record })
-        }
-      }
-      state.stores.set(store, created)
-    },
+    seed: (name, version, store, records) =>
+      seedStore(name, version, store, records, [['by-insertion', 'seq']]),
+    seedWithoutIndexes: (name, version, store, records) => seedStore(name, version, store, records, []),
     seedAt: (name, version, store, entries) => {
       const state = ensureDatabase(name)
       state.version = version

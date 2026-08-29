@@ -5,11 +5,13 @@ on:
     branches: [main]
   pull_request:
 
-# These are public repositories, so a fork PR runs this workflow. Nothing here
-# needs write access, and an unset block inherits an org default that is not
-# managed in Terraform.
+# These are public repositories, so a fork PR runs this workflow. The runtime
+# dependency is a read-only GitHub Packages package; nothing here needs write
+# access, and an unset block inherits an org default that is not managed in
+# Terraform.
 permissions:
   contents: read
+  packages: read
 
 jobs:
   ci:
@@ -36,6 +38,11 @@ jobs:
           node-version: "24"
           cache: "pnpm"
 
+      - name: Authenticate GitHub Packages
+        run: npm config set //npm.pkg.github.com/:_authToken "$NODE_AUTH_TOKEN" --location=user
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install dependencies
         # --ignore-scripts: pnpm runs postinstall, and a fork PR can edit
         # package.json and the lockfile consistently and still satisfy
@@ -45,45 +52,53 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
-      # oxlint is provided by the Nix devShell (flake.nix), not a package.json
-      # devDependency — see flake.nix's comment on why. Installing Nix just for
-      # this one step is the org-wide trade-off (DEPENDENCY_POLICY.md §5
-      # "前提条件"): one pinned oxlint version instead of 16 repos each
-      # independently drifting on their own npm-resolved version.
-      - name: Set up Nix
-        uses: ./.github/actions/nix-setup
-        with:
-          cachix-cache: ${{ vars.CACHIX_CACHE }}
-          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - name: Browser type check
+        run: pnpm typecheck:browser
+
+      - name: Check source policy
+        run: pnpm check:source-policy
+
+      - name: Check package verification script
+        run: pnpm scripts:check
 
       - name: Lint
-        run: nix develop --command pnpm lint
+        run: pnpm lint
 
       - name: Test
         run: pnpm test
 
-      # RELEASE_STANDARD.md §1.2: catch a user-facing PR that forgot to add a
-      # changeset. Only meaningful on a PR (there is nothing to diff against on
+      - name: Install Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Browser test
+        run: pnpm test:browser
+
+      # Catch a user-facing PR that forgot to add a changeset. Only meaningful
+      # on a PR (there is nothing to diff against on
       # a push to main itself). Not a perfect filter — a docs-only or
       # CI-only PR will also be flagged — so treat a failure here as a prompt
       # to run `pnpm changeset` (or confirm the change truly needs none),
       # rather than as an unconditional hard requirement.
       - name: Changeset status
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         # `--since=main` (bare branch name) fails here: actions/checkout
         # leaves the runner in detached HEAD with no local `main` branch,
         # only the remote-tracking `origin/main`, so `git merge-base main
         # HEAD` errors with "does main exist and it's synced with remote?".
         run: pnpm changeset status --since=origin/main
 
-      # Hard gate (TEST_STANDARD.md §3): statements/branches/functions/lines
-      # all at 99%, enforced by `vitest run --coverage` itself via
+      # Hard gate: statements/branches/functions/lines all at 100%, enforced
+      # by `vitest run --coverage` itself via
       # `vitest.config.ts#test.coverage.thresholds`. Kept as a separate step
       # from `pnpm verify` rather than folded into it, so the fast gate stays
       # fast and the coverage report is still produced (and uploaded below)
       # even when this step fails.
       - name: Coverage
         run: pnpm test:coverage
+
+      - name: Verify published package
+        run: pnpm package:verify
 
       - name: Upload coverage report
         if: always()

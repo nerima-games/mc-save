@@ -1,7 +1,7 @@
 /**
  * NOT A TEST — a fixture that is COMPILED by one.
  *
- * `test/indexeddb-storage.test.ts` builds a TypeScript program over this file
+ * `test/indexeddb-surface.test.ts` builds a TypeScript program over this file
  * with `lib: ["ES2024", "DOM"]` and asserts it produces zero diagnostics. That
  * is what proves the claim `domain/indexeddb-surface.ts` makes: a real
  * `IDBFactory`, `IDBDatabase`, `IDBTransaction`, `IDBObjectStore`, `IDBIndex`
@@ -30,7 +30,7 @@ import type {
   IdbRequest,
   IdbStringList,
   IdbTransaction,
-} from '../../src/domain/indexeddb-surface'
+} from '../../src/domain/indexeddb-surface.js'
 
 declare const browserIndexedDb: IDBFactory
 declare const browserOpenRequest: IDBOpenDBRequest
@@ -100,15 +100,20 @@ export const installsHandlersOnTheRealThing = (): void => {
  */
 export const drivesTheRealApiThroughTheNarrowTypes = (): void => {
   const factory: IdbFactory = browserIndexedDb
-  const request = factory.open('mc-save/fixture', 1)
+  const request = factory.open('mc-save/fixture', 2)
 
   request.onupgradeneeded = () => {
     // The upgrade path: the event is UNREADABLE here, on purpose. See the
     // header of `domain/indexeddb-surface.ts`.
     const database = request.result
-    if (!database.objectStoreNames.contains('saves')) {
-      const created = database.createObjectStore('saves', { keyPath: 'key' })
-      created.createIndex('by-insertion', 'seq')
+    const store = database.objectStoreNames.contains('saves')
+      ? request.transaction?.objectStore('saves')
+      : database.createObjectStore('saves', { keyPath: 'key' })
+    if (store === undefined) {
+      throw new TypeError('IndexedDB upgrade transaction is unavailable')
+    }
+    if (!store.indexNames.contains('by-insertion')) {
+      store.createIndex('by-insertion', 'seq')
     }
   }
 

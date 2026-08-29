@@ -1,55 +1,40 @@
 /**
  * `StoragePort` — the seam between a save format and the medium it lands on.
  *
- * PRE-AUDIT FIRST CUT (叩き台).
- *
  * ---------------------------------------------------------------------------
  * Why the Port is this narrow
  * ---------------------------------------------------------------------------
  *
- * The reference implementation's storage service had seven methods, and four of
- * them (`saveChunk`, `loadChunk`, `saveWorldMetadata`, `loadWorldMetadata`)
- * were the same two operations specialised to two payload types
- * (`packages/world/infrastructure/storage-service.ts:96-139`). The domain
- * knowledge — that a chunk is keyed `worldId:x:z` and metadata by bare
- * `worldId` (`storage-idb-model.ts:27-28`) — lived inside the adapter, so
- * adding a fifth kind of saved thing meant editing the IndexedDB code.
+ * The adapter knows only keys and sealed envelopes. Which key a chunk gets is
+ * the consumer's domain decision, because the consumer defines the chunk
+ * format. Adding another saved value therefore requires a format definition,
+ * not another storage-adapter method.
  *
- * Here the adapter knows only keys and envelopes. Which key a chunk gets is
- * mc-worldgen's business, because mc-worldgen is what defines the chunk format.
- *
- * The narrowness is also what made five different in-memory doubles necessary
- * over there — `packages/world/test/storage-service-test-utils.ts:49-125`,
- * `:129-189`, `chunk-manager-test-utils.ts:20-39`,
- * `block-cycle-test-utils.ts:22-34`, and a fifth inline at
- * `storage-service.property.test.ts:30-42`, whose own comment admits it
- * "mirrors makeInMemoryStorageService". Worse, the main double replaced Schema
- * decoding with hand-written type guards (`storage-service-test-utils.ts:30-44`),
- * so its notion of "corrupt" did not match production's. One canonical
- * in-memory adapter ships from this module for exactly that reason.
+ * One canonical in-memory adapter ships from this module so contract tests can
+ * exercise the same port used by the IndexedDB adapter. Both adapters preserve
+ * the same cloning, ordering, batch, and compare-and-set semantics.
  */
-import { Brand, Context, Effect, Layer, Option, Ref } from 'effect'
-import { StorageError } from './errors'
-import type { SaveEnvelope } from './envelope'
+import { Context, Effect, Layer, Option, Ref } from 'effect'
+import { StorageError } from './errors.js'
+import type { SaveEnvelope } from './envelope.js'
+import { sameSaveEnvelope } from './integrity.js'
+import { SaveKey } from './save-key.js'
 
-/**
- * An opaque storage key.
- *
- * Refined rather than nominal so that an empty key — which several storage
- * backends silently accept and then cannot enumerate — is rejected at the
- * constructor rather than discovered later.
- */
-export type SaveKey = string & Brand.Brand<'SaveKey'>
-
-export const SaveKey = Brand.refined<SaveKey>(
-  (value) => value.trim().length > 0,
-  (value) => Brand.error(`SaveKey must be a non-blank string, received ${JSON.stringify(value)}`),
-)
+export { SaveKey, saveKeyForWorld } from './save-key.js'
 
 /** One ordered change in an atomic storage checkpoint. */
 export type StorageMutation =
-  | { readonly _tag: 'Put'; readonly key: SaveKey; readonly envelope: SaveEnvelope }
-  | { readonly _tag: 'Remove'; readonly key: SaveKey }
+  | {
+      readonly _tag: 'Put'
+      readonly key: SaveKey
+      readonly envelope: SaveEnvelope
+      readonly expected?: Option.Option<SaveEnvelope>
+    }
+  | {
+      readonly _tag: 'Remove'
+      readonly key: SaveKey
+      readonly expected?: Option.Option<SaveEnvelope>
+    }
 
 export type StorageService = {
   readonly get: (key: SaveKey) => Effect.Effect<Option.Option<SaveEnvelope>, StorageError>
@@ -64,10 +49,8 @@ export type StorageService = {
   /**
    * Every key currently present, in insertion order.
    *
-   * A value rather than a function: listing takes no arguments, and the
-   * reference implementation made exactly this distinction for
-   * `listWorldMetadata` (`storage-service.ts:168`) — worth keeping, because it
-   * is the shape that makes `yield* storage.keys` read correctly.
+   * A value rather than a function: listing takes no arguments, and this shape
+   * makes `yield* storage.keys` read correctly in Effect code.
    */
   readonly keys: Effect.Effect<ReadonlyArray<SaveKey>, StorageError>
 }
@@ -78,26 +61,62 @@ export class StoragePort extends Context.Tag('@nerima-games/mc-save/StoragePort'
  * The canonical in-memory adapter.
  *
  * Not a test-only convenience: it is the reference semantics that every real
- * adapter must match, and the contract tests in `test/storage-port.test.ts` are
- * written against the interface so they can be re-run against the IndexedDB
- * adapter when it lands.
+ * adapter must match, and the contract tests are written against the interface
+ * so they can be run against every storage adapter.
  *
  * `Ref<HashMap>` rather than a raw `Map`: `put` and `remove` must be atomic
  * with respect to `keys`, and `Ref.update` gives that without a lock.
  */
+type CommitOutcome =
+  | { readonly _tag: 'success' }
+  | { readonly _tag: 'failure'; readonly error: StorageError }
+
+const cloneStructured = <A>(value: A): A =>
+  (globalThis as unknown as { readonly structuredClone: <T>(value: T) => T }).structuredClone(value)
+
+const cloneEnvelope = (
+  operation: string,
+  key: SaveKey,
+  envelope: SaveEnvelope,
+): Effect.Effect<SaveEnvelope, StorageError> =>
+  Effect.try({
+    try: () => cloneStructured(envelope),
+    catch: (cause) => new StorageError({ operation, key, cause }),
+  })
+
+const matchesExpected = (
+  current: SaveEnvelope | undefined,
+  expected: Option.Option<SaveEnvelope>,
+): boolean =>
+  Option.isNone(expected) ? current === undefined : current !== undefined && sameSaveEnvelope(current, expected.value)
+
+const conflictError = (key: SaveKey): StorageError =>
+  new StorageError({ operation: 'in-memory.commitBatch:conflict', key })
+
 export const makeInMemoryStorage: Effect.Effect<StorageService> = Effect.gen(function* () {
   const store = yield* Ref.make<ReadonlyMap<string, SaveEnvelope>>(new Map())
 
   return {
     get: (key) =>
-      Ref.get(store).pipe(Effect.map((current) => Option.fromNullable(current.get(key)))),
+      Ref.get(store).pipe(
+        Effect.flatMap((current) => {
+          const envelope = current.get(key)
+          return envelope === undefined
+            ? Effect.succeed(Option.none())
+            : cloneEnvelope('in-memory.get', key, envelope).pipe(Effect.map(Option.some))
+        }),
+      ),
 
     put: (key, envelope) =>
-      Ref.update(store, (current) => {
-        const next = new Map(current)
-        next.set(key, envelope)
-        return next
-      }),
+      cloneEnvelope('in-memory.put', key, envelope).pipe(
+        Effect.flatMap((cloned) =>
+          Ref.update(store, (current) => {
+            const next = new Map(current)
+            next.set(key, cloned)
+            return next
+          }),
+        ),
+      ),
 
     remove: (key) =>
       Ref.update(store, (current) => {
@@ -107,22 +126,55 @@ export const makeInMemoryStorage: Effect.Effect<StorageService> = Effect.gen(fun
       }),
 
     commitBatch: (mutations) =>
-      Ref.update(store, (current) => {
-        const next = new Map(current)
-        for (const mutation of mutations) {
-          if (mutation._tag === 'Put') {
-            next.set(mutation.key, mutation.envelope)
-          } else {
-            next.delete(mutation.key)
-          }
+      Effect.gen(function* () {
+        const outcome = yield* Ref.modify(
+          store,
+          (current): readonly [CommitOutcome, ReadonlyMap<string, SaveEnvelope>] => {
+            const next = new Map(current)
+            for (const mutation of mutations) {
+              const existing = next.get(mutation.key)
+              if (mutation.expected !== undefined && !matchesExpected(existing, mutation.expected)) {
+                return [{ _tag: 'failure', error: conflictError(mutation.key) }, current]
+              }
+
+              if (mutation._tag === 'Put') {
+                try {
+                  next.set(mutation.key, cloneStructured(mutation.envelope))
+                } catch (cause) {
+                  return [
+                    {
+                      _tag: 'failure',
+                      error: new StorageError({ operation: 'in-memory.commitBatch', key: mutation.key, cause }),
+                    },
+                    current,
+                  ]
+                }
+              } else {
+                next.delete(mutation.key)
+              }
+            }
+            return [{ _tag: 'success' }, next]
+          },
+        )
+        if (outcome._tag === 'failure') {
+          yield* Effect.fail(outcome.error)
         }
-        return next
       }),
 
     readBatch: (keys) =>
-      Ref.get(store).pipe(
-        Effect.map((current) => keys.map((key) => Option.fromNullable(current.get(key)))),
-      ),
+      Effect.gen(function* () {
+        const current = yield* Ref.get(store)
+        const result: Array<Option.Option<SaveEnvelope>> = []
+        for (const key of keys) {
+          const envelope = current.get(key)
+          result.push(
+            envelope === undefined
+              ? Option.none()
+              : Option.some(yield* cloneEnvelope('in-memory.readBatch', key, envelope)),
+          )
+        }
+        return result
+      }),
 
     keys: Ref.get(store).pipe(Effect.map((current) => [...current.keys()].map((key) => SaveKey(key)))),
   }
@@ -134,9 +186,9 @@ export const InMemoryStorageLayer: Layer.Layer<StoragePort> = Layer.effect(Stora
  * An adapter that fails every write, for testing the caller's error path.
  *
  * The reference needed this too (`storage-service-test-utils.ts:129-189`) and
- * hand-rolled it per test file. Shipping it means the retry/quota policy that
- * eventually sits on top of `StoragePort` can be tested by the repository that
- * owns the policy, not by whoever remembers to write a fake.
+ * hand-rolled it per test file. Shipping it means the retry/quota policy in
+ * `withStorageRetry` can be tested by the repository that owns the policy, not
+ * by whoever remembers to write a fake.
  */
 export const failingStorageLayer = (operation: string): Layer.Layer<StoragePort> =>
   Layer.succeed(StoragePort, {

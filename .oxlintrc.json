@@ -3,24 +3,15 @@
   // oxlint is the ONLY lint/format configuration in this repository.
   // There is deliberately no prettier, no biome and no .editorconfig.
   //
-  // NOTE on the `Date.now()` ban: this repository used to enforce it with a
-  // custom script (scripts/check-dependency-whitelist.ts), which org standard
-  // (PACKAGE_STANDARD.md "scripts/check-dependency-whitelist.ts の廃止") has
-  // retired in favour of oxlint's `no-restricted-imports` below. oxlint 0.12
-  // implements neither `no-restricted-syntax` nor `no-restricted-properties`,
-  // and `no-restricted-globals` is listed but not implemented (verified
-  // empirically: a file containing `Date.now()` produces 0 diagnostics under
-  // all three rules), so the raw-clock-read ban itself currently has no
-  // automated enforcement. DEPENDENCY_POLICY.md leaves this to each
-  // repository's discretion; move it back here when oxlint implements one of
-  // the rules above.
+  // Raw wall-clock reads are checked by scripts/check-source-policy.mjs because
+  // the lint rules for restricted syntax and properties are not portable here.
   "env": {
     "es2022": true,
     "node": true
   },
   "settings": {
     "typescript": {
-      "version": "5.9"
+      "version": "7.0"
     }
   },
   "plugins": [],
@@ -111,8 +102,8 @@
     "default-case": "warn",
     "default-case-last": "warn",
     "no-empty-character-class": "warn",
-    // Declared for intent and for the day oxlint implements it; inert in 0.12
-    // (listed by `oxlint --rules` but not actually implemented).
+    // Kept for the restricted-global contract; raw clock reads are checked by
+    // scripts/check-source-policy.mjs rather than relying on this rule.
     "no-restricted-globals": ["warn", "name", "open", "close", "event"],
     "no-restricted-imports": [
       "warn",
@@ -126,18 +117,10 @@
         ],
         "patterns": [
           {
-            // NOTE: DEPENDENCY_POLICY.md's own Tier1 example uses a negative
-            // lookahead (`(?!mc-kernel\b)`), but oxlint's regex option is
-            // matched by the Rust `regex` crate, which does not support
-            // lookaround assertions -- that pattern silently never matches
-            // anything (verified empirically: it produces 0 diagnostics for
-            // any @nerima-games/* import, including the ones it is meant to
-            // restrict). Enumerating the other 15 roster repos explicitly,
-            // the same strategy DEPENDENCY_POLICY.md §5 already uses for its
-            // Tier2/3/4 examples, is what actually fires. Update this list if
-            // the org roster (DEPENDENCY_POLICY.md §1) changes.
+            // oxlint's Rust regex engine does not support lookaround, so the
+            // other organisation packages are enumerated explicitly here.
             "regex": "^@nerima-games/(mc-audio|mc-compose|mc-dev-meta|mc-meshing|mc-noise|mc-physics|mc-playground-kit|mc-render|mc-sim|mc-worldgen|mx-gameplay|mx-multiplayer|mx-redstone|mx-ui)(/.*)?$",
-            "message": "mc-save is a Tier1 library (DEPENDENCY_POLICY.md) and must not depend on any other @nerima-games/* package. mc-kernel is universally importable and exempt; mc-save does not currently use it either, since @nerima-games/mc-kernel is not yet published (see docs/versioning.md)."
+            "message": "mc-save may depend on mc-kernel for canonical Minecraft primitives, but must not depend on other @nerima-games/* packages."
           }
         ]
       }

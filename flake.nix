@@ -1,5 +1,5 @@
 {
-  description = "mc-save: Persistence toolkit for the nerima-games Minecraft-clone rebuild: versioned save formats with migration chains, a format registry, and the StoragePort with an in-memory adapter.";
+  description = "mc-save: official Minecraft Java save codecs and strict versioned persistence for the nerima-games Minecraft-clone rebuild.";
 
   inputs = {
     # nixos-unstable, not nixpkgs-unstable: it advances only after the NixOS
@@ -21,6 +21,8 @@
       pkgsFor = system: nixpkgs.legacyPackages.${system};
     in
     {
+      formatter = forAllSystems (system: (pkgsFor system).nixfmt);
+
       devShells = forAllSystems (
         system:
         let
@@ -31,21 +33,14 @@
           # from corepack rather than nixpkgs so that the version is decided by
           # the `packageManager` field in package.json — one source of truth
           # instead of two that can drift.
-          #
-          # oxlint is the opposite case: it is NOT a package.json devDependency.
-          # It used to be, and every repo in the org independently drifted onto
-          # a different version (some on 0.12.x, some on 1.76.x) without anyone
-          # noticing, because the config file (`.oxlintrc.json`) had a filename
-          # bug that meant it was never actually being loaded either way — see
-          # DEPENDENCY_POLICY.md §5's "前提条件" note. Once that bug was fixed,
-          # a single pinned Nix-provided oxlint became the one source of truth
-          # instead of 16 independently-drifting npm pins.
           default = pkgs.mkShell {
             packages = [
               pkgs.nodejs_24
               pkgs.corepack_24
-              pkgs.typescript-language-server
+              # CI resolves this tool from package.json; Nix users get the
+              # same command without a global install.
               pkgs.oxlint
+              pkgs.typescript-language-server
             ];
 
             shellHook = ''
