@@ -1,176 +1,71 @@
 # アーキテクチャ
 
-## 1. 4 階層
+## レイヤー
 
-plan.md §2.2 の 4 階層。**性質が違うものを同じ階層に置かない**ことが唯一の規律である。
+mc-save は、ゲームの状態を知らない保存基盤です。
 
-| 階層 | リポジトリ | 性質 |
+| レイヤー | 主なモジュール | 責務 |
 | --- | --- | --- |
-| 安定ライブラリ | kernel / noise / meshing / physics / **save** / audio | 純粋関数・狭い界面・変更頻度が低い。相互独立で並行構築できる |
-| 基盤 | worldgen / sim / render / playground-kit | 状態とサービス（**名詞**）。体験モジュールが乗る土台 |
-| 体験モジュール | mx-gameplay / mx-redstone / mx-ui / mx-multiplayer | ルールと UI（**動詞**）。互いを知らず、基盤サービス経由でのみ会話する |
-| 合成 | mc-compose | Layer マージ + stage 順序表 + E2E。ロジックを持たない |
+| format | `format*.ts`、`format-definition.ts` | schema、名前、現行 version、encode/decode |
+| integrity | `envelope.ts`、`integrity*.ts` | canonical bytes、checksum、サイズ、sealed 値 |
+| persistence | `persistence.ts`、`save-preparation.ts`、`batch-save.ts` | codec と Port の接続、単件・一括操作 |
+| adapter | `storage-port.ts`、`indexeddb-*.ts`、`durable-save.ts` | 媒体、atomic commit、durable record、retry |
+| Minecraft codec | `minecraft-*.ts`、`anvil-region.ts` | Java wire format と container の再利用可能な実装 |
 
-階層外に `mc-dev-meta`（plan.md §6 Step 0 の開発用 workspace）がある。
-これは他リポジトリを clone するだけで、依存はしない。
+## 依存方向
 
-## 2. 依存グラフ（16 リポジトリ全体）
-
-実線 = 実行時依存 (`dependencies`)、点線 = プレビュー起動時のみ (`devDependencies`)。
-
-```mermaid
-graph BT
-  kernel["mc-kernel<br/>共有語彙"]
-  noise["mc-noise<br/>ノイズ/密度関数"]
-  meshing["mc-meshing<br/>グリーディメッシング"]
-  physics["mc-physics<br/>Euler + AABB"]
-  save["mc-save<br/>永続化ツールキット"]
-  audio["mc-audio<br/>WebAudio + 字幕"]
-  worldgen["mc-worldgen<br/>地形/構造物生成"]
-  sim["mc-sim<br/>entity + inventory + game"]
-  render["mc-render<br/>描画 + 入力サービス"]
-  kit["mc-playground-kit<br/>共通操作ハーネス"]
-  gameplay["mx-gameplay<br/>採掘/Mob/流体/昼夜"]
-  redstone["mx-redstone<br/>レッドストーン"]
-  ui["mx-ui<br/>HUD/メニュー/インベントリ"]
-  multiplayer["mx-multiplayer<br/>ネットワーク同期"]
-  compose["mc-compose<br/>合成 + QA + E2E"]
-
-  noise --> kernel
-  meshing --> kernel
-  physics --> kernel
-  save --> kernel
-  audio --> kernel
-  worldgen --> kernel
-  worldgen --> noise
-  worldgen --> save
-  sim --> kernel
-  sim --> physics
-  sim --> save
-  sim --> worldgen
-  render --> kernel
-  render --> meshing
-  render --> sim
-  render --> worldgen
-  kit --> kernel
-  kit --> worldgen
-  kit --> sim
-  kit --> render
-  gameplay --> sim
-  gameplay --> worldgen
-  gameplay --> audio
-  gameplay -.-> kit
-  redstone --> sim
-  redstone --> worldgen
-  redstone -.-> kit
-  ui --> sim
-  ui --> audio
-  multiplayer --> sim
-  compose --> gameplay
-  compose --> redstone
-  compose --> ui
-  compose --> multiplayer
-
-  style save fill:#2d6a4f,color:#fff
-```
-
-このグラフは組織全体の [DEPENDENCY_POLICY.md](https://github.com/nerima-games/.github/blob/main/DEPENDENCY_POLICY.md)
-§1 が正典として記述しており、mc-save 自身の許可先は `.oxlintrc.json` の `no-restricted-imports`
-で機械的に強制される（旧・`scripts/check-dependency-whitelist.ts` の `REPOSITORY_POLICY.dependencyGraph`
-は org 標準の移行に伴い廃止された）。
-図と DEPENDENCY_POLICY.md が食い違ったら DEPENDENCY_POLICY.md が正である。
-
-### 強制されるルール
-
-| ルール | 内容 |
-| --- | --- |
-| ハード失敗 | 違反があれば CI は非ゼロ終了する。警告で済ませない |
-| 循環禁止 | 例外リスト（「co-evolution ペア」等）を設けない |
-| **推移閉包の禁止** | A→B、B→C のとき A は C を import できない。依存は直接依存のみが import 許可を意味する |
-| kernel は例外 | mc-kernel はどこからでも import 可（ただし `package.json` への記載は必要） |
-| 宣言と実体の一致 | import する `@nerima-games/*` は `package.json` に無ければ違反 |
-| kit は devDependency 専用 | `dependencies` に入れたら CI fail |
-| `Date.now()` 禁止 | 時刻は注入された Clock Port から取得する |
-
-## 3. mc-save の位置
-
-**安定ライブラリ階層（tier 1）のリーフ。**
-
-- **親（mc-save が依存してよいもの）**: `mc-kernel` のみ。
-  ホワイトリスト上の直接依存は**空集合**である。
-- **子（mc-save に依存するもの）**: `mc-worldgen`、`mc-sim`。
-  この 2 つがチャンク／プレイヤー状態のフォーマットを mc-save のツールキットで**自分で定義する**。
-
-```mermaid
-graph BT
+~~~mermaid
+graph TD
   kernel["mc-kernel"]
-  save["mc-save<br/>（このリポジトリ）"]
-  worldgen["mc-worldgen<br/>チャンクフォーマットを定義"]
-  sim["mc-sim<br/>プレイヤー状態フォーマットを定義"]
+  format["format / integrity"]
+  persistence["persistence / batch / durable"]
+  adapter["StoragePort / IndexedDB"]
+  minecraft["Minecraft wire / container"]
+  consumer["ゲーム側 consumer"]
 
-  save --> kernel
-  worldgen --> save
-  sim --> save
+  format --> kernel
+  persistence --> format
+  persistence --> adapter
+  minecraft --> kernel
+  consumer --> format
+  consumer --> persistence
+  consumer --> minecraft
+~~~
 
-  style save fill:#2d6a4f,color:#fff
-```
+mc-save の直接 runtime dependency は `effect` と `@nerima-games/mc-kernel` です。
+mc-kernel から `WorldId`、`ChunkCoord`、`ChunkAxis`、`CHUNK_SIZE_XZ` を再利用し、
+識別子検証と座標計算を重複実装しません。依存境界は `.oxlintrc.json` でも検査します。
 
-### 依存の向きが逆転していないことの確認
+consumer が `mc-worldgen` や `mc-sim` の domain schema を mc-save に持ち込むことはありません。
+逆方向の import が必要になった場合は、保存層ではなく責務分割を見直します。
 
-mc-save が `mc-worldgen` を import したくなったら、それは**設計が壊れた合図**である。
-チャンクの永続化フォーマットは worldgen が `defineFormat` で定義するものであって、
-mc-save が「チャンクとは何か」を知る必要はない。
+## 保存データフロー
 
-参照実装はこの逆転を起こしていた。ストレージサービスがチャンクとワールドメタデータを
-名指しで知っており（`packages/world/infrastructure/storage-service.ts:96-139` の
-`saveChunk` / `loadChunk` / `saveWorldMetadata` / `loadWorldMetadata`）、
-そのために永続化と世界生成が同じパッケージから出られなくなっていた。
+~~~text
+typed value
+  -> Schema encode
+  -> draft envelope
+  -> canonical bytes / checksum / size validation
+  -> sealed envelope
+  -> StoragePort
+  -> IndexedDB or another adapter
+~~~
 
-## 4. 構成ルール（plan.md §2.3）
+読み込みは逆方向ですが、媒体から戻った値をまず runtime schema と integrity で検証します。
+TypeScript の型注釈だけを信頼しないことが重要です。
 
-### 4-1. 基盤 = 名詞、体験 = 動詞
+## IndexedDB の境界
 
-`InventoryService` のような**状態の置き場**は基盤階層に置く。
-「掘ったらドロップする」という**ルール**は体験階層に置く。
-体験モジュール間の依存エッジはゼロであり、
-「採掘 → インベントリに入る」は sim の `InventoryService` を経由して実現する。
+IndexedDB の database/store/index 名、layout version、record 変換、transaction error mapping は
+`indexeddb-layout.ts`、`indexeddb-records.ts`、`indexeddb-runtime.ts` に分離しています。
+`indexeddb-surface.ts` は必要な DOM API の型だけを構造的に表現し、Node 側の型環境へ DOM 全体を
+持ち込みません。Node の fake IndexedDB と Chromium の実 IndexedDB は同じ Port 契約を検証します。
 
-mc-save は名詞ですらなく、その下の道具（**動詞も名詞も持たない純粋な機構**）である。
-「いつ保存するか」は mc-save の関心ではない。自動保存のスケジュールは sim / compose が持つ。
+IndexedDB の内部 layout version と save format version は独立しています。layout upgrade は
+adapter の実装変更であり、旧版 save payload を現行 schema へ変換する migration ではありません。
 
-### 4-2. mc-playground-kit は devDependency 専用
+## Minecraft の境界
 
-kit は「ミニ世界 + カメラ + レンダラ + 入力を 1 秒で束ねる糊」であり、プレビュー専用である。
-実行時入力サービスを所有するのは **mc-render** であって kit ではない。
-
-kit を `dependencies` に入れると、出荷ビルドから入力処理が消える。
-mc-save は Tier1 で `@nerima-games/*` への直接依存を一切許可しないため、
-`.oxlintrc.json` の `no-restricted-imports` がそもそも `@nerima-games/mc-playground-kit` を
-含むあらゆる `@nerima-games/*` の import を弾く。
-mc-save は kit を devDependency としても使わない（プレビューを持たないため）。
-
-### 4-3. stage 実行順序表は mc-compose が唯一所有する
-
-各モジュールは `StageRegistration.after` で**順序制約を宣言するだけ**であり、
-全順序 (total order) を解決するのは compose だけである。
-どのリポジトリも「自分は 3 番目に走る」と書いてはならない。
-
-標準の骨格（plan.md §4.2）:
-
-```
-input → simulation(physics → interactions → entities → fluids → redstone → time/weather)
-      → camera-mirror → chunk-sync → render → post-fx → hud-sync
-```
-
-mc-save は frame stage を一切登録しない。永続化は stage ではなく、
-`forkDaemon` された自動保存ループ（sim が所有）から呼ばれる。
-
-## 5. なぜ 16 に分けたのか
-
-単一リポジトリ (84k LOC) では「正しく動くことが保証される単位」が大きすぎ、
-検証しきれなかった。分割の目的は**体験単位ごとに正しさを単独で閉じる**ことであり、
-そのためにリポジトリは「テスト green + プレビューで目視確認済み」で完結する。
-
-mc-save にプレビューは無い（UI を持たないため）。
-代わりに**ラウンドトリップとマイグレーションのテストが完了条件**になる。
-詳細は [testing.md](./testing.md)。
+NBT は tag の wire codec、Anvil は region header・chunk record・sector packing・compression の
+container codec です。どの tag を level data や chunk payload として保存するかは consumer が
+決めます。標準 path helper は公式 Java の directory/resource 規則に対応するための純粋関数です。

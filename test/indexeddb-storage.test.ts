@@ -1,51 +1,14 @@
 /**
- * The IndexedDB adapter, and the port of E2E triage row #9.
+ * Transaction, error, retry, and persistence-path behavior for IndexedDB.
  *
- * ---------------------------------------------------------------------------
- * PORTED E2E: `'minecraft-worlds' IndexedDB is created after game starts`
- * ---------------------------------------------------------------------------
- *
- * Reference: ts-minecraft/e2e/persistence/save-load.e2e.ts:37-46 via
- * e2e/helpers/db-helpers.ts. mc-compose/docs/e2e-triage.md §3.3 row #9 marks it
- * DEMOTE → mc-save, and then marks it NOT PORTED for two stated reasons. Both
- * are now answerable, and the answers are not the same:
- *
- *   (a) THERE WAS NO ADAPTER TO ASK. There is now — `domain/indexeddb-storage.ts`
- *       — so the question has somewhere to go.
- *
- *   (b) TWO OF ITS THREE ASSERTIONS DO NOT SURVIVE THE PORT, and that has not
- *       changed. The row asserted:
- *
- *         1. a database NAMED `minecraft-worlds` exists
- *         2. it has object stores named `chunks` and `metadata`
- *         3. the `metadata` store is non-empty
- *
- *       Assertion 2 is about the REFERENCE'S SCHEMA, and removing exactly that
- *       knowledge is mc-save's design (`domain/storage-port.ts` header,
- *       `index.ts` header). Asserting it here would be asserting the
- *       reference's design against a repository built to not have it. Assertion
- *       1 is half portable: the NAME `minecraft-worlds` belongs to the game, not
- *       to the persistence toolkit, for the same reason the key `worldId:x:z`
- *       does. What mc-save can own is that the adapter opens THE NAME IT WAS
- *       GIVEN, verbatim, and creates ITS OWN layout under it.
- *
- * So the row is ported as the triage says it should be — "IndexedDB アダプタを
- * 書く者のアダプタテストとして残す", an adapter test phrased about this
- * adapter's own store layout — and the block below says so at each assertion.
- *
- * `test/binary-roundtrip.test.ts` carries a test explicitly labelled as NOT a
- * port of this row, and that label is still correct: it makes the one claim
- * about ENUMERATION that is really about persistence rather than about the
- * medium, and it makes it through `StoragePort` with no database in sight.
- * This file makes the claims that genuinely need a database.
+ * Database naming and upgrade layout assertions live in focused companion
+ * files so this suite can stay centered on adapter operations.
  */
-import { describe, expect, it } from '@effect/vitest'
+import { describe, expect } from 'vitest'
+import { effect } from './support/effect-test.js'
 import { Effect, Exit, Option, Schema, Scope } from 'effect'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-import ts from 'typescript'
-import { saveEnvelope } from '../src/domain/envelope'
-import { defineFormat } from '../src/domain/format'
+import { defineFormat } from '../src/domain/format.js'
+import type { SaveEnvelope } from '../src/domain/envelope.js'
 import {
   INSERTION_INDEX_NAME,
   indexedDbStorageLayer,
@@ -53,19 +16,29 @@ import {
   makeIndexedDbStorage,
   SAVE_STORE_NAME,
   STORE_LAYOUT_VERSION,
-} from '../src/domain/indexeddb-storage'
-import type { IdbDatabase } from '../src/domain/indexeddb-surface'
-import { loadFrom, saveTo } from '../src/domain/persistence'
-import { SaveKey, StoragePort } from '../src/domain/storage-port'
-import { domException, makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR, type FakeIndexedDb } from './fake-indexeddb'
-import { storagePortContract } from './storage-port-contract'
+} from '../src/domain/indexeddb-storage.js'
+import type {
+  IdbDatabase,
+  IdbFactory,
+  IdbOpenRequest,
+  IdbStringList,
+  IdbTransaction,
+} from '../src/domain/indexeddb-surface.js'
+import { openDatabase, runTransaction } from '../src/domain/indexeddb-runtime.js'
+import { loadFrom, saveTo } from '../src/domain/persistence.js'
+import { SaveKey, StoragePort } from '../src/domain/storage-port.js'
+import { domException, makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR } from './fake-indexeddb.js'
+import { storagePortContract } from './storage-port-contract.js'
+import { sealedTestEnvelope, unsealedTestEnvelope } from './support/save-envelope.js'
 
 const DATABASE = 'mc-save/test/worlds'
 const A = SaveKey('alpha')
 const B = SaveKey('beta')
-const envelope = (payload: unknown) => saveEnvelope('mc-save/test/idb', 1, payload)
+const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/idb', 1, payload)
+const unsealedEnvelope = (payload: unknown): SaveEnvelope =>
+  unsealedTestEnvelope('mc-save/test/idb', 1, payload)
 
-const layerFor = (factory: FakeIndexedDb, databaseName = DATABASE) =>
+const layerFor = (factory: IdbFactory, databaseName = DATABASE) =>
   indexedDbStorageLayer({ factory, databaseName })
 
 /** A fresh medium per run, which is what isolation means for a real adapter. */
@@ -77,118 +50,13 @@ const freshLayer = () => layerFor(makeFakeIndexedDb())
 
 storagePortContract('IndexedDB', freshLayer)
 
-// ---------------------------------------------------------------------------
-// Triage row #9, as much of it as mc-save can own
-// ---------------------------------------------------------------------------
-
-describe("PORTED E2E (row #9): the adapter's own database and layout", () => {
-  it.effect('creates a database under the name it was given, and no other', () =>
-    Effect.gen(function* () {
-      // Reference assertion 1, minus the constant. `db-helpers.ts` asked
-      // `indexedDB.databases()` for a database literally named
-      // `minecraft-worlds`; mc-save has no business knowing that string, so
-      // what is asserted is that the caller's name is used VERBATIM.
-      //
-      // `docs/design-notes.md` wanted a regression test that the adapter opens
-      // `'minecraft-worlds'` and not `'ts-minecraft'` — "1 行だが、間違えたら
-      // 全プレイヤーのワールドが消えたように見える". This is that test with the
-      // constant moved to its owner: get the name wrong here and every world
-      // looks deleted just the same.
-      const factory = makeFakeIndexedDb()
-
-      yield* Effect.gen(function* () {
-        const storage = yield* StoragePort
-        yield* storage.put(A, envelope({ world: 1 }))
-      }).pipe(Effect.provide(layerFor(factory, 'a-name-mc-save-did-not-choose')))
-
-      expect(factory.databaseNames()).toStrictEqual(['a-name-mc-save-did-not-choose'])
-    }),
-  )
-
-  it.effect('creates ITS OWN store layout, not the reference’s chunks/metadata', () =>
-    Effect.gen(function* () {
-      // Reference assertion 2, inverted. The row asserted stores named `chunks`
-      // and `metadata`; asserting those here would re-import the schema this
-      // repository deliberately dropped (`domain/storage-port.ts` header: the
-      // reference's adapter knew a chunk was keyed `worldId:x:z`, which is what
-      // made persistence and world generation inseparable).
-      //
-      // So the claim is the opposite one, and it is the stronger of the two:
-      // there is exactly ONE store, it is the adapter's, and the reference's
-      // two are absent.
-      const factory = makeFakeIndexedDb()
-
-      yield* Effect.gen(function* () {
-        const storage = yield* StoragePort
-        yield* storage.put(A, envelope({}))
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      expect(factory.storeNamesOf(DATABASE)).toStrictEqual([SAVE_STORE_NAME])
-      expect(factory.storeNamesOf(DATABASE)).not.toContain('chunks')
-      expect(factory.storeNamesOf(DATABASE)).not.toContain('metadata')
-      expect(factory.indexNamesOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([INSERTION_INDEX_NAME])
-    }),
-  )
-
-  it.effect('the store is non-empty after a save, and holds one record per key', () =>
-    Effect.gen(function* () {
-      // Reference assertion 3, which IS portable: `metadata.count()` was really
-      // asking "did starting the game write anything at all". Phrased about the
-      // adapter's own store, that survives intact.
-      const factory = makeFakeIndexedDb()
-
-      yield* Effect.gen(function* () {
-        const storage = yield* StoragePort
-        yield* storage.put(A, envelope({ n: 1 }))
-        yield* storage.put(B, envelope({ n: 2 }))
-        yield* storage.put(A, envelope({ n: 3 }))
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      const records = factory.recordsOf(DATABASE, SAVE_STORE_NAME) ?? []
-      expect(records.length).toBe(2)
-    }),
-  )
-
-  it.effect('the record shape is inspectable: key, insertion sequence, envelope', () =>
-    Effect.gen(function* () {
-      // `test/binary-roundtrip.test.ts` states the rule this follows: naming the
-      // stored shape "is what makes the save file inspectable, and what makes a
-      // change to it a visible diff rather than a silent format break". The
-      // reference never looked at what was stored, which is how a wrong-sized
-      // buffer reached `chunk-manager-ops-storage.ts:47-50`.
-      const factory = makeFakeIndexedDb()
-
-      yield* Effect.gen(function* () {
-        const storage = yield* StoragePort
-        yield* storage.put(A, envelope({ n: 1 }))
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([
-        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } },
-      ])
-    }),
-  )
-
-  it.effect('opens at the layout version it declares', () =>
-    Effect.gen(function* () {
-      const factory = makeFakeIndexedDb()
-
-      yield* Effect.gen(function* () {
-        yield* StoragePort
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      const listed = (yield* Effect.promise(() => factory.databases?.() ?? Promise.resolve([]))) ?? []
-      expect(listed).toStrictEqual([{ name: DATABASE, version: STORE_LAYOUT_VERSION }])
-    }),
-  )
-})
 
 // ---------------------------------------------------------------------------
 // Insertion order: the claim a medium-backed adapter does not get for free
 // ---------------------------------------------------------------------------
 
 describe('insertion order survives the medium', () => {
-  it.effect('keys answers in insertion order, NOT in ascending key order', () =>
+  effect('keys answers in insertion order, NOT in ascending key order', () =>
     Effect.gen(function* () {
       // The contract block already asserts two keys. Four written in descending
       // alphabetical order is what tells the two orderings apart beyond doubt:
@@ -203,7 +71,7 @@ describe('insertion order survives the medium', () => {
     }).pipe(Effect.provide(freshLayer())),
   )
 
-  it.effect('a re-written key keeps its original position, it does not move to the end', () =>
+  effect('a re-written key keeps its original position, it does not move to the end', () =>
     Effect.gen(function* () {
       // `Map.set` gives the in-memory adapter this for nothing. IndexedDB gives
       // it nothing at all: a `put` that allocated a new sequence number would
@@ -217,7 +85,7 @@ describe('insertion order survives the medium', () => {
     }).pipe(Effect.provide(freshLayer())),
   )
 
-  it.effect('a deleted key does not hand its sequence number to the next writer', () =>
+  effect('a deleted key does not hand its sequence number to the next writer', () =>
     Effect.gen(function* () {
       // The reason the next sequence number comes from the index's LARGEST
       // value rather than from the record count: after a delete the count is
@@ -251,13 +119,12 @@ describe('insertion order survives the medium', () => {
     }),
   )
 })
-
 // ---------------------------------------------------------------------------
 // Error mapping. The channel is StorageError and stays StorageError.
 // ---------------------------------------------------------------------------
 
 describe('what the medium can do wrong, and what the caller is told', () => {
-  it.effect('a quota failure is a StorageError the retry policy can recognise', () =>
+  effect('a quota failure is a StorageError the retry policy can recognise', () =>
     Effect.gen(function* () {
       // `domain/errors.ts` says the retry policy "belongs on top of this type
       // rather than inside it", and records what the reference's policy did:
@@ -279,7 +146,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('an ordinary DOMException is NOT reported as quota, so it stays retryable', () =>
+  effect('an ordinary DOMException is NOT reported as quota, so it stays retryable', () =>
     Effect.gen(function* () {
       // The half that matters more. Marking everything as quota would make the
       // policy give up on a transient failure and lose the player's save; the
@@ -298,7 +165,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a failure whose own `name` is not even a string is NOT reported as quota either', () =>
+  effect('a failure whose own `name` is not even a string is NOT reported as quota either', () =>
     Effect.gen(function* () {
       // `readString`'s own defensive re-check, one level more paranoid than
       // the test above: every `DOMException`-shaped cause this fake otherwise
@@ -320,7 +187,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a transaction that aborts fails the write AND leaves the store untouched', () =>
+  effect('a transaction that aborts fails the write AND leaves the store untouched', () =>
     Effect.gen(function* () {
       // A browser may abort a transaction of its own accord, with `error` null.
       // Two things must hold and the second is the one that is easy to miss: the
@@ -347,10 +214,39 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('commitBatch rolls back earlier writes when a later mutation fails', () =>
+  effect('preserves an undefined transaction cause without inventing one', () =>
+    Effect.gen(function* () {
+      const transaction: {
+        readonly objectStore: () => object
+        readonly abort: () => void
+        readonly error: undefined
+        oncomplete: ((event: never) => void) | null
+        onerror: ((event: never) => void) | null
+        onabort: ((event: never) => void) | null
+      } = {
+        objectStore: () => ({}),
+        abort: () => undefined,
+        error: undefined,
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const database = { transaction: () => transaction } as unknown as IdbDatabase
+
+      const error = yield* Effect.flip(
+        runTransaction(database, 'readonly', 'indexeddb.test', undefined, () => {
+          queueMicrotask(() => transaction.onabort?.(undefined as never))
+        }),
+      )
+
+      expect(error.cause).toBeUndefined()
+    }),
+  )
+
+  effect('commitBatch rolls back earlier writes when a later mutation fails', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
-      const invalid = envelope({ cannotClone: () => undefined })
+      const invalid = unsealedEnvelope({ cannotClone: () => undefined })
 
       const error = yield* Effect.gen(function* () {
         const storage = yield* StoragePort
@@ -370,7 +266,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('commitBatch reports a browser abort and rolls the whole checkpoint back', () =>
+  effect('commitBatch reports a browser abort and rolls the whole checkpoint back', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
 
@@ -390,7 +286,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('opening below the version already on disk fails, rather than silently downgrading', () =>
+  effect('opening below the version already on disk fails, rather than silently downgrading', () =>
     Effect.gen(function* () {
       // `request.onerror` on the OPEN request itself (distinct from
       // `onblocked`): the DOM's `VersionError`, fired when the requested
@@ -412,7 +308,151 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a live connection closes itself on versionchange, so a later open does not block', () =>
+  effect('maps a synchronous factory.open failure to StorageError', () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        openDatabase({
+          databaseName: DATABASE,
+          factory: {
+            open: () => {
+              throw domException('InvalidStateError', 'open is unavailable')
+            },
+          },
+        }),
+      )
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.key).toBe(DATABASE)
+    }),
+  )
+
+  effect('maps an unavailable upgrade transaction to StorageError', () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        openDatabase({
+          databaseName: DATABASE,
+          factory: {
+            open: () => {
+              const names: IdbStringList = {
+                length: 1,
+                contains: (name) => name === SAVE_STORE_NAME,
+                item: (index) => (index === 0 ? SAVE_STORE_NAME : null),
+              }
+              const database: IdbDatabase = {
+                name: DATABASE,
+                version: STORE_LAYOUT_VERSION - 1,
+                objectStoreNames: names,
+                createObjectStore: () => {
+                  throw new Error('the existing store should be selected')
+                },
+                transaction: () => {
+                  throw new Error('the upgrade transaction is intentionally absent')
+                },
+                close: () => undefined,
+                onversionchange: null,
+              }
+              let failure: { readonly name: string; readonly message: string } | null = null
+              const request: IdbOpenRequest = {
+                result: database,
+                get error() {
+                  return failure
+                },
+                transaction: null,
+                onsuccess: null,
+                onerror: null,
+                onupgradeneeded: null,
+                onblocked: null,
+              }
+              queueMicrotask(() => {
+                try {
+                  request.onupgradeneeded?.(undefined as never)
+                  request.onsuccess?.(undefined as never)
+                } catch {
+                  failure = domException('AbortError', 'the upgrade transaction was unavailable')
+                  request.onerror?.(undefined as never)
+                }
+              })
+              return request
+            },
+          },
+        }),
+      )
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.key).toBe(DATABASE)
+    }),
+  )
+
+  effect('maps an upgrade callback exception and settles even when abort also throws', () =>
+    Effect.gen(function* () {
+      const openWithAbort = (abort: () => void) =>
+        openDatabase({
+          databaseName: `${DATABASE}/upgrade-failure`,
+          factory: {
+            open: () => {
+              const names: IdbStringList = {
+                length: 0,
+                contains: () => false,
+                item: () => null,
+              }
+              const transaction: IdbTransaction = {
+                objectStore: () => {
+                  throw new Error('the object store should not be read')
+                },
+                abort,
+                error: null,
+                oncomplete: null,
+                onerror: null,
+                onabort: null,
+              }
+              const database: IdbDatabase = {
+                name: DATABASE,
+                version: STORE_LAYOUT_VERSION - 1,
+                objectStoreNames: names,
+                createObjectStore: () => {
+                  throw new Error('the upgrade callback failed')
+                },
+                transaction: () => transaction,
+                close: () => undefined,
+                onversionchange: null,
+              }
+              const request: IdbOpenRequest = {
+                result: database,
+                error: null,
+                transaction,
+                onsuccess: null,
+                onerror: null,
+                onupgradeneeded: null,
+                onblocked: null,
+              }
+              queueMicrotask(() => {
+                request.onupgradeneeded?.(undefined as never)
+                request.onsuccess?.(undefined as never)
+              })
+              return request
+            },
+          },
+        })
+
+      const successfulAbort = yield* Effect.flip(openWithAbort(() => undefined))
+      const throwingAbort = yield* Effect.flip(
+        openWithAbort(() => {
+          throw new Error('abort itself failed')
+        }),
+      )
+
+      expect(successfulAbort._tag).toBe('StorageError')
+      expect(successfulAbort.operation).toBe('indexeddb.open')
+      expect(throwingAbort._tag).toBe('StorageError')
+      expect(throwingAbort.operation).toBe('indexeddb.open')
+      expect(throwingAbort.cause).toBeInstanceOf(Error)
+      expect((throwingAbort.cause as Error).message).toBe('the upgrade callback failed')
+    }),
+  )
+
+  effect('a live connection closes itself on versionchange, so a later open does not block', () =>
     Effect.gen(function* () {
       // The other half of the `onblocked` test below, and the reason the
       // adapter registers `database.onversionchange` at all (this file's own
@@ -450,7 +490,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a blocked open is not dead — it retries and succeeds once the blocker closes', () =>
+  effect('a blocked open is not dead — it retries and succeeds once the blocker closes', () =>
     Effect.gen(function* () {
       // The real DOM does not drop a `blocked` request; it stays pending and
       // can still fire `upgradeneeded`/`success` later, once whatever was in
@@ -489,7 +529,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a late second report, after the adapter already settled on blocked, is silently dropped', () =>
+  effect('a late second report, after the adapter already settled on blocked, is silently dropped', () =>
     Effect.gen(function* () {
       // The adapter's own `openDatabase` (`domain/indexeddb-storage.ts`) has
       // the identical "already settled" guard as `runTransaction`, and this is
@@ -512,12 +552,25 @@ describe('what the medium can do wrong, and what the caller is told', () => {
         }
       })
 
+      let adapterRequest: IdbOpenRequest | undefined
+      const adapterFactory: IdbFactory = {
+        open: (name, version) => {
+          const request = factory.open(name, version)
+          adapterRequest = request
+          return request
+        },
+      }
+
       const outcome = yield* Effect.exit(
         Effect.gen(function* () {
           yield* StoragePort
-        }).pipe(Effect.provide(layerFor(factory))),
+        }).pipe(Effect.provide(layerFor(adapterFactory))),
       )
       expect(Exit.isFailure(outcome)).toBe(true)
+
+      // A native request can report another failure after `onblocked`; the
+      // adapter must still deliver its Effect only once.
+      adapterRequest?.onerror?.(undefined as never)
 
       // The adapter's Effect has already resolved with the failure above.
       // Closing the blocker now retries the SAME underlying request, which
@@ -529,7 +582,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a blocked upgrade fails rather than waiting forever', () =>
+  effect('a blocked upgrade fails rather than waiting forever', () =>
     Effect.gen(function* () {
       // The DOM does not treat `blocked` as an error: the open stays pending
       // until the other connection closes, possibly never. Waiting is the worse
@@ -558,7 +611,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a record this adapter did not write is an error, never a silent none', () =>
+  effect('a record this adapter did not write is an error, never a silent none', () =>
     Effect.gen(function* () {
       // `none` means "new world" everywhere up the stack
       // (`domain/persistence.ts`), and `test/binary-roundtrip.test.ts` states
@@ -567,7 +620,11 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       // but unrecognisable record must be loud.
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
-        { key: 'alpha', seq: 0, somethingElse: 'not an envelope' },
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 }, unexpected: true },
+        },
       ])
 
       const error = yield* Effect.gen(function* () {
@@ -580,7 +637,34 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('readBatch is just as loud about a record this adapter did not write', () =>
+  effect('a malformed record makes compare-and-set fail as a conflict', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        {
+          key: 'alpha',
+          seq: 0,
+          envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 }, unexpected: true },
+        },
+      ])
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(
+          storage.commitBatch([
+            { _tag: 'Remove', key: A, expected: Option.some(envelope({ n: 1 })) },
+          ]),
+        )
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.commitBatch:conflict')
+      expect(error.key).toBe('alpha')
+      expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toHaveLength(1)
+    }),
+  )
+
+  effect('readBatch is just as loud about a record this adapter did not write', () =>
     Effect.gen(function* () {
       // `readBatch` has its own copy of the same "present but unrecognisable"
       // check `get` has, on its own separate code path — the two are not
@@ -588,7 +672,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       // not stand in for `readBatch`'s.
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
-        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } },
+        { key: 'alpha', seq: 0, envelope: envelope({ n: 1 }) },
         { key: 'beta', seq: 1, somethingElse: 'not an envelope' },
       ])
 
@@ -602,7 +686,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a record present under our key but carrying no string key of its own is an error too', () =>
+  effect('a record present under our key but carrying no string key of its own is an error too', () =>
     Effect.gen(function* () {
       // `readEnvelope`'s FIRST guard, ahead of and distinct from the
       // "no `envelope` field" case above: real IndexedDB's `keyPath` only
@@ -626,7 +710,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('an envelope with unknown keys is rejected before get returns it', () =>
+  effect('an envelope with unknown keys is rejected before get returns it', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
@@ -652,7 +736,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('invalid envelope fields are rejected before get returns them', () =>
+  effect('invalid envelope fields are rejected before get returns them', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
@@ -682,7 +766,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('an envelope without payload is rejected before get returns it', () =>
+  effect('an envelope without payload is rejected before get returns it', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
@@ -706,7 +790,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a strict envelope failure aborts readBatch', () =>
+  effect('a strict envelope failure aborts readBatch', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
@@ -733,7 +817,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a malformed index answer (not an array) fails keys as a StorageError', () =>
+  effect('a malformed index answer (not an array) fails keys as a StorageError', () =>
     Effect.gen(function* () {
       // Nothing reachable through `put`/`seed` can make the index answer
       // anything but a well-formed array of string keys — see
@@ -757,7 +841,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a malformed index answer (a non-string entry) fails keys as a StorageError', () =>
+  effect('a malformed index answer (a non-string entry) fails keys as a StorageError', () =>
     Effect.gen(function* () {
       // `readKeys`'s second throw: the outer value is an array, but not every
       // entry is a string.
@@ -777,7 +861,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('reports the ORIGINAL failure, not a secondary one, when the abort that follows it also fails', () =>
+  effect('reports the ORIGINAL failure, not a secondary one, when the abort that follows it also fails', () =>
     Effect.gen(function* () {
       // `guard`'s own catch (`domain/indexeddb-storage.ts`): when the body
       // that processes a request's result throws, the transaction is aborted
@@ -803,7 +887,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('a request-level failure is still reported when aborting after it also fails', () =>
+  effect('a request-level failure is still reported when aborting after it also fails', () =>
     Effect.gen(function* () {
       // `onResult`'s own onerror handler has the identical fallback, one level
       // closer to the medium: the request itself failed (`failNextWrite`), and
@@ -826,7 +910,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  it.effect('operating on a closed connection is a StorageError, not a defect', () =>
+  effect('operating on a closed connection is a StorageError, not a defect', () =>
     Effect.gen(function* () {
       // The state `onversionchange` deliberately creates: another tab is
       // upgrading, this connection closed itself, and the next write throws
@@ -851,121 +935,11 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Upgrade, and a database an older build left behind
-// ---------------------------------------------------------------------------
-
-describe('onupgradeneeded and a database written by an older version', () => {
-  it.effect('creates the store and index on a database that has never been opened', () =>
-    Effect.gen(function* () {
-      const factory = makeFakeIndexedDb()
-
-      yield* Effect.gen(function* () {
-        yield* StoragePort
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      expect(factory.storeNamesOf(DATABASE)).toStrictEqual([SAVE_STORE_NAME])
-      expect(factory.indexNamesOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([INSERTION_INDEX_NAME])
-    }),
-  )
-
-  it.effect('an older database keeps every record it had — nothing is rewritten', () =>
-    Effect.gen(function* () {
-      // THE ANSWER TO "what happens to a database written by an older version".
-      //
-      // The upgrade touches STRUCTURE only, per `docs/public-api.md` §8:
-      // "mc-save ではスキーマ移行は `defineFormat` の連鎖が担い、IndexedDB の
-      // `upgrade` はストア構造の変更だけに限定する". So an older database opens,
-      // gains whatever structure was missing, and its records are untouched —
-      // including records whose ENVELOPE is at an older format version, which is
-      // `decodeSave`'s problem and not the medium's.
-      const factory = makeFakeIndexedDb()
-      factory.seed(DATABASE, 0, SAVE_STORE_NAME, [
-        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 1 } } },
-        { key: 'beta', seq: 1, envelope: { format: 'mc-save/test/idb', version: 1, payload: { n: 2 } } },
-      ])
-
-      const found = yield* Effect.gen(function* () {
-        const storage = yield* StoragePort
-        return {
-          keys: yield* storage.keys,
-          alpha: yield* storage.get(A),
-          batch: yield* storage.readBatch([A, B]),
-        }
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      expect(found.keys).toStrictEqual([A, B])
-      expect(found.alpha).toStrictEqual(Option.some(envelope({ n: 1 })))
-      expect(found.batch).toStrictEqual([
-        Option.some(envelope({ n: 1 })),
-        Option.some(envelope({ n: 2 })),
-      ])
-    }),
-  )
-
-  it.effect('a new key written after an upgrade continues the old sequence', () =>
-    Effect.gen(function* () {
-      // The consequence of not rewriting: the sequence counter is DERIVED from
-      // what is in the store, so it survives an upgrade without being stored
-      // anywhere. A counter kept in memory would restart at zero on every
-      // launch and interleave new worlds among the old ones.
-      const factory = makeFakeIndexedDb()
-      factory.seed(DATABASE, 0, SAVE_STORE_NAME, [
-        { key: 'zulu', seq: 7, envelope: { format: 'mc-save/test/idb', version: 1, payload: {} } },
-      ])
-
-      const keys = yield* Effect.gen(function* () {
-        const storage = yield* StoragePort
-        yield* storage.put(SaveKey('alpha'), envelope({}))
-        return yield* storage.keys
-      }).pipe(Effect.provide(layerFor(factory)))
-
-      // `alpha` sorts before `zulu`; insertion order puts it after.
-      expect(keys).toStrictEqual(['zulu', 'alpha'])
-    }),
-  )
-
-  it.effect('the layout version and the save-format version are different numbers', () =>
-    Effect.gen(function* () {
-      // `domain/envelope.ts` was written to end the confusion of two version
-      // numbers that both looked like "the save version" and neither of which
-      // did anything (`storage-idb-model.ts:7` and `chunk.ts:9`, plus the
-      // separate `saveVersion` read only by a log line). Here they are told
-      // apart by construction: a format at version 3 lands in a store whose
-      // layout version is 1, the envelope records 3, the database records 1,
-      // and neither number moves the other.
-      const factory = makeFakeIndexedDb()
-      const identity = (payload: unknown) => Effect.succeed(payload)
-      const AtVersionThree = defineFormat({
-        name: 'mc-save/test/idb-versioned',
-        version: 3,
-        schema: Schema.Struct({ n: Schema.Number }),
-        // `defineFormat` refuses a format whose chain has a gap, so a v3 format
-        // must carry both steps. That refusal is itself the point being made
-        // here: the SAVE format has a migration ladder, and the STORE layout
-        // has none and needs none.
-        migrations: [
-          { from: 1, describe: 'no shape change', migrate: identity },
-          { from: 2, describe: 'no shape change', migrate: identity },
-        ],
-      })
-
-      yield* saveTo(AtVersionThree, A, { n: 1 }).pipe(Effect.provide(layerFor(factory)))
-
-      const listed = (yield* Effect.promise(() => factory.databases?.() ?? Promise.resolve([]))) ?? []
-      expect(listed).toStrictEqual([{ name: DATABASE, version: STORE_LAYOUT_VERSION }])
-      expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([
-        { key: 'alpha', seq: 0, envelope: { format: 'mc-save/test/idb-versioned', version: 3, payload: { n: 1 } } },
-      ])
-    }),
-  )
-})
-
-// ---------------------------------------------------------------------------
 // End to end through the toolkit, not just through the Port
 // ---------------------------------------------------------------------------
 
 describe('a save crosses the real seam', () => {
-  it.effect('saveTo then loadFrom round-trips through a database', () =>
+  effect('saveTo then loadFrom round-trips through a database', () =>
     Effect.gen(function* () {
       // Every other test here drives `StoragePort` directly. This one goes
       // through the codec, which is the path the game actually takes, and
@@ -986,83 +960,5 @@ describe('a save crosses the real seam', () => {
         expect(loaded.value.blocks).toBeInstanceOf(Uint8Array)
       }
     }).pipe(Effect.provide(freshLayer())),
-  )
-})
-
-// ---------------------------------------------------------------------------
-// The property this whole design rests on
-// ---------------------------------------------------------------------------
-
-const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-
-describe('REGRESSION: the IndexedDB surface is a real subset of the real DOM', () => {
-  it.effect(
-    'a real IDBFactory, IDBDatabase and IDBRequest satisfy the adapter without a cast',
-    () =>
-      Effect.sync(() => {
-        // The claim `domain/indexeddb-surface.ts` makes, checked rather than
-        // asserted. It is NOT obvious and NOT stable under a careless edit:
-        // under `strictFunctionTypes` a function-typed PROPERTY is contravariant
-        // in its parameter, so the spelling everybody reaches for first —
-        // `onsuccess: (() => void) | null` — makes a real `IDBRequest`
-        // unassignable with "Target signature provides too few arguments".
-        // Nothing in `pnpm typecheck` would notice, because that project has no
-        // DOM to be assignable FROM; the first person to notice would be a
-        // browser consumer, and the fix they would reach for is
-        // `as unknown as`, which is where the type safety would actually be lost.
-        const fixture = path.join(repositoryRoot, 'test', 'fixtures', 'indexeddb-surface.ts')
-        const program = ts.createProgram({
-          rootNames: [fixture],
-          options: {
-            noEmit: true,
-            strict: true,
-            exactOptionalPropertyTypes: true,
-            noUncheckedIndexedAccess: true,
-            target: ts.ScriptTarget.ES2022,
-            module: ts.ModuleKind.ESNext,
-            moduleResolution: ts.ModuleResolutionKind.Bundler,
-            moduleDetection: ts.ModuleDetectionKind.Force,
-            skipLibCheck: true,
-            types: [],
-            // THE POINT OF THE TEST: the real thing, not a hand-written stub.
-            lib: ['lib.es2022.d.ts', 'lib.dom.d.ts'],
-          },
-        })
-
-        const diagnostics = [
-          ...program.getSemanticDiagnostics(),
-          ...program.getSyntacticDiagnostics(),
-        ].filter((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error)
-
-        expect(
-          diagnostics.map((diagnostic) =>
-            ts.flattenDiagnosticMessageText(diagnostic.messageText, ' '),
-          ),
-        ).toStrictEqual([])
-      }),
-    30_000,
-  )
-
-  it.effect('the shipped project still compiles with NO DOM at all', () =>
-    Effect.sync(() => {
-      // The other half of the proof, and the load-bearing one. `pnpm typecheck`
-      // runs `tsconfig.build.json`, which must still say `lib: ["ES2024"]` and
-      // `types: []` — WITH the adapter inside it. If a later change adds "DOM"
-      // there, every module in `domain/` silently becomes able to reach
-      // `window` and `localStorage`, and the reason this toolkit can be used
-      // from a worker or a server is gone with no test going red.
-      const config = ts.readConfigFile(
-        path.join(repositoryRoot, 'tsconfig.build.json'),
-        ts.sys.readFile,
-      )
-      const parsed = ts.parseJsonConfigFileContent(config.config as unknown, ts.sys, repositoryRoot)
-
-      expect(parsed.options.lib).toStrictEqual(['lib.es2024.d.ts'])
-      expect(parsed.options.types).toStrictEqual([])
-      expect(
-        parsed.fileNames.some((file) => file.endsWith('domain/indexeddb-storage.ts')),
-      ).toBe(true)
-      expect(parsed.fileNames.some((file) => file.includes('/test/fixtures/'))).toBe(false)
-    }),
   )
 })

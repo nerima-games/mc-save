@@ -1,9 +1,7 @@
 ---
 ---
 
-Provide oxlint via the Nix devShell (flake.nix) instead of a package.json
-devDependency, so the whole org resolves to one pinned oxlint version instead
-of each repo drifting independently (some repos were stuck on oxlint 0.12.x,
-which never implemented `no-restricted-imports`). CI now installs Nix and runs
-lint through `nix develop --command pnpm lint`. No change to the published
-package's public API or behaviour — empty changeset, no version bump.
+Provide the same `oxlint` command in the Nix devShell as in the package-managed
+CI install, so local Nix users do not need a global install. CI continues to
+resolve its toolchain from `package.json` and the lockfile. This is a tooling
+only change with no published package API or behavior change.

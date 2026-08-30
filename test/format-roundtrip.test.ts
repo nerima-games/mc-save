@@ -1,7 +1,10 @@
-import { describe, expect, it } from '@effect/vitest'
+import { describe, expect } from 'vitest'
+import { effect } from './support/effect-test.js'
 import { Effect, ParseResult, Schema } from 'effect'
-import { FIRST_VERSION, saveEnvelope } from '../src/domain/envelope'
-import { decodeSave, defineFormat, encodeSave, validateMigrationChain } from '../src/domain/format'
+import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
+import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
+import type { SaveEnvelope } from '../src/domain/envelope.js'
+import { sealedTestEnvelope } from './support/save-envelope.js'
 
 /**
  * A format whose encoded form differs from its decoded form, so that a
@@ -20,8 +23,14 @@ const PlayerState = defineFormat({
   schema: PlayerStateSchema,
 })
 
+const VersionTwoPlayerState = defineFormat({
+  name: 'mc-save/test/version-two-player-state',
+  version: 2,
+  schema: Schema.Struct({ worldId: Schema.String }),
+})
+
 describe('encodeSave / decodeSave', () => {
-  it.effect('round-trips a value through its encoded representation', () =>
+  effect('round-trips a value through its encoded representation', () =>
     Effect.gen(function* () {
       const original = {
         worldId: 'world-1',
@@ -36,7 +45,25 @@ describe('encodeSave / decodeSave', () => {
     }),
   )
 
-  it.effect('stamps the envelope with the format name and current version', () =>
+  effect('rejects malformed envelopes at the public decode boundary', () =>
+    Effect.gen(function* () {
+      const malformedValues: ReadonlyArray<unknown> = [
+        null,
+        { format: PlayerState.name, version: 0, payload: null },
+        { format: PlayerState.name, version: 'not-a-version', payload: null },
+      ]
+
+      for (const malformed of malformedValues) {
+        const result = yield* Effect.flip(decodeSave(PlayerState, malformed as SaveEnvelope))
+        expect(result._tag).toBe('SaveDecodeError')
+        if (result._tag === 'SaveDecodeError') {
+          expect(result.reason).toBe('the value is not a well-formed save envelope')
+        }
+      }
+    }),
+  )
+
+  effect('stamps the envelope with the format name and current version', () =>
     Effect.gen(function* () {
       const envelope = yield* encodeSave(PlayerState, {
         worldId: 'world-1',
@@ -46,10 +73,8 @@ describe('encodeSave / decodeSave', () => {
 
       expect(envelope.format).toBe('mc-save/test/player-state')
       expect(envelope.version).toBe(1)
-      // The encoded payload is the *wire* shape: a number, not a Date. This is
-      // what the reference implementation did not have — it stored real `Date`
-      // objects via structured clone (`Schema.DateFromSelf`,
-      // world-metadata-model.ts:89), which ties the save file to a JS runtime.
+      // The encoded payload is the *wire* shape: a number, not a Date. Keeping
+      // runtime-only objects out of the envelope makes the stored form portable.
       expect(envelope.payload).toStrictEqual({
         worldId: 'world-1',
         health: 20,
@@ -58,12 +83,16 @@ describe('encodeSave / decodeSave', () => {
     }),
   )
 
-  it.effect('refuses an envelope belonging to a different format, even when the payload would fit', () =>
+  effect('refuses an envelope belonging to a different format, even when the payload would fit', () =>
     Effect.gen(function* () {
       // The payload here is a perfectly valid PlayerState. Only the name differs,
       // and that alone must be disqualifying — otherwise a key collision between
       // two formats decodes as success.
-      const foreign = saveEnvelope('mc-save/test/something-else', 1, { worldId: 'w', health: 1, lastPlayed: 0 })
+      const foreign = sealedTestEnvelope('mc-save/test/something-else', 1, {
+        worldId: 'w',
+        health: 1,
+        lastPlayed: 0,
+      })
       const result = yield* Effect.flip(decodeSave(PlayerState, foreign))
 
       expect(result._tag).toBe('SaveDecodeError')
@@ -74,17 +103,12 @@ describe('encodeSave / decodeSave', () => {
   /**
    * REGRESSION: a save from a newer build is not corruption.
    *
-   * The reference implementation had no way to tell the two apart. Its bulk
-   * listing partitioned worlds into `{ valid, corrupt }`
-   * (`storage-serialization.ts:43-49`) purely on whether `Schema` accepted
-   * them, and the menu rendered anything in `corrupt` as
-   * `` `${worldId} (corrupt)` `` with a delete button as the only action
-   * (`main-menu-handlers.ts:137-142`). A player who launched an older build
-   * was therefore invited to delete a perfectly good world.
+   * Listing can use this distinction to keep a newer save unavailable without
+   * classifying it as corrupt or offering destructive recovery actions.
    */
-  it.effect('reports a save written by a newer build as such, not as corruption', () =>
+  effect('reports a save written by a newer build as such, not as corruption', () =>
     Effect.gen(function* () {
-      const fromFuture = saveEnvelope('mc-save/test/player-state', 99, { anything: true })
+      const fromFuture = sealedTestEnvelope('mc-save/test/player-state', 99, { anything: true })
       const result = yield* Effect.flip(decodeSave(PlayerState, fromFuture))
 
       expect(result._tag).toBe('SaveDecodeError')
@@ -96,15 +120,28 @@ describe('encodeSave / decodeSave', () => {
     }),
   )
 
-  it.effect('reports the recorded version when the payload does not satisfy the schema', () =>
+  effect('reports the recorded version when the payload does not satisfy the schema', () =>
     Effect.gen(function* () {
-      const broken = saveEnvelope('mc-save/test/player-state', 1, { worldId: 'w', health: 999, lastPlayed: 0 })
+      const broken = sealedTestEnvelope('mc-save/test/player-state', 1, { worldId: 'w', health: 999, lastPlayed: 0 })
       const result = yield* Effect.flip(decodeSave(PlayerState, broken))
 
       expect(result._tag).toBe('SaveDecodeError')
       if (result._tag === 'SaveDecodeError') {
         expect(result.version).toBe(1)
         expect(result.reason).toContain('current schema')
+      }
+    }),
+  )
+
+  effect('rejects an older version when no compatibility decoder exists', () =>
+    Effect.gen(function* () {
+      const previous = sealedTestEnvelope(VersionTwoPlayerState.name, 1, { worldId: 'world-1' })
+      const result = yield* Effect.flip(decodeSave(VersionTwoPlayerState, previous))
+
+      expect(result._tag).toBe('SaveDecodeError')
+      if (result._tag === 'SaveDecodeError') {
+        expect(result.version).toBe(1)
+        expect(result.reason).toContain('only the current format version is accepted')
       }
     }),
   )
@@ -130,7 +167,7 @@ describe('encodeSave / decodeSave', () => {
     schema: Schema.Struct({ score: NonNegativeOnEncode }),
   })
 
-  it.effect('fails encoding, not decoding, when the value cannot satisfy the schema on its way out', () =>
+  effect('fails encoding, not decoding, when the value cannot satisfy the schema on its way out', () =>
     Effect.gen(function* () {
       const result = yield* Effect.flip(encodeSave(ScoreOnly, { score: -1 }))
 
@@ -140,138 +177,125 @@ describe('encodeSave / decodeSave', () => {
       expect(result.reason).toBe('the value does not satisfy the format schema, so it cannot be encoded')
     }),
   )
+
+  const UnknownFormat = defineFormat({
+    name: 'mc-save/test/unknown',
+    version: 1,
+    schema: Schema.Unknown,
+  })
+
+  effect('reports unsupported encoded values as typed save errors', () =>
+    Effect.gen(function* () {
+      const result = yield* Effect.flip(encodeSave(UnknownFormat, new Date(0)))
+
+      expect(result._tag).toBe('SaveDecodeError')
+      expect(result.format).toBe('mc-save/test/unknown')
+      expect(result.reason).toContain('only plain objects and Uint8Array values are supported')
+    }),
+  )
+
+  effect('normalizes non-Error canonicalization failures', () =>
+    Effect.gen(function* () {
+      const throwingPayload = new Proxy(
+        {},
+        {
+          ownKeys: () => {
+            throw Object.create(null)
+          },
+        },
+      )
+      const result = yield* Effect.flip(encodeSave(UnknownFormat, throwingPayload))
+
+      expect(result.reason).toBe('the encoded value is not storage-compatible')
+    }),
+  )
 })
 
-describe('validateMigrationChain', () => {
-  const noop = { from: 1, describe: 'noop', migrate: (payload: unknown) => Effect.succeed(payload) }
-
-  it.effect('accepts a complete chain', () =>
+describe('format definition', () => {
+  effect('reports why an envelope format name is blank', () =>
     Effect.sync(() => {
-      expect(
-        validateMigrationChain({
-          name: 'f',
-          version: 3,
-          migrations: [noop, { ...noop, from: 2 }],
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeSchema)({ format: '   ', version: 1, payload: null }),
+      ).toThrow('Save envelope format must be a non-blank string')
+    }),
+  )
+
+  effect('reports invalid envelope scalar and payload values', () =>
+    Effect.sync(() => {
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeSchema)({
+          format: 'mc-save/test/invalid',
+          version: Number.MAX_SAFE_INTEGER + 1,
+          payload: null,
+          integrity: { algorithm: 'fnv1a32', byteLength: 0, checksum: '00000000' },
         }),
-      ).toStrictEqual([])
+      ).toThrow('Save envelope version must be a safe integer')
+
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeSchema)({
+          format: 'mc-save/test/invalid',
+          version: 1,
+          payload: null,
+          integrity: {
+            algorithm: 'fnv1a32',
+            byteLength: Number.MAX_SAFE_INTEGER + 1,
+            checksum: '00000000',
+          },
+        }),
+      ).toThrow('Save integrity byte length must be a safe integer')
+
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeSchema)({
+          format: 'mc-save/test/invalid',
+          version: 1,
+          payload: undefined,
+          integrity: { algorithm: 'fnv1a32', byteLength: 0, checksum: '00000000' },
+        }),
+      ).toThrow('Save envelope payload must be present')
+
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeDraftSchema)({ format: '   ', version: 1, payload: null }),
+      ).toThrow('Save envelope format must be a non-blank string')
+
+      expect(() =>
+        Schema.decodeUnknownSync(SaveEnvelopeDraftSchema)({
+          format: 'mc-save/test/invalid',
+          version: 1,
+          payload: undefined,
+        }),
+      ).toThrow('Save envelope payload must be present')
     }),
   )
 
-  it.effect('accepts version 1 with no migrations at all', () =>
+  effect('throws at definition time for a blank format name', () =>
     Effect.sync(() => {
-      expect(validateMigrationChain({ name: 'f', version: 1, migrations: [] })).toStrictEqual([])
+      expect(() => defineFormat({ name: '  ', version: 1, schema: Schema.String })).toThrow(
+        /name must be a non-blank string/u,
+      )
     }),
   )
 
-  it.effect('rejects a hole, naming the version whose saves would become unreadable', () =>
-    Effect.sync(() => {
-      const problems = validateMigrationChain({
-        name: 'f',
-        version: 4,
-        migrations: [noop, { ...noop, from: 3 }],
-      })
-
-      expect(problems).toHaveLength(1)
-      expect(problems[0]).toContain('no migration from version 2 to 3')
-    }),
-  )
-
-  it.effect('rejects two migrations starting at the same version', () =>
-    Effect.sync(() => {
-      const problems = validateMigrationChain({
-        name: 'f',
-        version: 2,
-        migrations: [noop, { ...noop, describe: 'other' }],
-      })
-
-      expect(problems.some((problem) => problem.includes('must be linear'))).toBe(true)
-    }),
-  )
-
-  it.effect('rejects a step that would overshoot the declared version', () =>
-    Effect.sync(() => {
-      const problems = validateMigrationChain({
-        name: 'f',
-        version: 2,
-        migrations: [noop, { ...noop, from: 2 }],
-      })
-
-      expect(problems.some((problem) => problem.includes('above the current version'))).toBe(true)
-    }),
-  )
-
-  it.effect('rejects a non-integer or below-FIRST_VERSION top-level version, and stops there', () =>
-    Effect.sync(() => {
-      const problems = validateMigrationChain({ name: 'f', version: 0, migrations: [] })
-
-      expect(problems).toStrictEqual([
-        `version must be an integer >= ${String(FIRST_VERSION)}, received 0`,
-      ])
-    }),
-  )
-
-  it.effect('rejects a non-integer or below-FIRST_VERSION migration.from', () =>
-    Effect.sync(() => {
-      const problems = validateMigrationChain({
-        name: 'f',
-        version: 2,
-        migrations: [{ ...noop, from: 0 }],
-      })
-
-      expect(
-        problems.some((problem) => problem.includes('migration.from must be an integer >=')),
-      ).toBe(true)
-    }),
-  )
-
-  it.effect('rejects any migration declared on a format that starts at FIRST_VERSION', () =>
-    Effect.sync(() => {
-      // A format at FIRST_VERSION has never had an earlier shape, so there is
-      // nothing for a migration to start from — declaring one is always a
-      // mistake, never a legitimate chain of one.
-      const problems = validateMigrationChain({
-        name: 'f',
-        version: FIRST_VERSION,
-        migrations: [noop],
-      })
-
-      expect(
-        problems.some((problem) =>
-          problem.includes(`version is ${String(FIRST_VERSION)} but 1 migration(s) are declared`),
-        ),
-      ).toBe(true)
-    }),
-  )
-})
-
-describe('defineFormat', () => {
-  it.effect('throws at definition time when the chain has a hole', () =>
+  effect('throws at definition time for a version below the first supported version', () =>
     Effect.sync(() => {
       expect(() =>
         defineFormat({
-          name: 'mc-save/test/broken',
-          version: 3,
+          name: 'mc-save/test/invalid-version',
+          version: 0,
           schema: Schema.String,
-          migrations: [],
         }),
-      ).toThrow(/no migration from version 1 to 2/u)
+      ).toThrow(/version must be a safe integer >= 1/u)
     }),
   )
 
-  it.effect('sorts migrations into chain order regardless of declaration order', () =>
+  effect('returns only the current format contract', () =>
     Effect.sync(() => {
       const format = defineFormat({
-        name: 'mc-save/test/sorted',
-        version: 4,
+        name: 'mc-save/test/current',
+        version: 1,
         schema: Schema.Unknown,
-        migrations: [
-          { from: 3, describe: 'c', migrate: Effect.succeed },
-          { from: 1, describe: 'a', migrate: Effect.succeed },
-          { from: 2, describe: 'b', migrate: Effect.succeed },
-        ],
       })
 
-      expect(format.migrations.map((migration) => migration.from)).toStrictEqual([1, 2, 3])
+      expect(Object.keys(format).sort()).toStrictEqual(['name', 'schema', 'version'])
     }),
   )
 })

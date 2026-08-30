@@ -1,255 +1,73 @@
-# 設計注意
+# 設計ノート
 
-plan.md §3.5 の 設計注意 を、参照実装の実コード (file:line) で裏取りして展開したもの。
-plan.md §6 Step 2 の方針に従い、**各項目を「書くべき回帰テストの名前」として提示する**。
+## DN-1: format version は厳密一致
 
-`✅` = このスケルトンに実装済み / `⬜` = 未実装（実装時に必ず入れる）
+`decodeSave` は format name と version を確認し、future version と current version 以外を
+拒否します。旧版を暗黙に読み替えると、保存データがいつ変換されたか追跡できず、失敗時の
+復旧判断も壊れます。version を上げるときは consumer が新しい format を定義し、必要なら
+明示的な外部変換を所有します。
 
----
+## DN-2: draft と sealed を分ける
 
-<a id="dn-1"></a>
-## DN-1 ✅ フォーマット変更は必ずマイグレーション付き
+`encodeSave` の結果は schema 変換済みの draft です。`prepareSave` が canonical bytes、
+checksum、サイズ制限を検証して sealed envelope にします。保存 Port が受け付ける型を sealed
+だけにすることで、整合性検証前の値が永続化境界へ流れません。
 
-> plan.md §3.5:「フォーマット変更は必ずマイグレーション付き」
+## DN-3: canonical bytes は integrity の共通境界
 
-### 参照実装の実態: マイグレーション機構は**存在しない**
+checksum は payload の意味ではなく、保存 envelope の canonical representation に対して計算
+します。encode、seal、decode、IndexedDB record の各経路が同じ canonical bytes を使い、
+JSON の property order や runtime object identity に依存しないようにします。
 
-`packages/`、`src/`、`e2e/` を `MigrationManager|MigrationError` で grep した結果は **0 件**。
-設計文書 `docs/reference/game-systems/save-file-format.md:644-690` に
-`migrate: (data, fromVersion, toVersion)` の構想があるが、実装されていない。
+## DN-4: 外部から戻る値は必ず再検証する
 
-実際の互換性戦略は **`Schema.optional` を付けるだけ**で、ソース中に明言がある:
+`StoragePort` の戻り値は TypeScript 上では envelope でも、実体は IndexedDB など外部媒体から
+戻った unknown なデータです。`loadFrom` は envelope schema、サイズ、checksum、format schema の
+順で検証します。壊れた 1 record を扱う `listFrom` は、媒体全体の failure と record 単位の
+decode failure を分離します。
 
-- `packages/world/domain/world-metadata-model.ts:76`
-  「Home dimension of the entity (absent in pre-dimension saves → overworld)」
-- 同 `:114-117`「Plain optional so pre-vehicle saves decode to undefined」
-- 同 `:126-127`「pre-feature saves decode without them and start from zero」
-- `packages/core/domain/inventory-save-data.ts:15`
-  「Anvil rename — optional keeps pre-rename saves decodable」
+## DN-5: atomic batch は Port の責務
 
-この手法は**一方向**である。フィールドの追加はできるが、
-リネーム・再構造化・意味の変更はできない。
+`commitBatch` は全 mutation を順に検証し、途中で失敗した場合は変更前の snapshot を残します。
+batch preparation は codec 側、commit の atomicity は adapter 側という分離により、複数 record
+保存でも IndexedDB と in-memory の意味を揃えます。
 
-### 本当に変更が必要になったとき何が起きたか
+## DN-6: durable save は通常 key と分離する
 
-`packages/world/application/chunk-manager-ops-storage.ts:54-60`:
+durable save は保存中断後の復旧に使う一時 key と previous key を持ちます。通常の listing から
+復旧用 key を除外し、commit 後にのみ昇格させます。durable の一時状態は save format version の
+migration ではありません。
 
-```
-// Repair chunks saved before the carver fix (hollow river/lake beds) BEFORE computing light
-healHollowWaterBeds(...)
-```
+## DN-7: retry は媒体ではなく Port wrapper に集約する
 
-これはマイグレーションである。ただし**名前が無く、バージョン番号が無く、
-テストが無く、いつ削除してよいか判断する手段が無い**マイグレーションである。
+`withStorageRetry` は全 Port 操作に同じ schedule と判定関数を適用します。quota error など
+retry 可能かどうかは媒体固有なので、`StorageRetryPolicy` として明示的に注入します。
+呼び出し側ごとに retry を書くと、put と batch で挙動がずれます。
 
-同ファイル `:47-50` にはもう 1 つある。バッファ長が違えばセーブを捨てて再生成する:
+## DN-8: Java codec は意味論から独立させる
 
-```
-Effect.logWarning(`Chunk (...) has invalid buffer length ... regenerating`)
-return Option.none()
-```
+modified UTF-8、NBT、圧縮は Java wire format の実装です。NBT の schema や tag の用途は
+consumer が決め、mc-save は特定の world/player model を import しません。深さ・サイズ・
+文字列長の上限は codec options で明示します。
 
-`packages/world/application/chunk-manager-cache.ts:10-11` の `storedFluidBuffer` も同種で、
-`fluid` が無いか長さが違えばゼロ埋めバッファを黙って差し込む。
+## DN-9: Anvil は byte layout を検証する
 
-### 書くべき回帰テスト
+Anvil region は 32 x 32 chunk の index、8 KiB の header、4 KiB sector 単位の record、
+compression id、payload length、padding を扱います。大きい payload の external
+`.mcc` record と region/entity/poi の path も同じ container 層で検証します。
 
-| テスト名 | 主張 |
-| --- | --- |
-| ✅ `defineFormat throws at definition time when the chain has a hole` | v3 なのに 1→2 が無ければ**定義時**に落ちる |
-| ✅ `validateMigrationChain rejects a hole, naming the version whose saves would become unreadable` | どのバージョンのセーブが読めなくなるかをメッセージに含む |
-| ✅ `validateMigrationChain rejects two migrations starting at the same version` | 連鎖は線形 |
-| ✅ `migrateToCurrent runs every step from the envelope version up to the current one` | v1 のセーブが v3 まで上がる |
-| ✅ `migrateToCurrent starts partway through the chain` | v2 のセーブは 2→3 だけ走る |
-| ✅ `loadFrom migrates a v1 envelope written by an old build all the way to v3` | Port 経由の実地確認 |
-| ✅ `migrateToCurrent labels a failing step with the format and the exact version pair` | エラーが `describe` を含む |
+## DN-10: パスと座標は純粋関数にする
 
-実装は `test/format-roundtrip.test.ts` / `test/migration.test.ts`。
-`test/migration.test.ts` の v1→v2 は**フィールドのリネーム**を扱っており、
-これは参照実装の戦略では表現できなかった変更である。
+dimension directory、region coordinate、負数座標の floor division、region 内 local coordinate、
+player id などの path segment 検証は `minecraft-paths.ts` に集約します。座標の型と chunk size は
+`mc-kernel` から再利用し、consumer の保存処理が同じ規則を再実装しないようにします。
 
----
+## 回帰テストの対応
 
-<a id="dn-2"></a>
-## DN-2 ⬜ 旧セーブ fixture は参照実装に存在しない
+設計判断は次のテスト群で固定します。
 
-> plan.md §3.5 検証:「**旧セーブ fixture との互換テスト**（参照実装の fixture を資産として移植）」
-
-### この指示は実行できない
-
-参照実装に旧セーブを表す fixture ファイルは **1 個も無い**。
-
-- `e2e/fixtures/` の中身は `game-page.ts`（Playwright の page object）**のみ**
-- `packages/`、`test/`、`e2e/` のどこにもセーブデータの `.json` / `.bin` / `.dat` は無い
-
-「旧セーブ」のシナリオは全てテスト内のオブジェクトリテラルで、
-フィールドを省いて構成していた
-（例: `packages/world/test/storage-service-schema.test.ts:239`
-`'requires current playerState fields'`）。
-
-### したがって mc-save 側で新規に作る
-
-これは移植ではなく**穴埋め**である。バージョンごとにゴールデンファイルを置く:
-
-```
-test/fixtures/
-  player-state.v1.json
-  player-state.v2.json
-  chunk.v1.json
-```
-
-### 書くべき回帰テスト
-
-| テスト名 | 主張 |
-| --- | --- |
-| ⬜ `every golden fixture on disk decodes to the current version` | fixture ディレクトリを走査し、全件が現行版まで上がる |
-| ⬜ `a fixture is committed for every version this format has ever had` | fixture の欠落自体を fail にする |
-
-**fixture を書き出す仕組みも同時に作ること。** 手で JSON を書くと、
-「現行コードが出力するもの」ではなく「人が出力すると思ったもの」を固定してしまう。
-
----
-
-<a id="dn-3"></a>
-## DN-3 ✅ 「破損」と「未来のセーブ」を混同しない
-
-plan.md には無いが、参照実装の実測から出てきた項目である。
-
-### 参照実装の挙動
-
-一括読み込みは `{ valid, corrupt }` に分割するが、判定基準は
-**`Schema` が受理したかどうか**だけである
-（`packages/world/infrastructure/storage-serialization.ts:43-49`）。
-
-UI 側はそれを直訳して、`corrupt` の要素に削除ボタンだけを出す
-（`packages/presentation/menu/main-menu-handlers.ts:137-142`）:
-
-```
-`${String(worldId)} (corrupt)`
-```
-
-`saveVersion` は書かれていたが分岐に使われていなかった（[public-api.md](./public-api.md) §2）ため、
-**古いビルドを起動したプレイヤーは、健全なワールドを削除するよう勧められた**ことになる。
-
-なお単発ロードと一括読み込みで挙動が違う点にも注意:
-単発は `storage-serialization.ts:11-14` で `ParseError` → `StorageError` に変換して**即座に失敗**する。
-
-### 書くべき回帰テスト
-
-| テスト名 | 主張 |
-| --- | --- |
-| ✅ `reports a save written by a newer build as such, not as corruption` | `version > current` は専用メッセージ。「削除を提案してはならない」を明記 |
-| ✅ `reports the recorded version when the payload does not satisfy the schema` | エラーがエンベロープの記録バージョンを保持する |
-| ✅ `refuses an envelope belonging to a different format, even when the payload would fit` | 鍵衝突が成功として通らない |
-| ✅ `a corrupt record does not take the whole listing down` | `listFrom` が一括読み込みを `{ valid, corrupt }` に分割し、媒体障害だけは Effect を失敗させる |
-
----
-
-<a id="dn-4"></a>
-## DN-4 ✅ DB 名は `'minecraft-worlds'`
-
-> plan.md §3.5:「参照実装の DB 名は `'minecraft-worlds'`（`'ts-minecraft'` ではない — 互換を取るなら注意）」
-
-**この記述は正しい。** 裏取り済み:
-
-```
-packages/world/infrastructure/storage-idb-model.ts:8
-export const DB_NAME = 'minecraft-worlds'
-```
-
-同ファイルの周辺定数もそのまま使う:
-
-```
-:7  export const WORLD_SCHEMA_VERSION = 3
-:9  export const DB_VERSION = 2
-:10 export const STORE_CHUNKS = 'chunks'
-:11 export const STORE_METADATA = 'metadata'
-```
-
-設定は**別 DB** である: `'minecraft-settings'` v1 / ストア `'settings'` / 鍵 `'current'`
-（`packages/game/infrastructure/settings-storage-service.ts:5-8`）。
-
-### 書くべき回帰テスト
-
-| テスト名 | 主張 |
-| --- | --- |
-| ✅ `creates a database under the name it was given, and no other` | **定数の持ち主が変わった形で移植済み**（`test/indexeddb-storage.test.ts`）。`'minecraft-worlds'` はゲーム側の定数であり、mc-save が知ってよいものではない — 鍵 `worldId:x:z` を知らないのと同じ理由。mc-save が主張できるのは「渡された名前をそのまま使う」ことで、間違えたら全プレイヤーのワールドが消えたように見えるのは同じである |
-
----
-
-<a id="dn-5"></a>
-## DN-5 ✅ ストレージ層は時計を読まない
-
-参照実装のストレージ層を `Date.now()` / `new Date(` / `performance.now()` で grep した結果は **0 件**。
-タイムスタンプは呼び出し側が `Clock.currentTimeMillis` から取って渡していた
-（`packages/app/application/main/session-persist.ts:54`, `:82`）。
-
-これは偶然ではなく、決定論とリプレイのために必要な性質である。
-
-### 書くべき回帰テスト
-
-| テスト名 | 主張 |
-| --- | --- |
-| ✅ `flags Date.now(), new Date() and performance.now()` | ゲート自体が動く |
-| ✅ `ignores a clock read that only appears inside a comment or a string` | 誤検知しない |
-| ✅ `exempts a line carrying the escape-hatch marker` | Clock Port の実装アダプタだけが逃げられる |
-
-旧実装は `test/dependency-policy.test.ts` + `pnpm check:deps`
-（`scripts/check-dependency-whitelist.ts`）だったが、org 標準（PACKAGE_STANDARD.md
-「`scripts/check-dependency-whitelist.ts` の廃止」）によりこの機構自体が廃止された。
-依存境界（誰が誰に依存してよいか）は `.oxlintrc.json` の `no-restricted-imports` に一本化されている。
-raw clock read（`Date.now()` 等）の禁止だけは、oxlint 0.12 が `no-restricted-syntax` も
-`no-restricted-properties` も実装しておらず、`no-restricted-globals` も一覧に出るだけで
-動かないため（0.12.0 で実測確認済み）、現時点で自動強制する手段が無い。
-DEPENDENCY_POLICY.md はこの種のチェックの扱いを各リポジトリの裁量としている。
-
----
-
-<a id="dn-6"></a>
-## DN-6 ⬜ チャンクは型付き配列のまま格納されている
-
-参照実装のチャンク永続化は encode/decode ステップを**持たない**。
-
-- レイアウト（`packages/world/domain/chunk.ts:11-12`）:
-  `index = y + (z * CHUNK_HEIGHT) + (x * CHUNK_HEIGHT * CHUNK_SIZE)`、
-  16×16×256 = 65,536 バイト
-- 流体バッファも同形・同サイズ（`packages/block/domain/fluid.ts:7` `FLUID_BYTE_LENGTH`）
-- 書き込みは `db.put(STORE_CHUNKS, data, chunkKey(...))`（`storage-service.ts:101-106`）
-- **skyLight / blockLight は永続化されず、ロード時に再計算される**
-  （`chunk-manager-ops-storage.ts:61` の `ctx.lightEngine.updateLight(baseChunk)`）
-
-つまり 1 チャンクあたり 64KB（ブロック）+ 64KB（流体）が無圧縮・無タグで入る。
-
-### 実装時の注意
-
-- structured clone は `Uint8Array` をそのまま通すので、
-  エンベロープの `payload` に `Uint8Array` を入れる設計は IndexedDB では成立する。
-  ただし JSON 化する経路（エクスポート、ネットワーク）では成立しない。
-  **どちらを正とするかを decide してから schema を書くこと。**
-- 圧縮は計測してから入れる。参照実装は無圧縮で運用できていた。
-
-### 書くべき回帰テスト
-
-| テスト名 | 主張 |
-| --- | --- |
-| ⬜ `a chunk payload survives a structured-clone round trip byte-for-byte` | 型付き配列が壊れない |
-| ⬜ `a chunk saved with the wrong buffer length is rejected with its recorded version, not silently regenerated` | 参照実装の `:47-50` の挙動を改善したことを固定する |
-
----
-
-## DN-7 ⬜ リトライ / クォータのポリシーは Port の上に置く
-
-参照実装のポリシー（`packages/world/infrastructure/storage-error-mapping.ts:12-19`）:
-
-- 3 回リトライ、`Schedule.exponential(100ms)`
-- `QuotaExceededError`（`DOMException.name` で判定、`:4-5`）なら中断
-- **`saveChunk` / `loadChunk` / `save|loadWorldMetadata` にのみ適用**。
-  `deleteWorld` と `listWorldMetadata` には付いていない（一貫していない）
-
-mc-save は `StorageError` を定義するだけで、`Schedule` は巻かない。
-巻く場所を決めるのは最初の実消費者（mc-worldgen）である。
-
-| テスト名 | 主張 |
-| --- | --- |
-| ✅ `failingStorageLayer fails writes with a StorageError naming the operation and key` | ポリシーを上に載せてテストできる土台がある |
-| ⬜ `the retry policy applies uniformly to every StoragePort method` | 参照実装の不統一を繰り返さない |
+- format/envelope/integrity: `test/format-roundtrip.test.ts`、`test/durable-save.test.ts`
+- batch/Port/retry: `test/batch-save.test.ts`、`test/storage-port.test.ts`、`test/storage-retry.test.ts`
+- IndexedDB layout/runtime: `test/indexeddb-*.test.ts`、`test/browser/`
+- Java codec: `test/minecraft-*.test.ts`、`test/anvil-region.test.ts`、`test/minecraft-region-files.test.ts`
+- path/key: `test/minecraft-paths.test.ts`、`test/save-key.test.ts`

@@ -42,7 +42,7 @@ const world = {
 const key = SaveKey('benchmark-world')
 const previous = SaveKey('benchmark-world::previous')
 
-const legacySave = <A, I>(format: SaveFormat<A, I>, value: A) =>
+const baselineSave = <A, I>(format: SaveFormat<A, I>, value: A) =>
   Effect.gen(function* () {
     const storage = yield* StoragePort
     const [latest = Option.none(), old = Option.none()] = yield* storage.readBatch([key, previous])
@@ -76,15 +76,15 @@ const measure = (run: Effect.Effect<void, unknown, never>, iterations: number): 
 
 const storage = Effect.runSync(makeInMemoryStorage)
 const current = saveDurably(World, key, world).pipe(Effect.provideService(StoragePort, storage))
-const legacy = legacySave(World, world).pipe(Effect.provideService(StoragePort, storage))
+const baseline = baselineSave(World, world).pipe(Effect.provideService(StoragePort, storage))
 
 await Effect.runPromise(current)
 await Effect.runPromise(current)
-const legacyMs = await measure(legacy, 5)
+const baselineMs = await measure(baseline, 5)
 const currentMs = await measure(current, 5)
 
 // Benchmark output is consumed directly by release verification.
 // eslint-disable-next-line no-console
 console.log(
-  JSON.stringify({ chunks: world.chunks.length, blocks: 64 * 16_384, legacyMs, currentMs, speedup: legacyMs / currentMs }),
+  JSON.stringify({ chunks: world.chunks.length, blocks: 64 * 16_384, baselineMs, currentMs, speedup: baselineMs / currentMs }),
 )
