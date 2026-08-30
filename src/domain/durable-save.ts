@@ -16,6 +16,8 @@ export { DEFAULT_MAX_SAVE_BYTES, sealSaveEnvelope, validateSaveEnvelope } from '
 
 interface SaveLock {
   readonly semaphore: Effect.Semaphore
+  /** The per-storage table this lock lives in, so release never has to look it up again. */
+  readonly owner: Map<string, SaveLock>
   users: number
 }
 
@@ -32,7 +34,7 @@ const acquireLock = (storage: object, key: SaveKey): SaveLock => {
     existing.users += 1
     return existing
   }
-  const created = { semaphore: Effect.runSync(Effect.makeSemaphore(1)), users: 1 }
+  const created: SaveLock = { semaphore: Effect.runSync(Effect.makeSemaphore(1)), owner: locks, users: 1 }
   locks.set(key, created)
   return created
 }
@@ -40,9 +42,8 @@ const acquireLock = (storage: object, key: SaveKey): SaveLock => {
 const releaseLock = (storage: object, key: SaveKey, lock: SaveLock): void => {
   lock.users -= 1
   if (lock.users !== 0) return
-  const locks = saveLocks.get(storage)!
-  locks.delete(key)
-  if (locks.size === 0) saveLocks.delete(storage)
+  lock.owner.delete(key)
+  if (lock.owner.size === 0) saveLocks.delete(storage)
 }
 
 const readStoredEnvelope = <A, I>(

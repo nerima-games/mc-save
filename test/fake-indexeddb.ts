@@ -86,6 +86,27 @@ export const domException = (name: string, message: string): IdbDomException => 
 /** The name a browser uses when storage is full; the mapping keys off it. */
 export const QUOTA_EXCEEDED_ERROR = 'QuotaExceededError'
 
+/**
+ * Fire a surface callback typed `(event: never) => void`
+ * (indexeddb-surface.ts: no handler here reads its event argument, so `never`
+ * is the parameter type and `undefined as never` is the only value that can
+ * occupy it). Centralised to one occurrence instead of one per call site.
+ */
+const fire = (handler: ((event: never) => void) | null | undefined): void => {
+  if (handler === null || handler === undefined) return
+  // @ts-expect-error -- nothing has type `never`; `undefined` stands in for a
+  // callback whose signature intentionally admits no real argument.
+  handler(undefined)
+}
+
+/** Narrows `unknown` to a string-indexable record without claiming a shape it has not checked. */
+const isPlainRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null
+
+/** Same shape-check a cast previously performed, expressed as a type guard instead. */
+const looksLikeIdbDomException = (value: unknown): value is IdbDomException =>
+  typeof value === 'object' && value !== null && 'name' in value
+
 type StoredRecord = {
   readonly key: string
   readonly value: unknown
@@ -395,7 +416,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       // cope with that, so the fake really does hand back `null` here.
       transaction.error = failure
       later(() => {
-        transaction.onabort?.(undefined as never)
+        fire(transaction.onabort)
       })
     }
 
@@ -412,7 +433,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       }
       transaction.error = failure
       later(() => {
-        transaction.onerror?.(undefined as never)
+        fire(transaction.onerror)
         settleAbort(failure)
       })
     }
@@ -436,7 +457,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           return
         }
         finished = true
-        transaction.oncomplete?.(undefined as never)
+        fire(transaction.oncomplete)
       })
     }
 
@@ -460,11 +481,13 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         if (isWrite && pendingMalformedWriteFailure !== undefined) {
           const { value } = pendingMalformedWriteFailure
           pendingMalformedWriteFailure = undefined
-          // Cast deliberately: this is the one path that bypasses the
-          // DOMException shape the rest of the fake enforces, on purpose.
-          request.error = value as IdbDomException
-          request.onerror?.(undefined as never)
-          failWith(value as IdbDomException)
+          // @ts-expect-error -- this is the one path that bypasses the
+          // DOMException shape the rest of the fake enforces, on purpose:
+          // `value` is an arbitrary test-injected `unknown`.
+          const malformed: IdbDomException = value
+          request.error = malformed
+          fire(request.onerror)
+          failWith(malformed)
           return
         }
 
@@ -472,7 +495,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         if (injected !== undefined) {
           pendingWriteFailure = undefined
           request.error = injected
-          request.onerror?.(undefined as never)
+          fire(request.onerror)
           failWith(injected)
           return
         }
@@ -480,12 +503,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         try {
           request.result = produce()
         } catch (cause) {
-          const failure =
-            typeof cause === 'object' && cause !== null && 'name' in cause
-              ? (cause as IdbDomException)
-              : domException('UnknownError', String(cause))
+          const failure = looksLikeIdbDomException(cause) ? cause : domException('UnknownError', String(cause))
           request.error = failure
-          request.onerror?.(undefined as never)
+          fire(request.onerror)
           failWith(failure)
           return
         }
@@ -498,7 +518,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           return
         }
 
-        request.onsuccess?.(undefined as never)
+        fire(request.onsuccess)
         scheduleCommit()
       })
 
@@ -512,10 +532,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       if (path === undefined) {
         throw domException('DataError', 'this store has no key path')
       }
-      const holder: unknown =
-        typeof value === 'object' && value !== null
-          ? (value as Readonly<Record<string, unknown>>)[path]
-          : undefined
+      const holder: unknown = isPlainRecord(value) ? value[path] : undefined
       if (typeof holder !== 'string') {
         throw domException('DataError', `the record has no string at key path "${path}"`)
       }
@@ -644,7 +661,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           'VersionError',
           `requested version ${String(wanted)} is less than the existing ${String(state.version)}`,
         )
-        request.onerror?.(undefined as never)
+        fire(request.onerror)
         return
       }
 
@@ -658,7 +675,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         // computed below; an uncooperative one (no handler, e.g. one
         // synthesised by `holdOpenAt`) is not, and genuinely blocks.
         for (const other of state.connections) {
-          other.database?.onversionchange?.(undefined as never)
+          fire(other.database?.onversionchange)
         }
       }
 
@@ -675,7 +692,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         state.pendingRetry.push(() => {
           later(attempt)
         })
-        request.onblocked?.(undefined as never)
+        fire(request.onblocked)
         return
       }
 
@@ -745,13 +762,13 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         state.version = wanted
         request.transaction = makeUpgradeTransaction(state)
         try {
-          request.onupgradeneeded?.(undefined as never)
+          fire(request.onupgradeneeded)
         } finally {
           request.transaction = null
         }
       }
 
-      request.onsuccess?.(undefined as never)
+      fire(request.onsuccess)
     }
 
     later(attempt)
@@ -760,10 +777,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
   }
 
   const indexKeyOf = (value: unknown, keyPath: string): number | undefined => {
-    const holder: unknown =
-      typeof value === 'object' && value !== null
-        ? (value as Readonly<Record<string, unknown>>)[keyPath]
-        : undefined
+    const holder: unknown = isPlainRecord(value) ? value[keyPath] : undefined
     return typeof holder === 'number' ? holder : undefined
   }
 
@@ -783,10 +797,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
       records: new Map(),
     }
     for (const record of records) {
-      const holder =
-        typeof record === 'object' && record !== null
-          ? (record as Readonly<Record<string, unknown>>)['key']
-          : undefined
+      const holder = isPlainRecord(record) ? record['key'] : undefined
       if (typeof holder === 'string') {
         created.records.set(holder, { key: holder, value: record })
       }

@@ -3,7 +3,6 @@ import { effect } from './support/effect-test.js'
 import { Effect, ParseResult, Schema } from 'effect'
 import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
 import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
-import type { SaveEnvelope } from '../src/domain/envelope.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
 /**
@@ -54,7 +53,7 @@ describe('encodeSave / decodeSave', () => {
       ]
 
       for (const malformed of malformedValues) {
-        const result = yield* Effect.flip(decodeSave(PlayerState, malformed as SaveEnvelope))
+        const result = yield* Effect.flip(decodeSave(PlayerState, malformed))
         expect(result._tag).toBe('SaveDecodeError')
         if (result._tag === 'SaveDecodeError') {
           expect(result.reason).toBe('the value is not a well-formed save envelope')

@@ -17,7 +17,7 @@ describe('Minecraft JSON boundary', () => {
   })
 
   it('accepts plain JSON values and rejects host objects and unsafe shapes', () => {
-    const nullPrototype = Object.create(null) as Record<string, unknown>
+    const nullPrototype: Record<string, unknown> = Object.create(null)
     nullPrototype['value'] = 1
     expect(isMinecraftJsonValue(nullPrototype)).toBe(true)
 
@@ -37,9 +37,8 @@ describe('Minecraft JSON boundary', () => {
     const sparse = new Array(1)
     const nonEnumerableIndexArray: unknown[] = [1]
     Object.defineProperty(nonEnumerableIndexArray, '0', { value: 1, enumerable: false, configurable: true })
-    const extraArrayProperty = [1] as unknown as Record<string, unknown>
-    extraArrayProperty['extra'] = true
-    const customObject = Object.create({ inherited: true }) as Record<string, unknown>
+    const extraArrayProperty = Object.assign([1], { extra: true })
+    const customObject: Record<string, unknown> = Object.create({ inherited: true })
     customObject['value'] = 1
     const accessor = {}
     Object.defineProperty(accessor, 'value', { enumerable: true, get: () => 1 })
@@ -75,13 +74,16 @@ describe('Minecraft JSON boundary', () => {
 
   it('rejects invalid values before encoding', () => {
     expectJsonError(() => encodeMinecraftJson(Number.NaN))
-    expectJsonError(() => encodeMinecraftJson({ value: 1n } as never))
-    expectJsonError(() => encodeMinecraftJson(new Date() as never))
-    expectJsonError(() => encodeMinecraftJson(new Array(1) as never))
+    // @ts-expect-error -- bigint is not JSON-safe; verifies runtime rejection
+    expectJsonError(() => encodeMinecraftJson({ value: 1n }))
+    // @ts-expect-error -- deliberately wrong type to verify runtime rejection
+    expectJsonError(() => encodeMinecraftJson(new Date()))
+    expectJsonError(() => encodeMinecraftJson(new Array(1)))
   })
 
   it('rejects invalid input types, UTF-8, and JSON syntax while decoding', () => {
-    expectJsonError(() => decodeMinecraftJson(null as never))
+    // @ts-expect-error -- deliberately wrong type to verify runtime rejection
+    expectJsonError(() => decodeMinecraftJson(null))
     const invalidUtf8 = [
       [0x80],
       [0xc2],
@@ -103,7 +105,7 @@ describe('Minecraft JSON boundary', () => {
   })
 
   it('guards the defensive JSON parse and stringify failure paths', () => {
-    const parseSpy = vi.spyOn(JSON, 'parse').mockReturnValue(new Date() as never)
+    const parseSpy = vi.spyOn(JSON, 'parse').mockReturnValue(new Date())
     try {
       expectJsonError(() => decodeMinecraftJson(new TextEncoder().encode('null')))
     } finally {
@@ -129,7 +131,8 @@ describe('Minecraft JSON boundary', () => {
       stringifyNonErrorSpy.mockRestore()
     }
 
-    const stringifyUndefinedSpy = vi.spyOn(JSON, 'stringify').mockReturnValue(undefined as never)
+    // @ts-expect-error -- JSON.stringify is typed to always return string; this forces the runtime-undefined path
+    const stringifyUndefinedSpy = vi.spyOn(JSON, 'stringify').mockReturnValue(undefined)
     try {
       expect(() => encodeMinecraftJson({ value: 1 })).toThrow('value cannot be serialized as JSON')
     } finally {
@@ -148,19 +151,20 @@ describe('Minecraft JSON boundary', () => {
   })
 
   it('guards the defensive Unicode scalar check while encoding UTF-8', () => {
-    const fakeIterator = (): Iterator<string> => {
+    const fakeIterator = (): StringIterator<string> => {
       let done = false
-      return {
+      const iterator: StringIterator<string> = {
         next: (): IteratorResult<string> => {
           if (done) return { done: true, value: undefined }
           done = true
           return { done: false, value: '' }
         },
+        [Symbol.iterator]: () => iterator,
+        [Symbol.dispose]: (): void => undefined,
       }
+      return iterator
     }
-    const iteratorSpy = vi
-      .spyOn(String.prototype, Symbol.iterator)
-      .mockImplementation(fakeIterator as unknown as () => StringIterator<string>)
+    const iteratorSpy = vi.spyOn(String.prototype, Symbol.iterator).mockImplementation(fakeIterator)
     try {
       expectJsonError(() => encodeMinecraftJson('anything'))
     } finally {

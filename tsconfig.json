@@ -1,12 +1,8 @@
 {
-  // Editor / language-server default project: everything in the repository.
-  // CI gates use tsconfig.build.json (shipped source) and tsconfig.test.json
-  // (tests + tooling); this file exists so that opening any file in an editor
-  // resolves against the same options.
-  "extends": "./tsconfig.base.json",
-  "compilerOptions": {
-    "types": ["node"]
-  },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
-  "exclude": ["node_modules", "coverage", "dist", "test/fixtures/**"]
+  // Editor / language-server default project. CI gates use tsconfig.build.json
+  // (shipped source), tsconfig.test.json (tests + tooling) and
+  // tsconfig.browser.json (Chromium IndexedDB contract) directly; this file
+  // exists so that opening any file in an editor resolves against the same
+  // options as tsconfig.test.json.
+  "extends": "./tsconfig.test.json"
 }

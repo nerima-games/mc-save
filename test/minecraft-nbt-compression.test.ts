@@ -29,6 +29,16 @@ const expectCompressionError = async (operation: Promise<unknown>): Promise<void
   await expect(operation).rejects.toThrowError(MinecraftCompressionError)
 }
 
+// Widens a value's static type to `T` with NO runtime transformation and no type assertion:
+// `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
+// complaint. Used to hand a type-invalid input to a strictly-typed function, so the test proves the
+// function's own runtime check — not the type checker — rejects it.
+const widen = <T,>(value: unknown): T => {
+  const bag: Record<string, any> = {}
+  bag['value'] = value
+  return bag['value']
+}
+
 describe('Minecraft compressed NBT codec', () => {
   it.each(['gzip', 'zlib', 'none', 'lz4'] as const)('round-trips NBT through %s', async (compression) => {
     const encoded = await encodeCompressedNbt(original, compression)
@@ -57,10 +67,10 @@ describe('Minecraft compressed NBT codec', () => {
 
   it('preserves compression and NBT errors at their boundaries', async () => {
     await expectCompressionError(decodeCompressedNbt(new Uint8Array([1, 2, 3]), 'gzip'))
-    await expectCompressionError(decodeCompressedNbt(null as never, 'none'))
-    await expectCompressionError(encodeCompressedNbt(original, 'invalid' as MinecraftCompression))
+    await expectCompressionError(decodeCompressedNbt(widen(null), 'none'))
+    await expectCompressionError(encodeCompressedNbt(original, widen<MinecraftCompression>('invalid')))
     await expectNbtError(decodeCompressedNbt(new Uint8Array([NBT_COMPOUND_ID]), 'none'))
-    await expectNbtError(encodeCompressedNbt(null as never, 'none'))
+    await expectNbtError(encodeCompressedNbt(widen(null), 'none'))
   })
 })
 

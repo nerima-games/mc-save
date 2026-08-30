@@ -1,6 +1,7 @@
 /* oxlint-disable no-bitwise -- Anvil location entries are three-byte big-endian values. */
 
 import { Data } from 'effect'
+import { assertDefined } from './assert-defined.js'
 
 export const ANVIL_SECTOR_BYTES = 4096
 export const ANVIL_HEADER_SECTORS = 2
@@ -55,6 +56,11 @@ export type AnvilRegionOptions = {
 
 const regionError = (reason: string, offset?: number): AnvilRegionError =>
   new AnvilRegionError({ reason, ...(offset === undefined ? {} : { offset }) })
+
+const asArrayBuffer = (buffer: ArrayBufferLike): ArrayBuffer => {
+  if (!(buffer instanceof ArrayBuffer)) throw regionError('expected an ArrayBuffer-backed Uint8Array')
+  return buffer
+}
 
 const resolveMaxBytes = (maxBytes: number | undefined): number => {
   const resolved = maxBytes ?? ANVIL_MAX_REGION_BYTES
@@ -172,7 +178,7 @@ export const decodeAnvilRegion = (bytes: Uint8Array, options?: AnvilRegionOption
   if (bytes.byteLength > maxBytes) throw regionError(`region exceeds maxBytes ${String(maxBytes)}`)
 
   const sectorCount = bytes.byteLength / ANVIL_SECTOR_BYTES
-  const view = new DataView(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength)
+  const view = new DataView(asArrayBuffer(bytes.buffer), bytes.byteOffset, bytes.byteLength)
   const timestamps: number[] = []
   const chunks: Array<AnvilChunkRecord | null> = new Array(ANVIL_CHUNK_COUNT).fill(null)
   const occupied = new Uint8Array(sectorCount)
@@ -270,11 +276,11 @@ export const encodeAnvilRegion = (region: AnvilRegion, options?: AnvilRegionOpti
   const view = new DataView(bytes.buffer)
 
   for (let index = 0; index < ANVIL_CHUNK_COUNT; index += 1) {
-    const [sectorOffset, sectorLength] = locations[index]!
+    const [sectorOffset, sectorLength] = assertDefined(locations[index], `location ${String(index)} is missing`)
     const headerOffset = index * 4
     writeUint24(view, headerOffset, sectorOffset)
     view.setUint8(headerOffset + 3, sectorLength)
-    const timestamp = region.timestamps[index]!
+    const timestamp = assertDefined(region.timestamps[index], `region timestamp ${String(index)} is missing`)
     view.setUint32(ANVIL_SECTOR_BYTES + headerOffset, timestamp, false)
 
     const chunk = region.chunks[index]

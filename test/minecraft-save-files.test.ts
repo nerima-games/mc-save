@@ -43,8 +43,12 @@ describe('Minecraft save files', () => {
     await expect(encodeMinecraftNbtFile(original, { compression: 'none', maxCompressedBytes: plain.byteLength - 1 })).rejects.toThrow()
     await expect(decodeMinecraftNbtFile(plain, { compression: 'none', maxCompressedBytes: plain.byteLength - 1 })).rejects.toThrow()
     await expect(decodeMinecraftNbtFile(plain, { compression: 'none', maxDecompressedBytes: plain.byteLength - 1 })).rejects.toThrow()
-    await expect(encodeMinecraftNbtFile(null as never, { compression: 'none' })).rejects.toThrow()
-    await expect(decodeMinecraftNbtFile(new Uint8Array([1, 2, 3]), { compression: 'invalid' as never })).rejects.toThrow()
+    // @ts-expect-error -- deliberately wrong root type to verify runtime rejection
+    await expect(encodeMinecraftNbtFile(null, { compression: 'none' })).rejects.toThrow()
+    await expect(
+      // @ts-expect-error -- deliberately invalid compression mode to verify runtime rejection
+      decodeMinecraftNbtFile(new Uint8Array([1, 2, 3]), { compression: 'invalid' }),
+    ).rejects.toThrow()
   })
 
   it('encodes and decodes signed big-endian session locks', () => {
@@ -66,10 +70,12 @@ describe('Minecraft save files', () => {
   })
 
   it('rejects invalid session lock values and byte lengths', () => {
-    expect(() => encodeMinecraftSessionLock(1 as never)).toThrow()
+    // @ts-expect-error -- deliberately wrong type to verify runtime rejection
+    expect(() => encodeMinecraftSessionLock(1)).toThrow()
     expect(() => encodeMinecraftSessionLock(-(1n << 63n) - 1n)).toThrow()
     expect(() => encodeMinecraftSessionLock(1n << 63n)).toThrow()
-    expect(() => decodeMinecraftSessionLock(null as never)).toThrow()
+    // @ts-expect-error -- deliberately wrong type to verify runtime rejection
+    expect(() => decodeMinecraftSessionLock(null)).toThrow()
     expect(() => decodeMinecraftSessionLock(new Uint8Array(MINECRAFT_SESSION_LOCK_BYTES - 1))).toThrow()
     expect(() => decodeMinecraftSessionLock(new Uint8Array(MINECRAFT_SESSION_LOCK_BYTES + 1))).toThrow()
   })

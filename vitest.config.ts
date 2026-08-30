@@ -19,10 +19,17 @@ export default defineConfig({
       hooks: 'stack',
     },
     reporters: ['default'],
+    // `pnpm test:coverage` runs `vitest run --coverage --no-file-parallelism`
+    // (package.json), overriding `fileParallelism: true` above for that
+    // invocation only. `@vitest/coverage-v8` merges per-worker V8 coverage
+    // into one report; running this suite's files across multiple forked
+    // processes at once has produced incomplete/non-deterministic merged
+    // coverage under the v8 provider, so coverage runs serialize file
+    // execution. Plain `pnpm test` keeps running the suite in parallel.
     coverage: {
       provider: 'v8',
       enabled: false,
-      include: ['src/index.ts', 'src/domain/**/*.ts'],
+      include: ['src/**/*.ts'],
       exclude: [
         '**/*.d.ts',
         '**/*.config.ts',

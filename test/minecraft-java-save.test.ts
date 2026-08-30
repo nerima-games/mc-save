@@ -101,7 +101,8 @@ const findFile = (files: ReadonlyArray<MinecraftJavaSaveFile>, path: string): Mi
 }
 
 const expectInvalidSave = (save: unknown, message: string) =>
-  expect(encodeMinecraftJavaSave(save as MinecraftJavaSave)).rejects.toThrow(message)
+  // @ts-expect-error -- `save` is deliberately shaped wrong by every caller to verify runtime rejection
+  expect(encodeMinecraftJavaSave(save)).rejects.toThrow(message)
 
 describe('Minecraft Java 26.1 world save boundary', () => {
   it('round-trips official world save categories and dimension storage', async () => {
@@ -192,7 +193,9 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     await expect(decodeMinecraftJavaSave(levelRemoved)).rejects.toBeInstanceOf(MinecraftJavaSaveError)
     await expect(decodeMinecraftJavaSave(malformedJson)).rejects.toThrow('players/stats')
     await expect(decodeMinecraftJavaSave(malformedWorldClock)).rejects.toThrow('world_clock/day.json')
-    await expect(decodeMinecraftJavaSave([...files, files[0]!])).rejects.toThrow('duplicate file path')
+    const firstFile = files[0]
+    if (firstFile === undefined) throw new Error('fixture must encode at least one file')
+    await expect(decodeMinecraftJavaSave([...files, firstFile])).rejects.toThrow('duplicate file path')
     await expect(decodeMinecraftJavaSave(externalOnly)).rejects.toThrow('no matching region file')
     await expect(decodeMinecraftJavaSave(files, { maxFiles: files.length - 1 })).rejects.toThrow('maxFiles')
     await expect(decodeMinecraftJavaSave(files, { maxTotalBytes: 0 })).rejects.toThrow('maxTotalBytes')
@@ -214,7 +217,8 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     expect(source.icon?.[0]).toBe(137)
 
     await expect(
-      encodeMinecraftJavaSave({ ...source, level: null as never }),
+      // @ts-expect-error -- deliberately null level to verify runtime rejection
+      encodeMinecraftJavaSave({ ...source, level: null }),
     ).rejects.toThrow(MinecraftJavaSaveError)
     await expect(
       encodeMinecraftJavaSave({ ...source, extraFiles: [{ path: '../escape', bytes: new Uint8Array() }] }),
@@ -239,7 +243,8 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     }
 
     await expect(encodeMinecraftJavaSave(minimal)).resolves.toHaveLength(1)
-    await expect(encodeMinecraftJavaSave(source, null as never)).rejects.toThrow('options must be an object')
+    // @ts-expect-error -- deliberately non-object options to verify runtime rejection
+    await expect(encodeMinecraftJavaSave(source, null)).rejects.toThrow('options must be an object')
     await expectInvalidSave(Object.create({}), 'save must be an object')
 
     const proxy = new Proxy({}, { getPrototypeOf: () => { throw new Error('hostile proxy') } })
@@ -254,16 +259,14 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     Object.defineProperty(nonEnumerableArray, '0', { enumerable: false })
     await expectInvalidSave({ ...source, playerData: nonEnumerableArray }, 'playerData must be an array')
 
-    const extraKeyArray = [...source.playerData] as Array<unknown> & { extra?: boolean }
-    extraKeyArray.extra = true
+    const extraKeyArray = Object.assign([...source.playerData], { extra: true })
     await expectInvalidSave({ ...source, playerData: extraKeyArray }, 'playerData must be an array')
     await expectInvalidSave({ ...source, playerData: 1 }, 'playerData must be an array')
     await expectInvalidSave({ ...source, playerData: [{ playerId: '../escape', document: source.level }] }, 'playerId')
 
     const derivedBytes = new (class extends Uint8Array {})([1])
     await expectInvalidSave({ ...source, icon: derivedBytes }, 'icon must be a Uint8Array')
-    const extraKeyBytes = new Uint8Array([1]) as Uint8Array & { extra?: boolean }
-    extraKeyBytes.extra = true
+    const extraKeyBytes = Object.assign(new Uint8Array([1]), { extra: true })
     await expectInvalidSave({ ...source, icon: extraKeyBytes }, 'icon must be a Uint8Array')
     await expectInvalidSave({ ...source, sessionLock: 2n ** 63n }, 'sessionLock')
 
@@ -292,35 +295,42 @@ describe('Minecraft Java 26.1 world save boundary', () => {
       'namespace or name is invalid',
     )
 
+    const firstRegion = source.regions[0]
+    if (firstRegion === undefined) throw new Error('fixture must declare at least one region')
+
     await expectInvalidSave(
       {
         ...source,
-        regions: [{ ...source.regions[0]!, storage: 'invalid' }],
+        regions: [{ ...firstRegion, storage: 'invalid' }],
       },
       'regions 0 is invalid',
     )
     await expectInvalidSave(
       {
         ...source,
-        regions: [{ ...source.regions[0]!, regionX: Number.MAX_SAFE_INTEGER }],
+        regions: [{ ...firstRegion, regionX: Number.MAX_SAFE_INTEGER }],
       },
       'regions 0 is invalid',
     )
 
-    const invalidChunkRegion = source.regions[0]!.region
+    const invalidChunkRegion = firstRegion.region
     const invalidChunks = [...invalidChunkRegion.chunks]
-    invalidChunks[0] = { ...invalidChunks[0]!, timestamp: -1 }
+    const firstInvalidChunk = invalidChunks[0]
+    if (firstInvalidChunk === undefined || firstInvalidChunk === null) {
+      throw new Error('fixture region must declare a non-null first chunk')
+    }
+    invalidChunks[0] = { ...firstInvalidChunk, timestamp: -1 }
     await expectInvalidSave(
       {
         ...source,
-        regions: [{ ...source.regions[0]!, region: { ...invalidChunkRegion, chunks: invalidChunks } }],
+        regions: [{ ...firstRegion, region: { ...invalidChunkRegion, chunks: invalidChunks } }],
       },
       'regions 0 is invalid',
     )
 
     const invalidRegion = { ...invalidChunkRegion, unexpected: true }
     await expectInvalidSave(
-      { ...source, regions: [{ ...source.regions[0]!, region: invalidRegion }] },
+      { ...source, regions: [{ ...firstRegion, region: invalidRegion }] },
       'regions 0 is invalid',
     )
 
@@ -328,7 +338,7 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     await expectInvalidSave(
       {
         ...source,
-        regions: [{ ...source.regions[0]!, region: { chunks: invalidChunkRegion.chunks, timestamps: sparseTimestamps } }],
+        regions: [{ ...firstRegion, region: { chunks: invalidChunkRegion.chunks, timestamps: sparseTimestamps } }],
       },
       'regions 0 is invalid',
     )

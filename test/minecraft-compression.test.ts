@@ -6,14 +6,27 @@ import {
   decompressMinecraft,
 } from '../src/domain/minecraft-compression.js'
 
+// `ArrayBufferLike` (not `ArrayBuffer`) so `Uint8Array.prototype.buffer` — typed `ArrayBufferLike`,
+// since a Uint8Array can in principle back onto a SharedArrayBuffer — is directly assignable here with
+// no narrowing needed. This fake only ever sees buffers it constructed itself from plain Uint8Arrays.
 type FakeStreamValue =
   | Uint8Array
-  | ArrayBuffer
+  | ArrayBufferLike
   | {
-      readonly buffer: ArrayBuffer
+      readonly buffer: ArrayBufferLike
       readonly byteOffset: number
       readonly byteLength: number
     }
+
+// Widens a value's static type to `T` with NO runtime transformation and no type assertion:
+// `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
+// complaint. Used to hand a type-invalid input to a strictly-typed function, so the test proves the
+// function's own runtime check — not the type checker — rejects it.
+const widen = <T,>(value: unknown): T => {
+  const bag: Record<string, any> = {}
+  bag['value'] = value
+  return bag['value']
+}
 
 type FakeStreamReader = {
   readonly read: () => Promise<{ readonly done: boolean; readonly value?: FakeStreamValue }>
@@ -121,10 +134,10 @@ describe('Minecraft compression API', () => {
     expect(
       new MinecraftCompressionError({ operation: 'decode', compression: 'gzip', reason: 'bad frame' }).message,
     ).toBe('Minecraft gzip decode failed: bad frame')
-    await expectCompressionError(compressMinecraft(null as never, 'none'))
-    await expectCompressionError(decompressMinecraft(null as never, 'none'))
-    await expectCompressionError(compressMinecraft(new Uint8Array(), 'invalid' as never))
-    await expectCompressionError(decompressMinecraft(new Uint8Array(), 'invalid' as never))
+    await expectCompressionError(compressMinecraft(widen(null), 'none'))
+    await expectCompressionError(decompressMinecraft(widen(null), 'none'))
+    await expectCompressionError(compressMinecraft(new Uint8Array(), widen('invalid')))
+    await expectCompressionError(decompressMinecraft(new Uint8Array(), widen('invalid')))
     await expectCompressionError(decompressMinecraft(new Uint8Array([1, 2, 3]), 'gzip'))
     await expectCompressionError(decompressMinecraft(new Uint8Array([1, 2, 3]), 'zlib'))
   })
@@ -138,12 +151,12 @@ describe('Minecraft compression API', () => {
   })
 
   it('collects native stream output from byte arrays, buffers, and views', async () => {
-    const buffer = new Uint8Array([0, 2, 0]).buffer as ArrayBuffer
+    const buffer = new Uint8Array([0, 2, 0]).buffer
     FakeCompressionStream.outputSequences = [
       [
         Uint8Array.from([1]),
         buffer,
-        { buffer: Uint8Array.from([3, 4, 5]).buffer as ArrayBuffer, byteOffset: 1, byteLength: 2 },
+        { buffer: Uint8Array.from([3, 4, 5]).buffer, byteOffset: 1, byteLength: 2 },
       ],
     ]
     vi.stubGlobal('CompressionStream', FakeCompressionStream)

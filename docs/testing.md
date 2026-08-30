@@ -6,20 +6,29 @@
 
 ```text
 pnpm typecheck       TypeScript の production / test 境界
-pnpm check:source-policy production source の import / runtime policy
-pnpm lint            oxlint
+pnpm lint            oxlint + ast-grep（no-type-assertion、no-wall-clock-read）
 pnpm test            Node 環境の unit / contract test
 pnpm test:coverage   branches/functions/lines/statements の 100% 閾値
 pnpm test:browser    Chromium 上の IndexedDB contract test
 pnpm build           release declaration / JavaScript artifact
 pnpm package:verify  pack 後の exports・files・一時 consumer
-pnpm verify          上記の production 開発ゲート
+pnpm audit           依存の既知脆弱性
+pnpm verify          typecheck + lint + test の production 開発ゲート
 nix flake check --all-systems  flake の評価と check
 ```
 
-`pnpm verify` は型検査、source policy、lint、Node test を実行します。coverage、browser、
-package boundary、flake は独立したゲートとして実行します。長時間の browser/build は途中で
-終了した場合に成功扱いにせず、exit status と runner の assertion output を確認します。
+`pnpm verify` は型検査、lint、Node test を実行します。coverage、browser、package boundary、
+audit、flake は独立したゲートとして実行します。長時間の browser/build は途中で終了した場合に
+成功扱いにせず、exit status と runner の assertion output を確認します。
+
+`pnpm check:source-policy`（`scripts/check-source-policy.mjs`）は raw wall-clock read の検査を
+行いますが、同じ検査は `.ast-grep/rules/no-wall-clock-read.yml` として `pnpm lint` の一部に
+なったため、`pnpm verify` からは呼びません。単体で実行できる補助スクリプトとして残します。
+
+`.ast-grep/rules/no-type-assertion.yml` は `src/` と `test/` の `as`（`as const` を除く）と `!` を
+error にします。型の証明を TypeScript が追えない箇所（長さ検査済みの配列添字、マッチ済み正規表現の
+必須キャプチャ群など）は `src/domain/assert-defined.ts` の `assertDefined` を使い、その失敗経路は
+`test/assert-defined.test.ts` が直接検証します。
 
 ## テスト層
 

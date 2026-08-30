@@ -15,6 +15,7 @@ import {
   xxHash32,
 } from './minecraft-lz4-format.js'
 import type { MinecraftLz4Options } from './minecraft-lz4-format.js'
+import { assertDefined } from './assert-defined.js'
 
 class RecentBytes {
   private readonly bytes = new Uint8Array(65536)
@@ -38,7 +39,7 @@ class RecentBytes {
 
   getFromEnd(offset: number): number {
     const index = (this.cursor - offset + this.bytes.byteLength) % this.bytes.byteLength
-    return this.bytes[index]!
+    return assertDefined(this.bytes[index], `RecentBytes.getFromEnd: index ${String(index)} is out of range`)
   }
 }
 
@@ -97,7 +98,7 @@ const readLength = (block: Uint8Array, state: { offset: number }, initial: numbe
   let length = 15
   while (true) {
     if (state.offset >= block.byteLength) throw lz4Error('decode', 'length extension is truncated', state.offset)
-    const value = block[state.offset++]!
+    const value = assertDefined(block[state.offset++], 'readLength: offset was within block.byteLength')
     length += value
     if (value !== 255) return length
   }
@@ -106,15 +107,19 @@ const readLength = (block: Uint8Array, state: { offset: number }, initial: numbe
 const decodeLz4Block = (block: Uint8Array, output: DecodeOutput): void => {
   const state = { offset: 0 }
   while (state.offset < block.byteLength) {
-    const token = block[state.offset++]!
+    const token = assertDefined(block[state.offset++], 'decodeLz4Block: offset was within block.byteLength')
     const literalLength = readLength(block, state, token >>> 4)
     if (literalLength > block.byteLength - state.offset) {
       throw lz4Error('decode', 'literal run exceeds the compressed block', state.offset)
     }
-    for (let index = 0; index < literalLength; index += 1) output.append(block[state.offset++]!)
+    for (let index = 0; index < literalLength; index += 1) {
+      output.append(assertDefined(block[state.offset++], 'decodeLz4Block: literal run offset out of range'))
+    }
     if (state.offset === block.byteLength) return
     if (state.offset + 2 > block.byteLength) throw lz4Error('decode', 'match offset is truncated', state.offset)
-    const matchOffset = block[state.offset]! | (block[state.offset + 1]! << 8)
+    const matchOffsetLow = assertDefined(block[state.offset], 'decodeLz4Block: missing match offset low byte')
+    const matchOffsetHigh = assertDefined(block[state.offset + 1], 'decodeLz4Block: missing match offset high byte')
+    const matchOffset = matchOffsetLow | (matchOffsetHigh << 8)
     state.offset += 2
     if (matchOffset === 0) throw lz4Error('decode', 'match offset must be non-zero', state.offset - 2)
     const matchLength = readLength(block, state, token & 0x0f) + 4
@@ -143,7 +148,7 @@ export const decodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Op
   while (true) {
     if (offset + LZ4_BLOCK_HEADER_BYTES > input.byteLength) throw lz4Error('decode', 'block header is truncated', offset)
     assertBlockMagic(input, offset)
-    const token = input[offset + 8]!
+    const token = assertDefined(input[offset + 8], 'decodeLz4BlockStream: offset was within input.byteLength')
     const compressionMethod = token & 0xf0
     const compressionLevel = token & 0x0f
     if (compressionMethod !== LZ4_COMPRESSION_METHOD_RAW && compressionMethod !== LZ4_COMPRESSION_METHOD_LZ4) {

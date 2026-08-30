@@ -71,8 +71,16 @@ type CommitOutcome =
   | { readonly _tag: 'success' }
   | { readonly _tag: 'failure'; readonly error: StorageError }
 
-const cloneStructured = <A>(value: A): A =>
-  (globalThis as unknown as { readonly structuredClone: <T>(value: T) => T }).structuredClone(value)
+declare global {
+  // structuredClone is a runtime global this repo's DOM-free `lib` does not
+  // declare (see tsconfig.base.json). Declared as a `function` overload
+  // (matching @types/node's own declaration form) rather than `var`, so it
+  // merges cleanly with @types/node's declaration under tsconfig.test.json
+  // instead of conflicting with it.
+  function structuredClone<T = unknown>(value: T): T
+}
+
+const cloneStructured = <A>(value: A): A => structuredClone(value)
 
 const cloneEnvelope = (
   operation: string,

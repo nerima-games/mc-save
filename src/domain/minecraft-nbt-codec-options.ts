@@ -19,8 +19,13 @@ export type ResolvedNbtCodecOptions = Required<NbtCodecOptions>
 export const nbtError = (reason: string, offset?: number): NbtFormatError =>
   new NbtFormatError({ reason, ...(offset === undefined ? {} : { offset }) })
 
-const resolveLimit = (name: string, value: number | undefined, minimum: number, maximum?: number): number => {
-  const resolved = value ?? DEFAULT_NBT_CODEC_OPTIONS[name as keyof typeof DEFAULT_NBT_CODEC_OPTIONS]
+const resolveLimit = (
+  name: keyof typeof DEFAULT_NBT_CODEC_OPTIONS,
+  value: number | undefined,
+  minimum: number,
+  maximum?: number,
+): number => {
+  const resolved = value ?? DEFAULT_NBT_CODEC_OPTIONS[name]
   if (!Number.isSafeInteger(resolved) || resolved < minimum || (maximum !== undefined && resolved > maximum)) {
     const upper = maximum === undefined ? '' : ` and at most ${String(maximum)}`
     throw nbtError(`${name} must be a safe integer of at least ${String(minimum)}${upper}`)

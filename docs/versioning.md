@@ -41,5 +41,10 @@ package の `engines`、`packageManager`、lockfile、exports、changeset を re
 3. package version と changeset の意図が一致している
 4. consumer が使用する `@nerima-games/mc-kernel` version と lockfile が再現可能である
 
-この repository では `pnpm changeset status` で release 状態を確認し、publish 自体は release
-承認がある作業でのみ実行します。
+この repository では `pnpm changeset status` で release 状態を確認します。publish 自体は
+`.github/workflows/release.yaml` が自動で行います: `pnpm changeset version` で `package.json`
+の version と CHANGELOG.md を更新する PR を出し、それが `main` に merge されると `detect` job が
+push 前後の `package.json` version を比較して変化を検知し、変化がある場合のみ `publish` job が
+`pnpm verify && pnpm package:verify` を再実行してから `pnpm publish --no-git-checks` を実行し、
+成功後に `tag` job が `v<version>` を打って push します。version が変わらない push（ドキュメント
+変更など）では publish/tag job は実行されません。

@@ -21,6 +21,16 @@ const Settings = defineFormat({
 const WORLD_KEY = SaveKey('world/overworld')
 const SETTINGS_KEY = SaveKey('world/overworld/settings')
 
+// Widens a value's static type to `T` with NO runtime transformation and no type assertion:
+// `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
+// complaint. Used to hand a schema-invalid literal to a schema-typed parameter, so the test proves
+// runtime schema validation — not the type checker — rejects it.
+const widen = <T,>(value: unknown): T => {
+  const bag: Record<string, any> = {}
+  bag['value'] = value
+  return bag['value']
+}
+
 describe('saveBatch', () => {
   effect('encodes typed entries and commits them together', () =>
     Effect.gen(function* () {
@@ -45,7 +55,7 @@ describe('saveBatch', () => {
       const error = yield* Effect.flip(
         saveBatch([
           saveBatchEntry(World, WORLD_KEY, { seed: 42, name: 'overworld' }),
-          saveBatchEntry(Settings, SETTINGS_KEY, { difficulty: 'invalid' as 'hard' }),
+          saveBatchEntry(Settings, SETTINGS_KEY, { difficulty: widen<'hard'>('invalid') }),
         ]),
       )
 

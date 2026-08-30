@@ -155,13 +155,15 @@ export const nbtList = (
   assertTagType(elementType)
   if (!Array.isArray(values)) throw nbtError('list values must be an array')
   if (elementType === 'end' && values.length > 0) throw nbtError('an end-typed list must be empty')
+  const copied: Array<NbtNonEndTag> = []
   for (const value of values) {
     assertTag(value, 'list value')
     if (value.type !== elementType || value.type === 'end') {
       throw nbtError(`list value type ${value.type} does not match ${elementType}`)
     }
+    copied.push(value)
   }
-  return { type: 'list', elementType, values: values.slice() as ReadonlyArray<NbtNonEndTag> }
+  return { type: 'list', elementType, values: copied }
 }
 
 export const nbtCompound = (

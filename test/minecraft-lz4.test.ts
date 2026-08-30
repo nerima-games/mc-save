@@ -50,8 +50,18 @@ const JAVA_LZ4_RAW_FIXTURE = Uint8Array.from([
 
 const rotateLeft = (value: number, bits: number): number => (value << bits) | (value >>> (32 - bits))
 
+// `noUncheckedIndexedAccess` types every Uint8Array index read as `number | undefined`. These fixture
+// helpers only ever index within bounds they just computed, so an out-of-range read is a bug in the
+// helper itself, not an input to validate — hence a throw rather than a guard clause the caller reacts to.
+const byteAt = (bytes: Uint8Array, index: number): number => {
+  const value = bytes[index]
+  if (value === undefined) throw new Error(`byte index ${index} out of range (length ${bytes.length})`)
+  return value
+}
+
 const readUint32LittleEndian = (bytes: Uint8Array, offset: number): number =>
-  (bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16) | (bytes[offset + 3]! << 24)) >>> 0
+  (byteAt(bytes, offset) | (byteAt(bytes, offset + 1) << 8) | (byteAt(bytes, offset + 2) << 16) | (byteAt(bytes, offset + 3) << 24)) >>>
+  0
 
 const appendUint32LittleEndian = (bytes: number[], value: number): void => {
   bytes.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff)
@@ -87,7 +97,7 @@ const xxHash32 = (bytes: Uint8Array, seed = DEFAULT_SEED): number => {
     offset += 4
   }
   while (offset < bytes.byteLength) {
-    accumulator = (accumulator + Math.imul(bytes[offset]!, PRIME_5)) >>> 0
+    accumulator = (accumulator + Math.imul(byteAt(bytes, offset), PRIME_5)) >>> 0
     accumulator = Math.imul(rotateLeft(accumulator, 11), PRIME_1) >>> 0
     offset += 1
   }
@@ -142,6 +152,17 @@ const expectLz4Error = (operation: () => unknown): void => {
   expect(operation).toThrowError(MinecraftLz4Error)
 }
 
+// Widens a value's static type to `T` with NO runtime transformation (no clone, no serialization) and
+// no type assertion: `Record<string, any>` indexing is `any` by construction, which is assignable
+// anywhere with zero compiler complaint. Used only to hand a deliberately type-invalid value (the kind
+// that arrives from disk/network with no static type at all) to a strictly-typed function, so the test
+// proves the function's own runtime check rejects it rather than relying on TypeScript to reject it.
+const widen = <T,>(value: unknown): T => {
+  const bag: Record<string, any> = {}
+  bag['value'] = value
+  return bag['value']
+}
+
 describe('Minecraft LZ4 block stream codec', () => {
   it('round-trips empty, literal, repetitive, trailing, and multi-block data', () => {
     const trailingLiterals = Uint8Array.from([
@@ -168,7 +189,7 @@ describe('Minecraft LZ4 block stream codec', () => {
     expect(readUint32LittleEndian(rawStream, 17)).toBe(xxHash32(literal))
 
     const repetitive = encodeLz4BlockStream(new Uint8Array(10_000).fill(7))
-    expect(repetitive[8]! & 0xf0).toBe(LZ4_METHOD)
+    expect(byteAt(repetitive, 8) & 0xf0).toBe(LZ4_METHOD)
     expect(readUint32LittleEndian(repetitive, 9)).toBeLessThan(readUint32LittleEndian(repetitive, 13))
   })
 
@@ -224,8 +245,8 @@ describe('Minecraft LZ4 block stream codec', () => {
     expect(decodeLz4BlockStream(makeBlockStream([]), { maxBytes: 0 })).toStrictEqual(new Uint8Array())
     expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), { maxBytes: -1 }))
     expectLz4Error(() => decodeLz4BlockStream(new Uint8Array(), { maxBytes: Number.NaN }))
-    expectLz4Error(() => encodeLz4BlockStream(null as never))
-    expectLz4Error(() => decodeLz4BlockStream(null as never))
+    expectLz4Error(() => encodeLz4BlockStream(widen(null)))
+    expectLz4Error(() => decodeLz4BlockStream(widen(null)))
   })
 
   it('rejects invalid block headers and metadata', () => {
@@ -239,7 +260,7 @@ describe('Minecraft LZ4 block stream codec', () => {
     expectLz4Error(() => decodeLz4BlockStream(replaceUint32(valid, 13, 0)))
     expectLz4Error(() => decodeLz4BlockStream(replaceUint32(valid, 9, 2)))
     expectLz4Error(() => decodeLz4BlockStream(replaceUint32(replaceByte(valid, 8, LZ4_METHOD), 13, 2048)))
-    expectLz4Error(() => decodeLz4BlockStream(replaceByte(valid, 20, valid[20]! ^ 1)))
+    expectLz4Error(() => decodeLz4BlockStream(replaceByte(valid, 20, byteAt(valid, 20) ^ 1)))
     expectLz4Error(() => decodeLz4BlockStream(Uint8Array.from([...valid, 1])))
 
     const invalidTerminator = valid.slice(valid.length - 21)
@@ -266,7 +287,7 @@ describe('Minecraft LZ4 block stream codec', () => {
   it('rejects invalid checksums and checksum truncation', () => {
     const input = Uint8Array.from([1, 2, 3, 4, 5])
     const valid = encodeLz4BlockStream(input)
-    expectLz4Error(() => decodeLz4BlockStream(replaceByte(valid, 17, valid[17]! ^ 1)))
+    expectLz4Error(() => decodeLz4BlockStream(replaceByte(valid, 17, byteAt(valid, 17) ^ 1)))
     expectLz4Error(() => decodeLz4BlockStream(valid.slice(0, valid.length - 1)))
     const badBlockChecksum = makeBlockStream([{ encoded: input, decoded: input, checksum: xxHash32(input) ^ 1 }])
     expectLz4Error(() => decodeLz4BlockStream(badBlockChecksum))

@@ -51,21 +51,29 @@ describe('Minecraft Anvil path calculations', () => {
   })
 
   it('rejects unsupported runtime dimension names', () => {
-    expect(() => minecraftDimensionDirectory('custom' as never)).toThrow('unsupported Minecraft dimension custom')
-    expect(() => minecraftDimensionDirectory('Example:moon' as never)).toThrow(
+    // 'custom' has no colon, so it does not match MinecraftDimension's
+    // `${string}:${string}` member and needs a directive to bypass the type
+    // system, matching a caller that skipped it. The other cases below all
+    // contain a colon, so they already satisfy MinecraftDimension at the type
+    // level (the template-literal member accepts any colon-split string) —
+    // minecraftDimensionDirectory still rejects them at runtime because it
+    // additionally checks the namespace/path segments for safety.
+    expect(() => {
+      // @ts-expect-error -- not a MinecraftDimension, exercising the runtime guard
+      minecraftDimensionDirectory('custom')
+    }).toThrow('unsupported Minecraft dimension custom')
+    expect(() => minecraftDimensionDirectory('Example:moon')).toThrow(
       'unsupported Minecraft dimension Example:moon',
     )
-    expect(() => minecraftDimensionDirectory('example:' as never)).toThrow('unsupported Minecraft dimension example:')
-    expect(() => minecraftDimensionDirectory('example:bad//path' as never)).toThrow(
+    expect(() => minecraftDimensionDirectory('example:')).toThrow('unsupported Minecraft dimension example:')
+    expect(() => minecraftDimensionDirectory('example:bad//path')).toThrow(
       'unsupported Minecraft dimension example:bad//path',
     )
-    expect(() => minecraftDimensionDirectory('example:../path' as never)).toThrow(
+    expect(() => minecraftDimensionDirectory('example:../path')).toThrow(
       'unsupported Minecraft dimension example:../path',
     )
-    expect(() => minecraftDimensionDirectory('..:path' as never)).toThrow(
-      'unsupported Minecraft dimension ..:path',
-    )
-    expect(() => minecraftDimensionDirectory('example:one:two' as never)).toThrow(
+    expect(() => minecraftDimensionDirectory('..:path')).toThrow('unsupported Minecraft dimension ..:path')
+    expect(() => minecraftDimensionDirectory('example:one:two')).toThrow(
       'unsupported Minecraft dimension example:one:two',
     )
   })
@@ -78,14 +86,24 @@ describe('Minecraft Anvil path calculations', () => {
   })
 
   it('rejects forged chunk coordinates at the runtime path boundary', () => {
-    expect(() => anvilChunkIndex(null as never)).toThrow('chunk coordinate must be an object')
-    expect(() => anvilRegionCoordinate('invalid' as never)).toThrow('chunk coordinate must be an object')
-    expect(() => anvilChunkIndex({ cx: Number.NaN, cz: 0 } as never)).toThrow(
-      'chunk coordinate axes must be safe integers',
-    )
-    expect(() => minecraftExternalChunkFileName({ cx: '../escape', cz: 0 } as never)).toThrow(
-      'chunk coordinate axes must be safe integers',
-    )
+    // Each call below passes a value that is not a ChunkCoord, to exercise
+    // the runtime guard a caller that skipped the type system would hit.
+    expect(() => {
+      // @ts-expect-error -- not a ChunkCoord, exercising the runtime guard
+      anvilChunkIndex(null)
+    }).toThrow('chunk coordinate must be an object')
+    expect(() => {
+      // @ts-expect-error -- not a ChunkCoord, exercising the runtime guard
+      anvilRegionCoordinate('invalid')
+    }).toThrow('chunk coordinate must be an object')
+    expect(() => {
+      // @ts-expect-error -- not a ChunkCoord, exercising the runtime guard
+      anvilChunkIndex({ cx: Number.NaN, cz: 0 })
+    }).toThrow('chunk coordinate axes must be safe integers')
+    expect(() => {
+      // @ts-expect-error -- not a ChunkCoord, exercising the runtime guard
+      minecraftExternalChunkFileName({ cx: '../escape', cz: 0 })
+    }).toThrow('chunk coordinate axes must be safe integers')
   })
 
   it('normalizes local coordinates and computes the 1024-slot index', () => {
@@ -106,9 +124,10 @@ describe('Minecraft Anvil path calculations', () => {
     expect(minecraftRegionFilePath('overworld', coord, 'poi')).toBe(
       'dimensions/minecraft/overworld/poi/r.-1.2.mca',
     )
-    expect(() => minecraftRegionFilePath('overworld', coord, 'invalid' as never)).toThrow(
-      'unsupported Minecraft region storage invalid',
-    )
+    expect(() => {
+      // @ts-expect-error -- not a supported region storage kind, exercising the runtime guard
+      minecraftRegionFilePath('overworld', coord, 'invalid')
+    }).toThrow('unsupported Minecraft region storage invalid')
     expect(minecraftExternalChunkFileName(coord)).toBe('c.-1.64.mcc')
     expect(minecraftExternalChunkFilePath('overworld', coord)).toBe(
       'dimensions/minecraft/overworld/region/c.-1.64.mcc',

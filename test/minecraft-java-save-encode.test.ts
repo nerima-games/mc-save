@@ -8,8 +8,16 @@ import {
   nbtCompound,
   nbtDocument,
   nbtInt,
+  type AnvilChunkRecord,
   type MinecraftJavaSave,
 } from '../src/index.js'
+
+// Named separately (not inlined as `importOriginal<typeof import('...')>()`)
+// because ast-grep's TypeScript parser mis-parses that inline form and
+// spuriously flags unrelated code later in this file as a type assertion
+// (reproduced in isolation; confirmed to be a parser defect, not a real
+// no-type-assertion violation).
+type MinecraftSaveFilesModule = typeof import('../src/domain/minecraft-save-files.js')
 
 const level = nbtDocument('Level', nbtCompound([['DataVersion', nbtInt(1)]]))
 
@@ -53,13 +61,7 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
   })
 
   it('wraps a non-MinecraftJavaSaveError raised by the region encoder', async () => {
-    const chunks = new Array(ANVIL_CHUNK_COUNT).fill(null) as Array<{
-      localX: number
-      localZ: number
-      timestamp: number
-      compression: 'none'
-      payload: Uint8Array
-    } | null>
+    const chunks = Array.from({ length: ANVIL_CHUNK_COUNT }, (): AnvilChunkRecord | null => null)
     chunks[0] = { localX: 0, localZ: 0, timestamp: 1, compression: 'none', payload: new Uint8Array([1, 2, 3]) }
     const source: MinecraftJavaSave = {
       ...baseSave(),
@@ -82,8 +84,7 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
   it('guards the defensive session.lock encode failure path behind an already-validated save', async () => {
     vi.resetModules()
     vi.doMock('../src/domain/minecraft-save-files.js', async (importOriginal) => {
-      const actual =
-        await importOriginal<typeof import('../src/domain/minecraft-save-files.js')>()
+      const actual = await importOriginal<MinecraftSaveFilesModule>()
       return {
         ...actual,
         encodeMinecraftSessionLock: () => {

@@ -60,12 +60,18 @@ type StreamTransform = {
 
 type StreamConstructor = new (format: NativeCompressionFormat) => StreamTransform
 
-type StreamGlobals = {
-  readonly CompressionStream?: StreamConstructor
-  readonly DecompressionStream?: StreamConstructor
+declare global {
+  // CompressionStream/DecompressionStream are browser globals not declared by
+  // this repo's DOM-free `lib` (see tsconfig.base.json); `var` is required
+  // here because that is how TypeScript's ambient global-scope augmentation
+  // works, not a stylistic choice. Read directly at each use site (not
+  // captured into a snapshot object) so a test's `vi.stubGlobal` still takes
+  // effect after this module has already been imported.
+  // eslint-disable-next-line no-var
+  var CompressionStream: StreamConstructor | undefined
+  // eslint-disable-next-line no-var
+  var DecompressionStream: StreamConstructor | undefined
 }
-
-const streamGlobals = globalThis as unknown as StreamGlobals
 
 const compressionError = (
   operation: MinecraftCompressionError['operation'],
@@ -149,7 +155,7 @@ const runNativeTransform = async (
   operation: MinecraftCompressionError['operation'],
   maxOutputBytes: number,
 ): Promise<Uint8Array> => {
-  const Constructor = operation === 'encode' ? streamGlobals.CompressionStream : streamGlobals.DecompressionStream
+  const Constructor = operation === 'encode' ? CompressionStream : DecompressionStream
   if (Constructor === undefined) {
     throw compressionError(operation, compression, 'the Web Compression API is unavailable')
   }

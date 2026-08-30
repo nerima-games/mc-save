@@ -1,6 +1,7 @@
 /* oxlint-disable no-bitwise -- UTF-8 continuation bytes are defined by bit fields. */
 
 import { Data } from 'effect'
+import { assertDefined } from './assert-defined.js'
 import type { MinecraftJsonValue } from './minecraft-java-save-types.js'
 
 export class MinecraftJsonError extends Data.TaggedError('MinecraftJsonError')<{
@@ -22,8 +23,7 @@ const isArrayIndex = (key: string, length: number): boolean => {
   return Number.isSafeInteger(index) && index >= 0 && index < length && String(index) === key
 }
 
-const isJsonArray = (value: object, seen: WeakSet<object>): value is ReadonlyArray<unknown> => {
-  const array = value as ReadonlyArray<unknown>
+const isJsonArray = (array: ReadonlyArray<unknown>, seen: WeakSet<object>): boolean => {
   const prototype = Object.getPrototypeOf(array)
   if (prototype !== Array.prototype && prototype !== null) return false
   // 'length' is not re-checked for presence or enumerability here: Array.isArray (in the caller) guarantees
@@ -97,7 +97,7 @@ const decodeUtf8 = (bytes: Uint8Array): string => {
   const codePoints: number[] = []
   let offset = 0
   while (offset < bytes.byteLength) {
-    const first = bytes[offset]!
+    const first = assertDefined(bytes[offset], 'decodeUtf8: offset is within byteLength but byte is missing')
     if (first <= 0x7f) {
       codePoints.push(first)
       offset += 1
@@ -106,7 +106,7 @@ const decodeUtf8 = (bytes: Uint8Array): string => {
 
     if (first >= 0xc2 && first <= 0xdf) {
       if (offset + 1 >= bytes.byteLength) throw jsonError('decode', 'truncated two-byte UTF-8 sequence')
-      const second = bytes[offset + 1]!
+      const second = assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a two-byte sequence')
       if (!continuation(second)) throw jsonError('decode', 'invalid UTF-8 continuation byte')
       codePoints.push(((first & 0x1f) << 6) | (second & 0x3f))
       offset += 2
@@ -115,8 +115,8 @@ const decodeUtf8 = (bytes: Uint8Array): string => {
 
     if (first >= 0xe0 && first <= 0xef) {
       if (offset + 2 >= bytes.byteLength) throw jsonError('decode', 'truncated three-byte UTF-8 sequence')
-      const second = bytes[offset + 1]!
-      const third = bytes[offset + 2]!
+      const second = assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a three-byte sequence')
+      const third = assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a three-byte sequence')
       if (!continuation(second) || !continuation(third)) {
         throw jsonError('decode', 'invalid UTF-8 continuation byte')
       }
@@ -130,9 +130,9 @@ const decodeUtf8 = (bytes: Uint8Array): string => {
 
     if (first >= 0xf0 && first <= 0xf4) {
       if (offset + 3 >= bytes.byteLength) throw jsonError('decode', 'truncated four-byte UTF-8 sequence')
-      const second = bytes[offset + 1]!
-      const third = bytes[offset + 2]!
-      const fourth = bytes[offset + 3]!
+      const second = assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a four-byte sequence')
+      const third = assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a four-byte sequence')
+      const fourth = assertDefined(bytes[offset + 3], 'decodeUtf8: missing fourth byte of a four-byte sequence')
       if (!continuation(second) || !continuation(third) || !continuation(fourth)) {
         throw jsonError('decode', 'invalid UTF-8 continuation byte')
       }
@@ -190,7 +190,7 @@ export const decodeMinecraftJson = (bytes: Uint8Array): MinecraftJsonValue => {
   if (!(bytes instanceof Uint8Array)) throw jsonError('decode', 'input must be a Uint8Array')
   let parsed: unknown
   try {
-    parsed = JSON.parse(decodeUtf8(bytes)) as unknown
+    parsed = JSON.parse(decodeUtf8(bytes))
   } catch (error) {
     if (error instanceof MinecraftJsonError) throw error
     throw jsonError('decode', error instanceof Error ? error.message : String(error))

@@ -20,6 +20,16 @@ const BROKEN = SaveKey('world/broken')
 const SECOND = SaveKey('world/second')
 const FOREIGN = SaveKey('world/foreign')
 
+// Widens a value's static type to `T` with NO runtime transformation and no type assertion:
+// `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
+// complaint. Used to store a malformed, non-envelope-shaped value so the test proves runtime
+// well-formedness validation — not the type checker — rejects it.
+const widen = <T,>(value: unknown): T => {
+  const bag: Record<string, any> = {}
+  bag['value'] = value
+  return bag['value']
+}
+
 describe('listFrom', () => {
   effect('hides durable checkpoint records from user listings', () =>
     Effect.gen(function* () {
@@ -112,7 +122,7 @@ describe('loadFrom', () => {
   effect('rejects a stored value that is not a well-formed envelope', () =>
     Effect.gen(function* () {
       const storage = yield* StoragePort
-      yield* storage.put(BROKEN, { format: '', version: 0, payload: null } as unknown as SaveEnvelope)
+      yield* storage.put(BROKEN, widen<SaveEnvelope>({ format: '', version: 0, payload: null }))
 
       const result = yield* Effect.flip(loadFrom(World, BROKEN))
 

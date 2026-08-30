@@ -61,10 +61,12 @@ describe('the IndexedDB surface is a real subset of the real DOM', () => {
         { cwd: repositoryRoot, encoding: 'utf8', stdio: 'pipe' },
       )
       expect(output).not.toBe('')
-      const parsed = JSON.parse(output) as {
+      // `JSON.parse` returns `any`, which is assignable to this annotation with
+      // no cast — `any` bypasses type checking on the RHS, not the LHS binding.
+      const parsed: {
         compilerOptions?: { lib?: string[]; types?: string[] }
         files?: string[]
-      }
+      } = JSON.parse(output)
 
       expect(parsed.compilerOptions?.lib).toStrictEqual(['es2024'])
       expect(parsed.compilerOptions?.types).toStrictEqual([])

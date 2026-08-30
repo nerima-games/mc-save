@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 const rootDirectory = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(rootDirectory)
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
 
 const run = async (command, arguments_, cwd) => {
   try {
@@ -16,6 +17,8 @@ const run = async (command, arguments_, cwd) => {
       cwd,
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024,
+      timeout: DEFAULT_COMMAND_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
     })
     return result.stdout
   } catch (error) {
@@ -147,7 +150,7 @@ const verifyPackage = async () => {
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'mc-save-package-'))
   try {
-    await run('corepack', ['pnpm', 'pack', '--pack-destination', temporaryDirectory], packageRoot)
+    await run('pnpm', ['pack', '--pack-destination', temporaryDirectory], packageRoot)
     const archives = (await readdir(temporaryDirectory)).filter((entry) => entry.endsWith('.tgz'))
     if (archives.length !== 1) {
       throw new Error(`expected one packed archive, found ${String(archives.length)}`)

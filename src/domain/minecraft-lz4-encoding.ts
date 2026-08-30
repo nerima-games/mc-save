@@ -20,6 +20,7 @@ import {
   xxHash32,
 } from './minecraft-lz4-format.js'
 import type { MinecraftLz4Options } from './minecraft-lz4-format.js'
+import { assertDefined } from './assert-defined.js'
 
 const hashSequence = (bytes: Uint8Array, offset: number): number =>
   (Math.imul(readUint32LittleEndian(bytes, offset), 2654435761) >>> 0) >>> 16
@@ -41,7 +42,7 @@ const encodeLz4Block = (input: Uint8Array): Uint8Array => {
 
   while (offset <= matchFindLimit) {
     const hash = hashSequence(input, offset)
-    const candidate = table[hash]!
+    const candidate = assertDefined(table[hash], `encodeLz4Block: hash ${String(hash)} is out of the table's range`)
     table[hash] = offset
     if (candidate < 0 || offset - candidate > LZ4_MAX_OFFSET || !equalFourBytes(input, candidate, offset)) {
       offset += 1

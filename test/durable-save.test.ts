@@ -13,6 +13,16 @@ import { defineFormat } from '../src/domain/format.js'
 import { DEFAULT_MAX_SAVE_BYTES, sameSaveEnvelope, sealAndValidateSaveEnvelope } from '../src/domain/integrity.js'
 import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage-port.js'
 
+// Widens a value's static type to `T` with NO runtime transformation and no type assertion:
+// `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
+// complaint. Used to construct a deliberately invalid/malformed envelope so a test proves runtime
+// validation — not the type checker — rejects it.
+const widen = <T,>(value: unknown): T => {
+  const bag: Record<string, any> = {}
+  bag['value'] = value
+  return bag['value']
+}
+
 const State = defineFormat({
   name: 'mc-save/test/durable',
   version: 1,
@@ -310,7 +320,7 @@ describe('durable save checkpoints', () => {
   effect('rejects envelopes without integrity metadata', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
-      const draft = saveEnvelope(State.name, 1, { score: 7, label: 'draft' }) as unknown as SaveEnvelope
+      const draft = widen<SaveEnvelope>(saveEnvelope(State.name, 1, { score: 7, label: 'draft' }))
       yield* storage.put(key, draft)
 
       const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
@@ -429,7 +439,7 @@ describe('durable save checkpoints', () => {
         // `Left` directly, so `loadDurably` never reaches its
         // `Effect.catchTags` block at all for this one.
         const storage = yield* makeInMemoryStorage
-        yield* storage.put(key, { format: '', version: 0, payload: null } as unknown as SaveEnvelope)
+        yield* storage.put(key, widen<SaveEnvelope>({ format: '', version: 0, payload: null }))
 
         const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
         expect(result._tag).toBe('Left')
@@ -481,11 +491,13 @@ describe('save integrity', () => {
     const sparse = new Array(1)
     const symbols = { [Symbol('private')]: true }
     const functionValue = () => undefined
-    const throwingEnvelope = Object.defineProperty({}, 'format', {
-      get: () => {
-        throw new Error('format getter failed')
-      },
-    }) as Parameters<typeof sameSaveEnvelope>[0]
+    const throwingEnvelope = widen<Parameters<typeof sameSaveEnvelope>[0]>(
+      Object.defineProperty({}, 'format', {
+        get: () => {
+          throw new Error('format getter failed')
+        },
+      }),
+    )
     expect(sameSaveEnvelope(ordered, { ...ordered, payload: cyclic })).toBe(false)
     expect(sameSaveEnvelope({ ...ordered, payload: cyclic }, { ...ordered, payload: cyclic })).toBe(false)
     expect(sameSaveEnvelope(ordered, { ...ordered, payload: sparse })).toBe(false)
@@ -528,11 +540,11 @@ describe('save integrity', () => {
   effect('rejects an unknown or malformed integrity record', () =>
     Effect.gen(function* () {
       const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'sealed' }))
-      const unknownAlgorithm = {
+      const unknownAlgorithm = widen<SaveEnvelope>({
         ...sealed,
         integrity: { ...sealed.integrity, algorithm: 'sha256' },
-      } as unknown as SaveEnvelope
-      const malformed = { ...sealed, integrity: null } as unknown as SaveEnvelope
+      })
+      const malformed = widen<SaveEnvelope>({ ...sealed, integrity: null })
 
       expect((yield* Effect.either(validateSaveEnvelope(unknownAlgorithm)))._tag).toBe('Left')
       expect((yield* Effect.either(validateSaveEnvelope(malformed)))._tag).toBe('Left')

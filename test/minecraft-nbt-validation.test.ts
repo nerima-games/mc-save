@@ -22,7 +22,7 @@ describe('Minecraft NBT document validation, low-level boundary', () => {
   })
 
   it('accepts a tag whose own prototype is null', () => {
-    const nullPrototypeByte: Tag = Object.assign(Object.create(null) as Tag, { type: 'byte', value: 1 })
+    const nullPrototypeByte: Tag = Object.assign(Object.create(null), { type: 'byte', value: 1 })
     expect(isMinecraftNbtDocument(wrap(nullPrototypeByte))).toBe(true)
   })
 
@@ -53,7 +53,7 @@ describe('Minecraft NBT document validation, low-level boundary', () => {
   })
 
   it('rejects a list whose values are not a dense array', () => {
-    const sparse = new Array(1) as unknown[]
+    const sparse: unknown[] = new Array(1)
     expect(isMinecraftNbtDocument(wrap({ type: 'list', elementType: 'byte', values: sparse }))).toBe(false)
   })
 
@@ -81,13 +81,13 @@ describe('Minecraft NBT document validation, low-level boundary', () => {
   })
 
   it('rejects an array value carrying a non-index enumerable own key', () => {
-    const withExtraKey = [byte(1)] as unknown[] & { extra?: boolean }
+    const withExtraKey: unknown[] & { extra?: boolean } = [byte(1)]
     withExtraKey.extra = true
     expect(isMinecraftNbtDocument(wrap({ type: 'list', elementType: 'byte', values: withExtraKey }))).toBe(false)
   })
 
   it('rejects an array value carrying a non-enumerable index property', () => {
-    const withHiddenIndex = [byte(1)] as unknown[]
+    const withHiddenIndex: unknown[] = [byte(1)]
     Object.defineProperty(withHiddenIndex, '0', { value: byte(1), enumerable: false, configurable: true })
     expect(isMinecraftNbtDocument(wrap({ type: 'list', elementType: 'byte', values: withHiddenIndex }))).toBe(false)
   })

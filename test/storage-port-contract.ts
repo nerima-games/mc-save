@@ -33,6 +33,16 @@ const B = SaveKey('beta')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/contract', 1, payload)
 const unsealedEnvelope = (payload: unknown) => unsealedTestEnvelope('mc-save/test/contract', 1, payload)
 
+type NestedPayload = { nested: { value: number } }
+const isNestedPayload = (value: unknown): value is NestedPayload => {
+  if (typeof value !== 'object' || value === null) return false
+  if (!('nested' in value)) return false
+  const nested = value.nested
+  if (typeof nested !== 'object' || nested === null) return false
+  if (!('value' in nested)) return false
+  return typeof nested.value === 'number'
+}
+
 export const storagePortContract = <E>(
   adapter: string,
   freshLayer: () => Layer.Layer<StoragePort, E>,
@@ -143,7 +153,8 @@ export const storagePortContract = <E>(
 
         const read = yield* storage.get(A)
         if (Option.isNone(read)) throw new Error('the isolated value was not stored')
-        const readPayload = read.value.payload as { nested: { value: number } }
+        const readPayload = read.value.payload
+        if (!isNestedPayload(readPayload)) throw new Error('expected a nested payload shape')
         readPayload.nested.value = 3
 
         const [batchRead] = yield* storage.readBatch([A])
