@@ -8,6 +8,10 @@ import { sealedTestEnvelope } from '../support/save-envelope.js'
 
 let databaseSequence = 0
 
+/** Narrows a stored envelope payload to the shape this test's fixtures use. */
+const hasNumericValue = (payload: unknown): payload is { readonly value: number } =>
+  typeof payload === 'object' && payload !== null && 'value' in payload && typeof payload.value === 'number'
+
 storagePortContract('IndexedDB (Chromium)', () =>
   indexedDbStorageLayer({
     databaseName: `mc-save/browser/${databaseSequence++}`,
@@ -40,8 +44,10 @@ effect('serializes compare-and-set commits across independent IndexedDB connecti
 
       const stored = yield* first.get(key)
       expect(Option.isSome(stored)).toBe(true)
-      if (Option.isSome(stored)) {
-        expect([1, 2]).toContain((stored.value.payload as { readonly value: number }).value)
+      if (Option.isSome(stored) && hasNumericValue(stored.value.payload)) {
+        expect([1, 2]).toContain(stored.value.payload.value)
+      } else {
+        expect.fail('expected a stored payload with a numeric value')
       }
     }),
   ),

@@ -1,0 +1,28 @@
+id: no-type-assertion
+language: TypeScript
+severity: error
+files:
+  - "src/**/*.ts"
+  - "src/**/*.tsx"
+  - "src/**/*.mts"
+  - "src/**/*.cts"
+  - "test/**/*.ts"
+  - "test/**/*.tsx"
+  - "test/**/*.mts"
+  - "test/**/*.cts"
+  - "vitest.config.ts"
+message: >-
+  Narrow unknown values with a type guard or construct a validated value;
+  do not bypass the type system with a type assertion.
+note: >-
+  `as const` is the only permitted assertion because it preserves literal
+  information without claiming that an unchecked runtime value has another
+  type. Runtime boundaries must use a guard or a validated constructor.
+rule:
+  any:
+    - kind: type_assertion
+    - kind: non_null_expression
+    - all:
+        - kind: as_expression
+        - not:
+            pattern: $VALUE as const

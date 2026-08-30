@@ -1,5 +1,7 @@
 /* oxlint-disable no-bitwise -- Java modified UTF-8 packs code-unit bits into wire bytes. */
 
+import { assertDefined } from './assert-defined.js'
+
 const CONTINUATION_MASK = 0xc0
 const CONTINUATION_VALUE = 0x80
 
@@ -12,7 +14,7 @@ const invalidModifiedUtf8 = (offset: number): TypeError =>
 export const encodeModifiedUtf8 = (value: string): Uint8Array => {
   let length = 0
   for (const codeUnit of value) {
-    const codePoint = codeUnit.codePointAt(0)!
+    const codePoint = assertDefined(codeUnit.codePointAt(0), 'encodeModifiedUtf8: empty string element from iteration')
     if (codePoint === 0) {
       length += 2
     } else if (codePoint <= 0x7f) {
@@ -57,7 +59,7 @@ export const encodeModifiedUtf8 = (value: string): Uint8Array => {
 export const decodeModifiedUtf8 = (bytes: Uint8Array): string => {
   let value = ''
   for (let offset = 0; offset < bytes.length; ) {
-    const first = bytes[offset]!
+    const first = assertDefined(bytes[offset], 'decodeModifiedUtf8: offset was within bytes.length')
 
     if (first >= 0x01 && first <= 0x7f) {
       value += String.fromCharCode(first)

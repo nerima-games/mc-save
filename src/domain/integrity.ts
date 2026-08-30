@@ -17,9 +17,12 @@ const integrityInput = (envelope: SaveEnvelope | SaveEnvelopeDraft): unknown => 
 
 const isValidMaxBytes = (maxBytes: number): boolean => Number.isSafeInteger(maxBytes) && maxBytes >= 0
 
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null
+
 const isExpectedIntegrity = (value: unknown): value is SaveIntegrity => {
-  if (typeof value !== 'object' || value === null) return false
-  const record = value as Readonly<Record<string, unknown>>
+  if (!isRecord(value)) return false
+  const record = value
   const byteLength = record['byteLength']
   return (
     record['algorithm'] === 'fnv1a32' &&

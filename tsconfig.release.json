@@ -1,9 +1,20 @@
 {
+  // The only emitting configuration. Keep the normal build and test configs
+  // check-only so local type checks never leave generated files in src.
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": "./src",
-    "outDir": "./dist",
-    "noEmit": false
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist"
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/index.ts", "src/domain/**/*.ts"],
+  "exclude": [
+    "node_modules",
+    "coverage",
+    "dist",
+    "test/**",
+    "scripts/**",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
 }

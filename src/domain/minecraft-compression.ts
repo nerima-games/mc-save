@@ -60,12 +60,27 @@ type StreamTransform = {
 
 type StreamConstructor = new (format: NativeCompressionFormat) => StreamTransform
 
-type StreamGlobals = {
-  readonly CompressionStream?: StreamConstructor
-  readonly DecompressionStream?: StreamConstructor
-}
+const isStreamConstructor = (value: unknown): value is StreamConstructor => typeof value === 'function'
 
-const streamGlobals = globalThis as unknown as StreamGlobals
+// CompressionStream/DecompressionStream are browser globals not declared by
+// this repo's DOM-free `lib` (see tsconfig.base.json). A `declare global { var
+// CompressionStream: ... }` ambient declaration works for that build, but
+// collides under TS2403 with lib.dom.d.ts's own `var CompressionStream` in
+// tsconfig.browser.json — every `var` declaration of one name in one scope
+// must match exactly, and once it collides TypeScript resolves every use of
+// the name to DOM's real, wider type instead of this file's narrower
+// structural one, which is what produced the cascading errors inside
+// `runNativeTransform`. Reading the property off `globalThis` at each call
+// site instead of declaring an ambient var sidesteps the collision entirely,
+// and — same as the removed ambient var — is read fresh on every call so a
+// test's `vi.stubGlobal` still takes effect after this module has already
+// been imported. `Object.getOwnPropertyDescriptor`'s first parameter is typed
+// `any` in lib.es5.d.ts, so this compiles under every lib configuration this
+// repo uses without a cast.
+const resolveStreamConstructor = (name: 'CompressionStream' | 'DecompressionStream'): StreamConstructor | undefined => {
+  const candidate: unknown = Object.getOwnPropertyDescriptor(globalThis, name)?.value
+  return isStreamConstructor(candidate) ? candidate : undefined
+}
 
 const compressionError = (
   operation: MinecraftCompressionError['operation'],
@@ -149,7 +164,7 @@ const runNativeTransform = async (
   operation: MinecraftCompressionError['operation'],
   maxOutputBytes: number,
 ): Promise<Uint8Array> => {
-  const Constructor = operation === 'encode' ? streamGlobals.CompressionStream : streamGlobals.DecompressionStream
+  const Constructor = resolveStreamConstructor(operation === 'encode' ? 'CompressionStream' : 'DecompressionStream')
   if (Constructor === undefined) {
     throw compressionError(operation, compression, 'the Web Compression API is unavailable')
   }

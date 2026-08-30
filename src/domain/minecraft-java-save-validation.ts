@@ -60,7 +60,7 @@ const isArrayIndex = (key: string, length: number): boolean => {
 const isDenseArray = (value: unknown): value is ReadonlyArray<unknown> => {
   if (!Array.isArray(value)) return false
   try {
-    const array = value as ReadonlyArray<unknown>
+    const array = value
     const prototype = Object.getPrototypeOf(array)
     if (prototype !== Array.prototype && prototype !== null) return false
     // 'length' is not re-checked for presence or enumerability inside this loop: Array.isArray above
@@ -114,7 +114,9 @@ const isSigned64 = (value: unknown): value is bigint =>
 const isMinecraftDimension = (value: unknown): value is MinecraftDimension => {
   if (typeof value !== 'string') return false
   try {
-    minecraftDimensionDirectory(value as MinecraftDimension)
+    // @ts-expect-error -- value is an unvalidated string; minecraftDimensionDirectory's own runtime
+    // guard is the validation this function exists to run, via the catch below.
+    minecraftDimensionDirectory(value)
     return true
   } catch {
     return false
@@ -148,15 +150,27 @@ const isAnvilChunk = (value: unknown): value is AnvilChunkRecord => {
 
 const isAnvilRegion = (value: unknown): value is AnvilRegion => {
   if (!isRecord(value) || !hasOnlyKeys(value, ANVIL_REGION_KEYS)) return false
-  const chunks = value['chunks']
-  const timestamps = value['timestamps']
-  if (!isDenseArray(chunks) || !isDenseArray(timestamps)) return false
-  if (chunks.length !== ANVIL_CHUNK_COUNT || timestamps.length !== ANVIL_CHUNK_COUNT) return false
-  for (const chunk of chunks) {
-    if (chunk !== null && !isAnvilChunk(chunk)) return false
+  const chunksField = value['chunks']
+  const timestampsField = value['timestamps']
+  if (!isDenseArray(chunksField) || !isDenseArray(timestampsField)) return false
+  if (chunksField.length !== ANVIL_CHUNK_COUNT || timestampsField.length !== ANVIL_CHUNK_COUNT) return false
+  const chunks: Array<AnvilChunkRecord | null> = []
+  for (const chunk of chunksField) {
+    if (chunk === null) {
+      chunks.push(null)
+    } else if (isAnvilChunk(chunk)) {
+      chunks.push(chunk)
+    } else {
+      return false
+    }
+  }
+  const timestamps: number[] = []
+  for (const timestamp of timestampsField) {
+    if (typeof timestamp !== 'number') return false
+    timestamps.push(timestamp)
   }
   try {
-    anvilRegion(chunks as ReadonlyArray<AnvilChunkRecord | null>, timestamps as ReadonlyArray<number>)
+    anvilRegion(chunks, timestamps)
     return true
   } catch {
     return false

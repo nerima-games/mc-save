@@ -20,6 +20,11 @@ import type { ResolvedNbtCodecOptions } from './minecraft-nbt-codec-options.js'
 import { nbtError } from './minecraft-nbt-codec-options.js'
 import { assertInteger, tagTypeFromId, type NbtPayloadTagType } from './minecraft-nbt-codec-support.js'
 
+const asArrayBuffer = (buffer: ArrayBufferLike): ArrayBuffer => {
+  if (!(buffer instanceof ArrayBuffer)) throw new TypeError('expected an ArrayBuffer-backed Uint8Array')
+  return buffer
+}
+
 class NbtReader {
   private readonly view: DataView
   private offset = 0
@@ -30,7 +35,7 @@ class NbtReader {
   constructor(bytes: Uint8Array, options: ResolvedNbtCodecOptions) {
     this.bytes = bytes
     this.options = options
-    this.view = new DataView(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength)
+    this.view = new DataView(asArrayBuffer(bytes.buffer), bytes.byteOffset, bytes.byteLength)
   }
 
   private require(length: number): void {
@@ -154,24 +159,8 @@ class NbtReader {
         }
         return nbtList(elementType, values)
       }
-      case 'compound': {
-        this.depth(depth)
-        const entries: Array<readonly [name: string, value: NbtNonEndTag]> = []
-        const names = new Set<string>()
-        while (true) {
-          const typeIdOffset = this.offset
-          const valueTypeId = this.readU8()
-          if (valueTypeId === NBT_TAG_IDS.end) break
-          const valueType = tagTypeFromId(valueTypeId)
-          if (valueType === undefined) throw nbtError(`unknown tag id ${String(valueTypeId)}`, typeIdOffset)
-          const name = this.readString()
-          if (names.has(name)) throw nbtError(`compound contains duplicate name ${JSON.stringify(name)}`, typeIdOffset)
-          names.add(name)
-          this.count(1)
-          entries.push([name, this.readTagPayload(valueType as NbtPayloadTagType, depth + 1)])
-        }
-        return nbtCompound(entries)
-      }
+      case 'compound':
+        return this.readCompound(depth)
       case 'intArray': {
         const length = this.readI32()
         this.count(length)
@@ -187,6 +176,25 @@ class NbtReader {
         return nbtLongArray(values)
       }
     }
+  }
+
+  readCompound(depth: number): NbtCompound {
+    this.depth(depth)
+    const entries: Array<readonly [name: string, value: NbtNonEndTag]> = []
+    const names = new Set<string>()
+    while (true) {
+      const typeIdOffset = this.offset
+      const valueTypeId = this.readU8()
+      const valueType = tagTypeFromId(valueTypeId)
+      if (valueType === undefined) throw nbtError(`unknown tag id ${String(valueTypeId)}`, typeIdOffset)
+      if (valueType === 'end') break
+      const name = this.readString()
+      if (names.has(name)) throw nbtError(`compound contains duplicate name ${JSON.stringify(name)}`, typeIdOffset)
+      names.add(name)
+      this.count(1)
+      entries.push([name, this.readTagPayload(valueType, depth + 1)])
+    }
+    return nbtCompound(entries)
   }
 
   atEnd(): boolean {
@@ -205,7 +213,7 @@ export const decodeNbtBytes = (bytes: Uint8Array, options: ResolvedNbtCodecOptio
     throw nbtError(`root tag must be a compound, received id ${String(rootTypeId)}`, 0)
   }
   const name = reader.readString()
-  const root = reader.readTagPayload('compound', 1) as NbtCompound
+  const root = reader.readCompound(1)
   if (!reader.atEnd()) throw nbtError('trailing bytes after root compound', reader.position())
   return nbtDocument(name, root)
 }

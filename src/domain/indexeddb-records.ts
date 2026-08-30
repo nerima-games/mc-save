@@ -3,8 +3,11 @@ import { SaveEnvelopeSchema, type SaveEnvelope } from './envelope.js'
 import { INSERTION_INDEX_NAME, SAVE_STORE_NAME } from './indexeddb-layout.js'
 import { SaveKey } from './save-key.js'
 
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null
+
 export const asRecord = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
-  typeof value === 'object' && value !== null ? (value as Readonly<Record<string, unknown>>) : undefined
+  isRecord(value) ? value : undefined
 
 export const readSequence = (source: unknown, field: string): number | undefined => {
   const value = asRecord(source)?.[field]

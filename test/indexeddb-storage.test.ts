@@ -20,6 +20,7 @@ import {
 import type {
   IdbDatabase,
   IdbFactory,
+  IdbObjectStore,
   IdbOpenRequest,
   IdbStringList,
   IdbTransaction,
@@ -43,6 +44,22 @@ const layerFor = (factory: IdbFactory, databaseName = DATABASE) =>
 
 /** A fresh medium per run, which is what isolation means for a real adapter. */
 const freshLayer = () => layerFor(makeFakeIndexedDb())
+
+/**
+ * Fire a surface callback typed `(event: never) => void` (indexeddb-surface.ts:
+ * no handler here reads its event argument, so `never` is the only value that
+ * can occupy the position — mirrors fake-indexeddb.ts's identical helper).
+ */
+const fire = (handler: ((event: never) => void) | null | undefined): void => {
+  if (handler === null || handler === undefined) return
+  // @ts-expect-error -- nothing has type `never`; `undefined` stands in for a
+  // callback whose signature intentionally admits no real argument.
+  handler(undefined)
+}
+
+/** Narrows a raw stored record to the shape `seq` assertions need, without assuming it. */
+const hasNumericSeq = (value: unknown): value is { readonly seq: number } =>
+  typeof value === 'object' && value !== null && 'seq' in value && typeof value.seq === 'number'
 
 // ---------------------------------------------------------------------------
 // The promise `domain/storage-port.ts` made, kept
@@ -112,9 +129,10 @@ describe('insertion order survives the medium', () => {
 
       expect(keys).toStrictEqual(['two', 'three'])
 
-      const sequences = (factory.recordsOf(DATABASE, SAVE_STORE_NAME) ?? []).map(
-        (record) => (record as { readonly seq: number }).seq,
-      )
+      const sequences = (factory.recordsOf(DATABASE, SAVE_STORE_NAME) ?? []).map((record) => {
+        if (!hasNumericSeq(record)) throw new Error('expected a stored record with a numeric seq')
+        return record.seq
+      })
       expect(new Set(sequences).size).toBe(sequences.length)
     }),
   )
@@ -216,26 +234,69 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
   effect('preserves an undefined transaction cause without inventing one', () =>
     Effect.gen(function* () {
+      // `error: undefined` is deliberately outside IdbTransaction's declared
+      // `IdbDomException | null` — this test exists to prove runTransaction
+      // does not invent a cause when the transaction reports none at all,
+      // which is a stronger claim than "reports null". The cast below is
+      // scoped to only this one out-of-contract field, not the object.
+      // runTransaction calls `transaction.objectStore(...)` synchronously as
+      // part of starting the transaction (src/domain/indexeddb-runtime.ts),
+      // regardless of mode, so the call itself must succeed here. What this
+      // test actually asserts nothing calls is any OPERATION on the returned
+      // store: this path only ever runs the `start` callback below, which
+      // ignores the store it is given and just schedules `onabort`.
+      const unusedStore: IdbObjectStore = {
+        indexNames: { length: 0, item: () => null, contains: () => false },
+        get: () => {
+          throw new Error('not expected to be called by this test')
+        },
+        put: () => {
+          throw new Error('not expected to be called by this test')
+        },
+        delete: () => {
+          throw new Error('not expected to be called by this test')
+        },
+        index: () => {
+          throw new Error('not expected to be called by this test')
+        },
+        createIndex: () => {
+          throw new Error('not expected to be called by this test')
+        },
+      }
       const transaction: {
-        readonly objectStore: () => object
+        readonly objectStore: () => IdbObjectStore
         readonly abort: () => void
         readonly error: undefined
         oncomplete: ((event: never) => void) | null
         onerror: ((event: never) => void) | null
         onabort: ((event: never) => void) | null
       } = {
-        objectStore: () => ({}),
+        objectStore: () => unusedStore,
         abort: () => undefined,
         error: undefined,
         oncomplete: null,
         onerror: null,
         onabort: null,
       }
-      const database = { transaction: () => transaction } as unknown as IdbDatabase
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: 1,
+        objectStoreNames: { length: 0, item: () => null, contains: () => false },
+        createObjectStore: () => {
+          throw new Error('not expected to be called by this test')
+        },
+        transaction: (): IdbTransaction => {
+          // @ts-expect-error -- transaction.error is deliberately `undefined`, outside
+          // IdbTransaction's declared `IdbDomException | null` (see the comment above).
+          return transaction
+        },
+        close: () => undefined,
+        onversionchange: null,
+      }
 
       const error = yield* Effect.flip(
         runTransaction(database, 'readonly', 'indexeddb.test', undefined, () => {
-          queueMicrotask(() => transaction.onabort?.(undefined as never))
+          queueMicrotask(() => fire(transaction.onabort))
         }),
       )
 
@@ -366,11 +427,11 @@ describe('what the medium can do wrong, and what the caller is told', () => {
               }
               queueMicrotask(() => {
                 try {
-                  request.onupgradeneeded?.(undefined as never)
-                  request.onsuccess?.(undefined as never)
+                  fire(request.onupgradeneeded)
+                  fire(request.onsuccess)
                 } catch {
                   failure = domException('AbortError', 'the upgrade transaction was unavailable')
-                  request.onerror?.(undefined as never)
+                  fire(request.onerror)
                 }
               })
               return request
@@ -428,8 +489,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
                 onblocked: null,
               }
               queueMicrotask(() => {
-                request.onupgradeneeded?.(undefined as never)
-                request.onsuccess?.(undefined as never)
+                fire(request.onupgradeneeded)
+                fire(request.onsuccess)
               })
               return request
             },
@@ -448,7 +509,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       expect(throwingAbort._tag).toBe('StorageError')
       expect(throwingAbort.operation).toBe('indexeddb.open')
       expect(throwingAbort.cause).toBeInstanceOf(Error)
-      expect((throwingAbort.cause as Error).message).toBe('the upgrade callback failed')
+      if (!(throwingAbort.cause instanceof Error)) throw new Error('unreachable: assertion above already failed')
+      expect(throwingAbort.cause.message).toBe('the upgrade callback failed')
     }),
   )
 
@@ -570,7 +632,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       // A native request can report another failure after `onblocked`; the
       // adapter must still deliver its Effect only once.
-      adapterRequest?.onerror?.(undefined as never)
+      fire(adapterRequest?.onerror)
 
       // The adapter's Effect has already resolved with the failure above.
       // Closing the blocker now retries the SAME underlying request, which
@@ -837,7 +899,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.keys')
       expect(error.cause).toBeInstanceOf(TypeError)
-      expect((error.cause as TypeError).message).toContain(INSERTION_INDEX_NAME)
+      if (!(error.cause instanceof TypeError)) throw new Error('unreachable: assertion above already failed')
+      expect(error.cause.message).toContain(INSERTION_INDEX_NAME)
     }),
   )
 
@@ -857,7 +920,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.keys')
       expect(error.cause).toBeInstanceOf(TypeError)
-      expect((error.cause as TypeError).message).toContain(SAVE_STORE_NAME)
+      if (!(error.cause instanceof TypeError)) throw new Error('unreachable: assertion above already failed')
+      expect(error.cause.message).toContain(SAVE_STORE_NAME)
     }),
   )
 
@@ -883,7 +947,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.keys')
       expect(error.cause).toBeInstanceOf(TypeError)
-      expect((error.cause as TypeError).message).toContain(INSERTION_INDEX_NAME)
+      if (!(error.cause instanceof TypeError)) throw new Error('unreachable: assertion above already failed')
+      expect(error.cause.message).toContain(INSERTION_INDEX_NAME)
     }),
   )
 

@@ -1,10 +1,14 @@
 /* eslint-disable no-bitwise -- UTF-8 encoding and FNV-1a are byte-level algorithms. */
+import { assertDefined } from './assert-defined.js'
 import type { SaveEnvelope } from './envelope.js'
 
 export type Canonicalized = {
   readonly text: string
   readonly containsInvalidNumber: boolean
 }
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null
 
 export const utf8Bytes = (value: string): Uint8Array => {
   let ascii = true
@@ -23,7 +27,7 @@ export const utf8Bytes = (value: string): Uint8Array => {
   const bytes = new Uint8Array(value.length * 3)
   let offset = 0
   for (let index = 0; index < value.length; index += 1) {
-    const point = value.codePointAt(index)!
+    const point = assertDefined(value.codePointAt(index), `utf8Bytes: no code point at index ${String(index)}`)
     if (point <= 0x7f) {
       bytes[offset] = point
       offset += 1
@@ -62,7 +66,7 @@ export const canonicalize = (value: unknown, ancestors = new Set<object>()): Can
   if (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
     return { text: JSON.stringify(value), containsInvalidNumber: false }
   }
-  if (typeof value !== 'object') {
+  if (!isRecord(value)) {
     return unsupportedValue(typeof value)
   }
   if (ancestors.has(value)) {
@@ -99,10 +103,9 @@ export const canonicalize = (value: unknown, ancestors = new Set<object>()): Can
     if (prototype !== Object.prototype && prototype !== null) {
       return unsupportedValue('only plain objects and Uint8Array values are supported')
     }
-    const record = value as Readonly<Record<string, unknown>>
-    const values = Object.keys(record)
+    const values = Object.keys(value)
       .sort()
-      .map((key) => ({ key, canonical: canonicalize(record[key], ancestors) }))
+      .map((key) => ({ key, canonical: canonicalize(value[key], ancestors) }))
     return {
       text: `{${values.map(({ key, canonical }) => `${JSON.stringify(key)}:${canonical.text}`).join(',')}}`,
       containsInvalidNumber: values.some(({ canonical }) => canonical.containsInvalidNumber),
@@ -144,21 +147,19 @@ const sameCanonicalValue = (
   if (left === null || right === null) return left === right
   if (leftType !== rightType) return false
   if (leftType === 'string' || leftType === 'boolean' || leftType === 'number') return left === right
-  if (leftType !== 'object') return false
+  if (!isRecord(left) || !isRecord(right)) return false
 
-  const leftObject = left as object
-  const rightObject = right as object
+  const leftObject = left
+  const rightObject = right
   if (leftAncestors.has(leftObject) || rightAncestors.has(rightObject)) return false
   leftAncestors.add(leftObject)
   rightAncestors.add(rightObject)
 
   try {
-    const leftArray = Array.isArray(left)
-    const rightArray = Array.isArray(right)
-    if (leftArray || rightArray) {
-      if (!leftArray || !rightArray) return false
-      const leftValues = left as ReadonlyArray<unknown>
-      const rightValues = right as ReadonlyArray<unknown>
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (!Array.isArray(left) || !Array.isArray(right)) return false
+      const leftValues: ReadonlyArray<unknown> = left
+      const rightValues: ReadonlyArray<unknown> = right
       const leftKeys = Object.keys(leftValues)
       const rightKeys = Object.keys(rightValues)
       if (
@@ -192,16 +193,12 @@ const sameCanonicalValue = (
     const leftKeys = Object.keys(leftObject).sort()
     const rightKeys = Object.keys(rightObject).sort()
     if (leftKeys.length !== rightKeys.length) return false
-    const leftRecord = left as Readonly<Record<string, unknown>>
-    const rightRecord = right as Readonly<Record<string, unknown>>
-    const leftBytes = left as Uint8Array
-    const rightBytes = right as Uint8Array
     for (let index = 0; index < leftKeys.length; index += 1) {
       const leftKey = leftKeys[index]
       const rightKey = rightKeys[index]
       if (leftKey === undefined || rightKey === undefined || leftKey !== rightKey) return false
-      const leftValue = leftBinary ? leftBytes[Number(leftKey)] : leftRecord[leftKey]
-      const rightValue = rightBinary ? rightBytes[Number(rightKey)] : rightRecord[rightKey]
+      const leftValue = left instanceof Uint8Array ? left[Number(leftKey)] : left[leftKey]
+      const rightValue = right instanceof Uint8Array ? right[Number(rightKey)] : right[rightKey]
       if (!sameCanonicalValue(leftValue, rightValue, leftAncestors, rightAncestors)) return false
     }
     return true

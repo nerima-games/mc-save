@@ -2,7 +2,7 @@ import { NBT_TAG_IDS, type NbtDocument, type NbtNonEndTag, type NbtTagType } fro
 import { encodeModifiedUtf8 } from './minecraft-utf8.js'
 
 const MAX_NBT_VALIDATION_DEPTH = 512
-const NBT_TAG_TYPES = new Set<NbtTagType>(Object.keys(NBT_TAG_IDS) as NbtTagType[])
+const NBT_TAG_TYPES = new Set<string>(Object.keys(NBT_TAG_IDS))
 
 type PlainRecord = Record<string, unknown>
 
@@ -62,7 +62,7 @@ const isByteArray = (value: unknown): value is Uint8Array => {
   return true
 }
 
-const isTagType = (value: unknown): value is NbtTagType => typeof value === 'string' && NBT_TAG_TYPES.has(value as NbtTagType)
+const isTagType = (value: unknown): value is NbtTagType => typeof value === 'string' && NBT_TAG_TYPES.has(value)
 
 const isModifiedUtf8String = (value: unknown): value is string => {
   if (typeof value !== 'string') return false

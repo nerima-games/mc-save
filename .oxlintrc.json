@@ -3,8 +3,14 @@
   // oxlint is the ONLY lint/format configuration in this repository.
   // There is deliberately no prettier, no biome and no .editorconfig.
   //
-  // Raw wall-clock reads are checked by scripts/check-source-policy.mjs because
-  // the lint rules for restricted syntax and properties are not portable here.
+  // Raw wall-clock reads used to be checked only by
+  // scripts/check-source-policy.mjs because the lint rules for restricted
+  // syntax and properties are not portable here. That check is now mirrored by
+  // `.ast-grep/rules/no-wall-clock-read.yml`, run via `ast-grep scan` as part
+  // of `pnpm lint` together with `.ast-grep/rules/no-type-assertion.yml`
+  // (org-wide retirement of the repository-local-only gate);
+  // scripts/check-source-policy.mjs remains as a standalone script but is no
+  // longer part of `pnpm verify` or CI.
   "env": {
     "es2022": true,
     "node": true
@@ -103,7 +109,8 @@
     "default-case-last": "warn",
     "no-empty-character-class": "warn",
     // Kept for the restricted-global contract; raw clock reads are checked by
-    // scripts/check-source-policy.mjs rather than relying on this rule.
+    // `.ast-grep/rules/no-wall-clock-read.yml` (see the top-of-file note)
+    // rather than relying on this rule.
     "no-restricted-globals": ["warn", "name", "open", "close", "event"],
     "no-restricted-imports": [
       "warn",
@@ -120,7 +127,7 @@
             // oxlint's Rust regex engine does not support lookaround, so the
             // other organisation packages are enumerated explicitly here.
             "regex": "^@nerima-games/(mc-audio|mc-compose|mc-dev-meta|mc-meshing|mc-noise|mc-physics|mc-playground-kit|mc-render|mc-sim|mc-worldgen|mx-gameplay|mx-multiplayer|mx-redstone|mx-ui)(/.*)?$",
-            "message": "mc-save may depend on mc-kernel for canonical Minecraft primitives, but must not depend on other @nerima-games/* packages."
+            "message": "mc-save is Tier1 (DEPENDENCY_POLICY.md §1); only mc-kernel may be imported from @nerima-games/*."
           }
         ]
       }

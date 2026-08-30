@@ -9,6 +9,7 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 const rootDirectory = dirname(fileURLToPath(import.meta.url))
 const packageRoot = dirname(rootDirectory)
+const DEFAULT_COMMAND_TIMEOUT_MS = 120_000
 
 const run = async (command, arguments_, cwd) => {
   try {
@@ -16,6 +17,8 @@ const run = async (command, arguments_, cwd) => {
       cwd,
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024,
+      timeout: DEFAULT_COMMAND_TIMEOUT_MS,
+      killSignal: 'SIGTERM',
     })
     return result.stdout
   } catch (error) {
@@ -147,7 +150,7 @@ const verifyPackage = async () => {
 
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'mc-save-package-'))
   try {
-    await run('corepack', ['pnpm', 'pack', '--pack-destination', temporaryDirectory], packageRoot)
+    await run('pnpm', ['pack', '--pack-destination', temporaryDirectory], packageRoot)
     const archives = (await readdir(temporaryDirectory)).filter((entry) => entry.endsWith('.tgz'))
     if (archives.length !== 1) {
       throw new Error(`expected one packed archive, found ${String(archives.length)}`)
@@ -167,6 +170,18 @@ const verifyPackage = async () => {
     const installArguments = ['install', '--ignore-scripts', '--no-audit', '--no-fund']
     if (packageScope !== undefined && typeof publishRegistry === 'string') {
       installArguments.push(`--${packageScope}:registry=${publishRegistry}`)
+      // The archive declares @nerima-games/mc-kernel as a dependency, so this
+      // consumer's `npm install` resolves it from GitHub Packages too — which,
+      // unlike the CLI --registry flag above, needs credentials. `${NODE_AUTH_TOKEN}`
+      // is a literal npm config placeholder (never the token value itself); npm
+      // expands it from the environment at install time. `run()` inherits
+      // process.env by default, so the CI step's `env: NODE_AUTH_TOKEN` (or a
+      // locally exported one) reaches this file unchanged.
+      const registryHost = publishRegistry.replace(/^https?:\/\//, '')
+      await writeFile(
+        join(consumerDirectory, '.npmrc'),
+        `${packageScope}:registry=${publishRegistry}\n//${registryHost}/:_authToken=\${NODE_AUTH_TOKEN}\n`,
+      )
     }
     installArguments.push(archivePath)
     await run('npm', installArguments, consumerDirectory)

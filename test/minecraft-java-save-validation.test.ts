@@ -38,8 +38,9 @@ const anvilChunk = (localX: number, localZ: number) => ({
   payload: new Uint8Array(),
 })
 
-const fullChunks = () => new Array(ANVIL_CHUNK_COUNT).fill(null) as Array<ReturnType<typeof anvilChunk> | null>
-const fullTimestamps = () => new Array(ANVIL_CHUNK_COUNT).fill(0) as number[]
+const fullChunks = (): Array<AnvilChunkRecord | null> =>
+  Array.from({ length: ANVIL_CHUNK_COUNT }, (): AnvilChunkRecord | null => null)
+const fullTimestamps = (): number[] => Array.from({ length: ANVIL_CHUNK_COUNT }, (): number => 0)
 
 describe('resolveMinecraftJavaSaveOptions merge logic', () => {
   it('defaults to an empty compressedNbt when neither compressedNbt nor nbt is set', () => {
@@ -83,9 +84,9 @@ describe('validateMinecraftJavaSaveFiles low-level boundary', () => {
   const options = resolveMinecraftJavaSaveOptions(undefined)
 
   it('rejects a non-string, empty, too-long, or unsafely shaped path', () => {
-    expect(() => validateMinecraftJavaSaveFiles([{ path: 1 as never, bytes: new Uint8Array() }], options)).toThrow(
-      'must be a non-empty path',
-    )
+    // @ts-expect-error -- deliberately non-string path to verify runtime rejection
+    const filesWithNumericPath: Array<{ path: string; bytes: Uint8Array }> = [{ path: 1, bytes: new Uint8Array() }]
+    expect(() => validateMinecraftJavaSaveFiles(filesWithNumericPath, options)).toThrow('must be a non-empty path')
     expect(() => validateMinecraftJavaSaveFiles([{ path: '', bytes: new Uint8Array() }], options)).toThrow(
       'must be a non-empty path',
     )
@@ -125,7 +126,8 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
 
   it('rejects a region whose chunk record carries an unexpected key', () => {
     const chunks = fullChunks()
-    chunks[0] = { ...anvilChunk(0, 0), extra: true } as never
+    const chunkWithExtraKey = { ...anvilChunk(0, 0), extra: true }
+    chunks[0] = chunkWithExtraKey
     expectValidateThrows(
       {
         ...baseSave(),
@@ -155,6 +157,28 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
             regionX: 0,
             regionZ: 0,
             region: { chunks, timestamps: fullTimestamps().slice(0, -1) },
+          },
+        ],
+      },
+      'regions 0 is invalid',
+    )
+  })
+
+  it('rejects a region whose timestamps array has the right length but a non-number entry', () => {
+    const chunks = fullChunks()
+    const timestamps = fullTimestamps()
+    // @ts-expect-error -- deliberately non-number timestamp entry to verify runtime rejection
+    timestamps[0] = 'not-a-number'
+    expectValidateThrows(
+      {
+        ...baseSave(),
+        regions: [
+          {
+            dimension: 'overworld',
+            storage: 'region',
+            regionX: 0,
+            regionZ: 0,
+            region: { chunks, timestamps },
           },
         ],
       },
@@ -228,7 +252,8 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
 
   it('rejects an anvil chunk payload that is not a Uint8Array', () => {
     const chunks = fullChunks()
-    chunks[0] = { ...anvilChunk(0, 0), payload: [1, 2, 3] } as never
+    // @ts-expect-error -- deliberately non-Uint8Array payload to verify runtime rejection
+    chunks[0] = { ...anvilChunk(0, 0), payload: [1, 2, 3] }
     expectValidateThrows(
       {
         ...baseSave(),
@@ -251,20 +276,28 @@ describe('isRecord low-level boundary (via requireRecord in validateMinecraftJav
   const options = resolveMinecraftJavaSaveOptions(undefined)
 
   it('rejects an array or Uint8Array passed where a record is expected', () => {
-    expect(() => validateMinecraftJavaSaveFiles([[1, 2, 3] as never], options)).toThrow('must be an object')
-    expect(() => validateMinecraftJavaSaveFiles([new Uint8Array([1]) as never], options)).toThrow('must be an object')
+    // @ts-expect-error -- deliberately non-record file entries to verify runtime rejection
+    const arrayEntry: Array<{ path: string; bytes: Uint8Array }> = [[1, 2, 3]]
+    expect(() => validateMinecraftJavaSaveFiles(arrayEntry, options)).toThrow('must be an object')
+    // @ts-expect-error -- deliberately non-record file entries to verify runtime rejection
+    const byteArrayEntry: Array<{ path: string; bytes: Uint8Array }> = [new Uint8Array([1])]
+    expect(() => validateMinecraftJavaSaveFiles(byteArrayEntry, options)).toThrow('must be an object')
   })
 
   it('rejects a record carrying a non-string own key', () => {
     const withSymbolKey: Record<string | symbol, unknown> = { path: 'a', bytes: new Uint8Array() }
     withSymbolKey[Symbol('extra')] = true
-    expect(() => validateMinecraftJavaSaveFiles([withSymbolKey as never], options)).toThrow('must be an object')
+    // @ts-expect-error -- deliberately mistyped record to verify runtime rejection
+    const entries: Array<{ path: string; bytes: Uint8Array }> = [withSymbolKey]
+    expect(() => validateMinecraftJavaSaveFiles(entries, options)).toThrow('must be an object')
   })
 
   it('rejects a record carrying a non-enumerable own key', () => {
     const withHiddenKey: Record<string, unknown> = { bytes: new Uint8Array() }
     Object.defineProperty(withHiddenKey, 'path', { value: 'a', enumerable: false, configurable: true })
-    expect(() => validateMinecraftJavaSaveFiles([withHiddenKey as never], options)).toThrow('must be an object')
+    // @ts-expect-error -- deliberately mistyped record to verify runtime rejection
+    const entries: Array<{ path: string; bytes: Uint8Array }> = [withHiddenKey]
+    expect(() => validateMinecraftJavaSaveFiles(entries, options)).toThrow('must be an object')
   })
 })
 
@@ -295,7 +328,7 @@ describe('isDenseArray and isByteArray defensive catch boundaries', () => {
       },
     })
     const chunks = fullChunks()
-    chunks[0] = { ...anvilChunk(0, 0), payload: throwingPayload as never }
+    chunks[0] = { ...anvilChunk(0, 0), payload: throwingPayload }
     expectValidateThrows(
       {
         ...baseSave(),

@@ -1,6 +1,7 @@
 /* oxlint-disable no-bitwise -- LZ4 block fields and xxHash32 are bit-packed by the format. */
 
 import { Data } from 'effect'
+import { assertDefined } from './assert-defined.js'
 
 export const LZ4_BLOCK_MAGIC = new Uint8Array([0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b])
 export const LZ4_BLOCK_HEADER_BYTES = 21
@@ -56,8 +57,15 @@ export const assertInput = (operation: Lz4Operation, input: Uint8Array): void =>
 
 const rotateLeft = (value: number, bits: number): number => (value << bits) | (value >>> (32 - bits))
 
+const assertByte = (value: number | undefined, offset: number): number =>
+  assertDefined(value, `readUint32LittleEndian: offset ${String(offset)} is out of range`)
+
 export const readUint32LittleEndian = (bytes: Uint8Array, offset: number): number =>
-  (bytes[offset]! | (bytes[offset + 1]! << 8) | (bytes[offset + 2]! << 16) | (bytes[offset + 3]! << 24)) >>> 0
+  (assertByte(bytes[offset], offset) |
+    (assertByte(bytes[offset + 1], offset + 1) << 8) |
+    (assertByte(bytes[offset + 2], offset + 2) << 16) |
+    (assertByte(bytes[offset + 3], offset + 3) << 24)) >>>
+  0
 
 const writeUint32LittleEndian = (bytes: Uint8Array, offset: number, value: number): void => {
   bytes[offset] = value & 0xff
@@ -98,7 +106,7 @@ export const xxHash32 = (bytes: Uint8Array, seed: number): number => {
     offset += 4
   }
   while (offset < bytes.byteLength) {
-    accumulator = (accumulator + Math.imul(bytes[offset]!, PRIME_5)) >>> 0
+    accumulator = (accumulator + Math.imul(assertByte(bytes[offset], offset), PRIME_5)) >>> 0
     accumulator = Math.imul(rotateLeft(accumulator, 11), PRIME_1) >>> 0
     offset += 1
   }

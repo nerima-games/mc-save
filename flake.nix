@@ -4,6 +4,13 @@
   inputs = {
     # nixos-unstable, not nixpkgs-unstable: it advances only after the NixOS
     # release tests pass, so it is less likely to land a broken build.
+    #
+    # flake.lock is pinned to revision 624af665 rather than the channel head:
+    # newer nixos-unstable revisions ship oxlint >=1.79.0, whose
+    # `no-redeclare` rule misfires on the `type X … & Brand` +
+    # `const X = Brand.refined` idiom used across this org (0 warnings on
+    # 1.75.0, 59 on 1.79.0 measured against an identical tree). Re-check this
+    # pin the next time the org bumps nixpkgs.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
@@ -21,6 +28,10 @@
       pkgsFor = system: nixpkgs.legacyPackages.${system};
     in
     {
+      # Keep Nix formatting available to both supported systems. This makes
+      # `nix fmt -- --check flake.nix` part of the repository's own flake
+      # contract. The explicit file argument makes the check work with
+      # nixfmt's file-oriented CLI as well as editor integrations.
       formatter = forAllSystems (system: (pkgsFor system).nixfmt);
 
       devShells = forAllSystems (
@@ -33,20 +44,31 @@
           # from corepack rather than nixpkgs so that the version is decided by
           # the `packageManager` field in package.json — one source of truth
           # instead of two that can drift.
+          #
+          # oxlint is intentionally supplied by Nix rather than package.json.
+          # This keeps the executable version in the reproducible development
+          # shell and avoids a second package-manager lockfile entry.
+          #
+          # ast-grep is here for the same reason, and covers what oxlint cannot:
+          # it implements none of no-restricted-syntax, no-restricted-properties
+          # or no-restricted-globals, so the org-wide ban on reading a
+          # process-global clock had no mechanical gate. `.ast-grep/rules/`
+          # holds that gate. Structural matching is the point — the ban is
+          # documented in prose beside the code it governs, and a textual check
+          # would fail its own documentation.
           default = pkgs.mkShell {
             packages = [
               pkgs.nodejs_24
               pkgs.corepack_24
-              # CI resolves this tool from package.json; Nix users get the
-              # same command without a global install.
-              pkgs.oxlint
               pkgs.typescript-language-server
+              pkgs.oxlint
+              pkgs.ast-grep
             ];
 
             shellHook = ''
-              mkdir -p "$PWD/.corepack"
-              corepack enable --install-directory "$PWD/.corepack"
-              export PATH="$PWD/.corepack:$PATH"
+              corepackDir="$(mktemp -d "''${TMPDIR:-/tmp}/mc-save-corepack.XXXXXX")"
+              corepack enable --install-directory "$corepackDir"
+              export PATH="$corepackDir:$PATH"
             '';
           };
         }

@@ -1,4 +1,5 @@
 import { ChunkAxis } from '@nerima-games/mc-kernel'
+import { assertDefined } from './assert-defined.js'
 import type { MinecraftDimension, MinecraftRegionStorage } from './minecraft-paths.js'
 
 type KnownPlayerJsonCategory = 'stats' | 'advancements'
@@ -75,11 +76,11 @@ const dimensionFromDirectory = (segments: ReadonlyArray<string>): MinecraftDimen
   const path = segments.slice(2)
   if (namespace === undefined || path.length === 0 || !isSafeDimensionPart(namespace)) return undefined
   if (path.some((part) => !isSafeDimensionPart(part))) return undefined
-  const identifier = `${namespace}:${path.join('/')}`
+  const identifier: `${string}:${string}` = `${namespace}:${path.join('/')}`
   if (identifier === 'minecraft:overworld') return 'overworld'
   if (identifier === 'minecraft:the_nether') return 'the_nether'
   if (identifier === 'minecraft:the_end') return 'the_end'
-  return identifier as MinecraftDimension
+  return identifier
 }
 
 const storageAt = (value: string | undefined): MinecraftRegionStorage | undefined => {
@@ -98,16 +99,14 @@ const parseRegion = (segments: ReadonlyArray<string>, path: string): MinecraftJa
   const storage = storageAt(segments.at(-2))
   const file = segments.at(-1)
   if (storage === undefined || file === undefined) return undefined
-  const regionMatch = REGION_FILE.exec(file)
-  const externalMatch = EXTERNAL_CHUNK_FILE.exec(file)
-  if (regionMatch === null && externalMatch === null) return undefined
   const dimension = dimensionFromDirectory(segments.slice(0, -2))
   if (dimension === undefined) return undefined
+  const regionMatch = REGION_FILE.exec(file)
   if (regionMatch !== null) {
     // Both capture groups are mandatory (non-optional) in REGION_FILE, so a successful match always
     // populates them; the assertion just tells TypeScript what the regex already guarantees.
-    const regionX = regionMatch[1]!
-    const regionZ = regionMatch[2]!
+    const regionX = assertDefined(regionMatch[1], 'REGION_FILE matched without its region x capture group')
+    const regionZ = assertDefined(regionMatch[2], 'REGION_FILE matched without its region z capture group')
     return {
       kind: 'region',
       dimension,
@@ -117,10 +116,10 @@ const parseRegion = (segments: ReadonlyArray<string>, path: string): MinecraftJa
       path,
     }
   }
-  // regionMatch is null here (the `if` above would have returned otherwise) and line 103 already ruled out
-  // both being null, so externalMatch -- and its two mandatory capture groups -- are guaranteed non-null.
-  const chunkX = externalMatch![1]!
-  const chunkZ = externalMatch![2]!
+  const externalMatch = EXTERNAL_CHUNK_FILE.exec(file)
+  if (externalMatch === null) return undefined
+  const chunkX = assertDefined(externalMatch[1], 'EXTERNAL_CHUNK_FILE matched without its chunk x capture group')
+  const chunkZ = assertDefined(externalMatch[2], 'EXTERNAL_CHUNK_FILE matched without its chunk z capture group')
   return {
     kind: 'externalChunk',
     dimension,
@@ -135,7 +134,7 @@ const playerPath = (segments: ReadonlyArray<string>, path: string): MinecraftJav
   if (segments.length !== 3 || segments[0] !== 'players') return undefined
   const category = segments[1]
   // segments.length === 3 above guarantees index 2 exists.
-  const file = segments[2]!
+  const file = assertDefined(segments[2], 'playerPath: segments.length === 3 but index 2 is missing')
   if (category !== 'data' && category !== 'stats' && category !== 'advancements') return undefined
   if (!isSafeSegment(file)) return undefined
   const playerIdWithExtension = file

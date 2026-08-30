@@ -28,6 +28,14 @@ const expectNbtError = (operation: () => unknown): void => {
   expect(operation).toThrowError(NbtFormatError)
 }
 
+/**
+ * Passes `value` through untyped, for constructing a deliberately
+ * runtime-invalid argument to a statically-typed factory in a negative test.
+ * The `any` return (not `unknown`) is what lets the result flow into any
+ * parameter type with no type assertion at the call site.
+ */
+const asUnchecked = (value: unknown): any => value
+
 const rootWithPayload = (payload: ReadonlyArray<number>): Uint8Array =>
   Uint8Array.from([NBT_TAG_IDS.compound, 0, 0, ...payload])
 
@@ -100,36 +108,36 @@ describe('Minecraft NBT factories and codec', () => {
     expect(() => nbtShort(32768)).toThrowError(NbtFormatError)
     expect(() => nbtInt(-2147483649)).toThrowError(NbtFormatError)
     expect(() => nbtInt(2147483648)).toThrowError(NbtFormatError)
-    expect(() => nbtLong(1 as unknown as bigint)).toThrowError(NbtFormatError)
+    expect(() => nbtLong(asUnchecked(1))).toThrowError(NbtFormatError)
     expect(() => nbtLong(-9223372036854775809n)).toThrowError(NbtFormatError)
     expect(() => nbtLong(9223372036854775808n)).toThrowError(NbtFormatError)
-    expect(() => nbtFloat('1' as unknown as number)).toThrowError(NbtFormatError)
-    expect(() => nbtDouble('1' as unknown as number)).toThrowError(NbtFormatError)
-    expect(() => nbtByteArray([1] as unknown as Uint8Array)).toThrowError(NbtFormatError)
-    expect(() => nbtString(1 as unknown as string)).toThrowError(NbtFormatError)
+    expect(() => nbtFloat(asUnchecked('1'))).toThrowError(NbtFormatError)
+    expect(() => nbtDouble(asUnchecked('1'))).toThrowError(NbtFormatError)
+    expect(() => nbtByteArray(asUnchecked([1]))).toThrowError(NbtFormatError)
+    expect(() => nbtString(asUnchecked(1))).toThrowError(NbtFormatError)
     expect(() => nbtString('a'.repeat(65536))).toThrowError(NbtFormatError)
-    expect(() => nbtList(null as never, [])).toThrowError(NbtFormatError)
-    expect(() => nbtList('unknown' as never, [])).toThrowError(NbtFormatError)
-    expect(() => nbtList('byte', null as never)).toThrowError(NbtFormatError)
-    expect(() => nbtList('byte', [null as never])).toThrowError(NbtFormatError)
+    expect(() => nbtList(asUnchecked(null), [])).toThrowError(NbtFormatError)
+    expect(() => nbtList(asUnchecked('unknown'), [])).toThrowError(NbtFormatError)
+    expect(() => nbtList('byte', asUnchecked(null))).toThrowError(NbtFormatError)
+    expect(() => nbtList('byte', [asUnchecked(null)])).toThrowError(NbtFormatError)
     expect(() => nbtList('end', [nbtEnd()])).toThrowError(NbtFormatError)
     expect(() => nbtList('byte', [nbtEnd()])).toThrowError(NbtFormatError)
     expect(() => nbtList('byte', [nbtString('wrong')])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['duplicate', nbtByte(1)], ['duplicate', nbtByte(2)]])).toThrowError(NbtFormatError)
-    expect(() => nbtCompound([[1 as never, nbtByte(1)]] as never)).toThrowError(NbtFormatError)
-    expect(() => nbtCompound(null as never)).toThrowError(NbtFormatError)
-    expect(() => nbtCompound([null as never])).toThrowError(NbtFormatError)
-    expect(() => nbtCompound([['value', null as never]])).toThrowError(NbtFormatError)
+    expect(() => nbtCompound(asUnchecked([[1, nbtByte(1)]]))).toThrowError(NbtFormatError)
+    expect(() => nbtCompound(asUnchecked(null))).toThrowError(NbtFormatError)
+    expect(() => nbtCompound([asUnchecked(null)])).toThrowError(NbtFormatError)
+    expect(() => nbtCompound([['value', asUnchecked(null)]])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['end', nbtEnd()]])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['a'.repeat(65536), nbtByte(1)]])).toThrowError(NbtFormatError)
     expect(() => nbtIntArray([1.5])).toThrowError(NbtFormatError)
-    expect(() => nbtIntArray(null as never)).toThrowError(NbtFormatError)
-    expect(() => nbtLongArray([1 as never])).toThrowError(NbtFormatError)
-    expect(() => nbtLongArray(null as never)).toThrowError(NbtFormatError)
-    expect(() => nbtDocument(1 as unknown as string, nbtCompound([]))).toThrowError(NbtFormatError)
+    expect(() => nbtIntArray(asUnchecked(null))).toThrowError(NbtFormatError)
+    expect(() => nbtLongArray([asUnchecked(1)])).toThrowError(NbtFormatError)
+    expect(() => nbtLongArray(asUnchecked(null))).toThrowError(NbtFormatError)
+    expect(() => nbtDocument(asUnchecked(1), nbtCompound([]))).toThrowError(NbtFormatError)
     expect(() => nbtDocument('a'.repeat(65536), nbtCompound([]))).toThrowError(NbtFormatError)
-    expect(() => nbtDocument('', nbtByte(1) as never)).toThrowError(NbtFormatError)
-    expect(() => nbtDocument('', null as never)).toThrowError(NbtFormatError)
+    expect(() => nbtDocument('', asUnchecked(nbtByte(1)))).toThrowError(NbtFormatError)
+    expect(() => nbtDocument('', asUnchecked(null))).toThrowError(NbtFormatError)
   })
 
   it('validates the complete NBT document shape before persistence', () => {
@@ -211,12 +219,19 @@ describe('Minecraft NBT factories and codec', () => {
     )
   })
 
+  it('rejects a SharedArrayBuffer-backed input, which has no ArrayBuffer for DataView', () => {
+    // Still `instanceof Uint8Array`, so it passes decodeNbt's own guard, but its
+    // `.buffer` is a SharedArrayBuffer, which DataView's constructor rejects — the
+    // reader's own guard against that throws a plain TypeError, not NbtFormatError.
+    expect(() => decodeNbt(new Uint8Array(new SharedArrayBuffer(0)))).toThrow(TypeError)
+  })
+
   it('rejects malformed root structure, lengths, ids, duplicates, and trailing bytes', () => {
     expectNbtError(() => decodeNbt(new Uint8Array()))
     expectNbtError(() => decodeNbt(new Uint8Array([NBT_TAG_IDS.byte])))
     expectNbtError(() => decodeNbt(new Uint8Array([NBT_TAG_IDS.compound])))
     expectNbtError(() => decodeNbt(rootWithPayload([NBT_TAG_IDS.byte])))
-    expectNbtError(() => decodeNbt(null as never))
+    expectNbtError(() => decodeNbt(asUnchecked(null)))
     expectNbtError(() => decodeNbt(namedTag(NBT_TAG_IDS.end, [101], [])))
     expectNbtError(() => decodeNbt(rootWithPayload([13])))
     expectNbtError(() => decodeNbt(Uint8Array.from([...rootWithPayload([NBT_TAG_IDS.end]), 1])))
@@ -274,12 +289,12 @@ describe('Minecraft NBT factories and codec', () => {
   })
 
   it('rejects malformed runtime values before writing them', () => {
-    expectNbtError(() => encodeNbt(null as never))
-    expectNbtError(() => encodeNbt({ name: 1, root: nbtCompound([]) } as never))
-    expectNbtError(() => encodeNbt({ name: '', root: null } as never))
-    expectNbtError(() => encodeNbt({ name: '', root: nbtByte(1) } as never))
+    expectNbtError(() => encodeNbt(asUnchecked(null)))
+    expectNbtError(() => encodeNbt(asUnchecked({ name: 1, root: nbtCompound([]) })))
+    expectNbtError(() => encodeNbt(asUnchecked({ name: '', root: null })))
+    expectNbtError(() => encodeNbt(asUnchecked({ name: '', root: nbtByte(1) })))
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['end', { type: 'end' }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['end', { type: 'end' }]] } })),
     )
     let typeReads = 0
     const unstableType = {
@@ -290,49 +305,55 @@ describe('Minecraft NBT factories and codec', () => {
       value: 1,
     }
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['unstable', unstableType]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['unstable', unstableType]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['unknown', { type: 'unknown' }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['unknown', { type: 'unknown' }]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['long', { type: 'long', value: 'bad' }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['long', { type: 'long', value: 'bad' }]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['float', { type: 'float', value: 'bad' }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['float', { type: 'float', value: 'bad' }]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['double', { type: 'double', value: 'bad' }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['double', { type: 'double', value: 'bad' }]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['string', { type: 'string', value: 1 }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['string', { type: 'string', value: 1 }]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({ name: '', root: { type: 'compound', entries: [['bytes', { type: 'byteArray', value: [1] }]] } } as never),
+      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['bytes', { type: 'byteArray', value: [1] }]] } })),
     )
     expectNbtError(() =>
-      encodeNbt({
-        name: '',
-        root: { type: 'compound', entries: [['list', { type: 'list', elementType: 'end', values: [nbtByte(1)] }]] },
-      } as never),
+      encodeNbt(
+        asUnchecked({
+          name: '',
+          root: { type: 'compound', entries: [['list', { type: 'list', elementType: 'end', values: [nbtByte(1)] }]] },
+        }),
+      ),
     )
     expectNbtError(() =>
-      encodeNbt({
-        name: '',
-        root: { type: 'compound', entries: [['list', { type: 'list', elementType: 'byte', values: [nbtString('wrong')] }]] },
-      } as never),
+      encodeNbt(
+        asUnchecked({
+          name: '',
+          root: { type: 'compound', entries: [['list', { type: 'list', elementType: 'byte', values: [nbtString('wrong')] }]] },
+        }),
+      ),
     )
     expectNbtError(() =>
-      encodeNbt({
-        name: '',
-        root: {
-          type: 'compound',
-          entries: [
-            ['duplicate', nbtByte(1)],
-            ['duplicate', nbtByte(2)],
-          ],
-        },
-      } as never),
+      encodeNbt(
+        asUnchecked({
+          name: '',
+          root: {
+            type: 'compound',
+            entries: [
+              ['duplicate', nbtByte(1)],
+              ['duplicate', nbtByte(2)],
+            ],
+          },
+        }),
+      ),
     )
   })
 
