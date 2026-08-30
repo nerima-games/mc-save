@@ -106,6 +106,8 @@ jobs:
       # because publishing is irreversible: a version number, once taken on the
       # registry, cannot be reused.
       - name: Verify package and tests
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           nix develop --command pnpm verify
           nix develop --command pnpm package:verify
