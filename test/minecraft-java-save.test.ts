@@ -333,4 +333,131 @@ describe('Minecraft Java 26.1 world save boundary', () => {
       'regions 0 is invalid',
     )
   })
+
+  it('sorts multiple entries per category into canonical order', async () => {
+    const secondPlayerId = 'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz'
+    const source: MinecraftJavaSave = {
+      ...fixture(),
+      playerData: [
+        { playerId: PLAYER_ID, document: document('Player', 3) },
+        { playerId: secondPlayerId, document: document('Player', 30) },
+      ],
+      playerStats: [
+        { playerId: PLAYER_ID, value: { stats: { 'minecraft:jump': 4 } } },
+        { playerId: secondPlayerId, value: { stats: { 'minecraft:jump': 40 } } },
+      ],
+      playerAdvancements: [
+        { playerId: PLAYER_ID, value: { DataVersion: 4325, done: true } },
+        { playerId: secondPlayerId, value: { DataVersion: 4325, done: false } },
+      ],
+      worldClocks: [
+        { namespace: 'minecraft', id: 'day', value: { ticks: 12345, paused: false } },
+        { namespace: 'minecraft', id: 'night', value: { ticks: 999, paused: true } },
+      ],
+      structures: [
+        { namespace: 'minecraft', name: 'village/plains/houses/small_house_1', document: document('', 7) },
+        { namespace: 'minecraft', name: 'village/plains/houses/small_house_2', document: document('', 8) },
+      ],
+    }
+    const files = await encodeMinecraftJavaSave(source)
+    const decoded = await decodeMinecraftJavaSave(files)
+
+    expect(decoded.playerData.map((entry) => entry.playerId)).toStrictEqual([PLAYER_ID, secondPlayerId])
+    expect(decoded.playerStats.map((entry) => entry.playerId)).toStrictEqual([PLAYER_ID, secondPlayerId])
+    expect(decoded.playerAdvancements.map((entry) => entry.playerId)).toStrictEqual([PLAYER_ID, secondPlayerId])
+    expect(decoded.worldClocks.map((entry) => entry.id)).toStrictEqual(['day', 'night'])
+    expect(decoded.structures.map((entry) => entry.name)).toStrictEqual([
+      'village/plains/houses/small_house_1',
+      'village/plains/houses/small_house_2',
+    ])
+  })
+
+  it('decodes a save that omits every optional top-level field', async () => {
+    const minimal: MinecraftJavaSave = {
+      level: document('Level', 1),
+      playerData: [],
+      playerStats: [],
+      playerAdvancements: [],
+      regions: [],
+      dataFiles: [],
+      worldClocks: [],
+      structures: [],
+      extraFiles: [],
+    }
+    const files = await encodeMinecraftJavaSave(minimal)
+    expect(files).toHaveLength(1)
+    const decoded = await decodeMinecraftJavaSave(files)
+
+    expect(decoded.levelBackup).toBeUndefined()
+    expect(decoded.sessionLock).toBeUndefined()
+    expect(decoded.icon).toBeUndefined()
+    expect(decoded.resourcePack).toBeUndefined()
+  })
+
+  it('reports a decode failure for a malformed session.lock payload', async () => {
+    const files = await encodeMinecraftJavaSave(fixture())
+    const corrupted = files.map((file) =>
+      file.path === 'session.lock' ? { ...file, bytes: new Uint8Array([1, 2, 3]) } : file,
+    )
+    await expect(decodeMinecraftJavaSave(corrupted)).rejects.toThrow('session.lock')
+  })
+
+  it('reports a decode failure for a malformed region payload', async () => {
+    const files = await encodeMinecraftJavaSave(fixture())
+    const regionPath = 'dimensions/minecraft/overworld/region/r.0.0.mca'
+    const corrupted = files.map((file) =>
+      file.path === regionPath ? { ...file, bytes: new Uint8Array([1, 2, 3]) } : file,
+    )
+    await expect(decodeMinecraftJavaSave(corrupted)).rejects.toBeInstanceOf(MinecraftJavaSaveError)
+    await expect(decodeMinecraftJavaSave(corrupted)).rejects.toThrow(regionPath)
+  })
+
+  it('reports a decode failure when a region path encodes a coordinate outside the safe integer range', async () => {
+    const files = await encodeMinecraftJavaSave(fixture())
+    const regionPath = 'dimensions/minecraft/overworld/region/r.0.0.mca'
+    const withHugeCoordinate = [
+      ...files.filter((file) => file.path !== regionPath),
+      { path: 'dimensions/minecraft/overworld/region/r.99999999999999999999.0.mca', bytes: new Uint8Array([0]) },
+    ]
+    await expect(decodeMinecraftJavaSave(withHugeCoordinate)).rejects.toBeInstanceOf(MinecraftJavaSaveError)
+    await expect(decodeMinecraftJavaSave(withHugeCoordinate)).rejects.toThrow('canonical safe integer')
+  })
+
+  it('decodes a region group carrying more than one external chunk', async () => {
+    const chunks: Array<AnvilChunkRecord | null> = new Array(ANVIL_CHUNK_COUNT).fill(null)
+    chunks[0] = {
+      localX: 0,
+      localZ: 0,
+      timestamp: 1,
+      compression: 'none',
+      payload: new Uint8Array([1, 2, 3]),
+      external: true,
+    }
+    chunks[1] = {
+      localX: 1,
+      localZ: 0,
+      timestamp: 2,
+      compression: 'none',
+      payload: new Uint8Array([4, 5, 6]),
+      external: true,
+    }
+    const source: MinecraftJavaSave = {
+      ...fixture(),
+      regions: [
+        {
+          dimension: 'overworld',
+          storage: 'region',
+          regionX: ChunkAxis(0),
+          regionZ: ChunkAxis(0),
+          region: anvilRegion(chunks),
+        },
+      ],
+    }
+    const files = await encodeMinecraftJavaSave(source)
+    const decoded = await decodeMinecraftJavaSave(files)
+    const region = decoded.regions.find((candidate) => candidate.dimension === 'overworld')
+    expect(region).toBeDefined()
+    expect(region?.region.chunks[0]?.payload).toStrictEqual(new Uint8Array([1, 2, 3]))
+    expect(region?.region.chunks[1]?.payload).toStrictEqual(new Uint8Array([4, 5, 6]))
+  })
 })

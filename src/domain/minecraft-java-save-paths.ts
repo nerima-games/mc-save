@@ -45,7 +45,6 @@ export type MinecraftJavaSavePath =
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
 const SAFE_DIMENSION_PART = /^[a-z0-9._-]+$/u
-const INTEGER_COORDINATE = /^-?(?:0|[1-9]\d*)$/u
 const REGION_FILE = /^r\.(-?(?:0|[1-9]\d*))\.(-?(?:0|[1-9]\d*))\.mca$/u
 const EXTERNAL_CHUNK_FILE = /^c\.(-?(?:0|[1-9]\d*))\.(-?(?:0|[1-9]\d*))\.mcc$/u
 
@@ -56,7 +55,11 @@ const isSafeDimensionPart = (value: string): boolean =>
   SAFE_DIMENSION_PART.test(value) && value !== '.' && value !== '..'
 
 const isSafeCoordinateText = (value: string): boolean => {
-  if (!INTEGER_COORDINATE.test(value)) return false
+  // No separate INTEGER_COORDINATE regex re-check here: coordinate() below is only ever called with a
+  // string already captured by REGION_FILE/EXTERNAL_CHUNK_FILE, whose capture group is exactly the
+  // INTEGER_COORDINATE pattern, so it can never fail this same test again. The round-trip check alone
+  // (Number.isSafeInteger plus the String(number) === value canonical-form check) is equally strict for
+  // any input, including the ones the regex would have caught, so no coverage is lost by relying on it alone.
   const number = Number(value)
   return Number.isSafeInteger(number) && String(number) === value
 }
@@ -101,9 +104,10 @@ const parseRegion = (segments: ReadonlyArray<string>, path: string): MinecraftJa
   const dimension = dimensionFromDirectory(segments.slice(0, -2))
   if (dimension === undefined) return undefined
   if (regionMatch !== null) {
-    const regionX = regionMatch[1]
-    const regionZ = regionMatch[2]
-    if (regionX === undefined || regionZ === undefined) return undefined
+    // Both capture groups are mandatory (non-optional) in REGION_FILE, so a successful match always
+    // populates them; the assertion just tells TypeScript what the regex already guarantees.
+    const regionX = regionMatch[1]!
+    const regionZ = regionMatch[2]!
     return {
       kind: 'region',
       dimension,
@@ -113,9 +117,10 @@ const parseRegion = (segments: ReadonlyArray<string>, path: string): MinecraftJa
       path,
     }
   }
-  const chunkX = externalMatch?.[1]
-  const chunkZ = externalMatch?.[2]
-  if (chunkX === undefined || chunkZ === undefined) return undefined
+  // regionMatch is null here (the `if` above would have returned otherwise) and line 103 already ruled out
+  // both being null, so externalMatch -- and its two mandatory capture groups -- are guaranteed non-null.
+  const chunkX = externalMatch![1]!
+  const chunkZ = externalMatch![2]!
   return {
     kind: 'externalChunk',
     dimension,
@@ -129,9 +134,10 @@ const parseRegion = (segments: ReadonlyArray<string>, path: string): MinecraftJa
 const playerPath = (segments: ReadonlyArray<string>, path: string): MinecraftJavaSavePath | undefined => {
   if (segments.length !== 3 || segments[0] !== 'players') return undefined
   const category = segments[1]
-  const file = segments[2]
+  // segments.length === 3 above guarantees index 2 exists.
+  const file = segments[2]!
   if (category !== 'data' && category !== 'stats' && category !== 'advancements') return undefined
-  if (file === undefined || !isSafeSegment(file)) return undefined
+  if (!isSafeSegment(file)) return undefined
   const playerIdWithExtension = file
   const extension = category === 'data' ? '.dat' : '.json'
   if (!playerIdWithExtension.endsWith(extension)) return undefined

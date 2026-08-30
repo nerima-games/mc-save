@@ -26,7 +26,17 @@ describe('Minecraft JSON boundary', () => {
     expect(isMinecraftJsonValue({})).toBe(true)
     expect(isMinecraftJsonValue([null, false, 1, 'value'])).toBe(true)
 
+    const nullPrototypeArray: unknown[] = [1, 2]
+    Object.setPrototypeOf(nullPrototypeArray, null)
+    expect(isMinecraftJsonValue(nullPrototypeArray)).toBe(true)
+
+    const customPrototypeArray: unknown[] = [1, 2]
+    Object.setPrototypeOf(customPrototypeArray, { extra: true })
+    expect(isMinecraftJsonValue(customPrototypeArray)).toBe(false)
+
     const sparse = new Array(1)
+    const nonEnumerableIndexArray: unknown[] = [1]
+    Object.defineProperty(nonEnumerableIndexArray, '0', { value: 1, enumerable: false, configurable: true })
     const extraArrayProperty = [1] as unknown as Record<string, unknown>
     extraArrayProperty['extra'] = true
     const customObject = Object.create({ inherited: true }) as Record<string, unknown>
@@ -49,6 +59,8 @@ describe('Minecraft JSON boundary', () => {
       new Set(),
       new Uint8Array([1]),
       sparse,
+      nonEnumerableIndexArray,
+      [undefined],
       extraArrayProperty,
       customObject,
       accessor,
@@ -105,6 +117,54 @@ describe('Minecraft JSON boundary', () => {
       expectJsonError(() => encodeMinecraftJson({ value: 1 }))
     } finally {
       stringifySpy.mockRestore()
+    }
+
+    const stringifyNonErrorSpy = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+      // oxlint-disable-next-line no-throw-literal -- deliberately a non-Error, to hit encodeMinecraftJson's `String(error)` fallback.
+      throw 'stringify string failure'
+    })
+    try {
+      expect(() => encodeMinecraftJson({ value: 1 })).toThrow('stringify string failure')
+    } finally {
+      stringifyNonErrorSpy.mockRestore()
+    }
+
+    const stringifyUndefinedSpy = vi.spyOn(JSON, 'stringify').mockReturnValue(undefined as never)
+    try {
+      expect(() => encodeMinecraftJson({ value: 1 })).toThrow('value cannot be serialized as JSON')
+    } finally {
+      stringifyUndefinedSpy.mockRestore()
+    }
+
+    const parseNonErrorSpy = vi.spyOn(JSON, 'parse').mockImplementation(() => {
+      // oxlint-disable-next-line no-throw-literal -- deliberately a non-Error, to hit decodeMinecraftJson's `String(error)` fallback.
+      throw 'parse string failure'
+    })
+    try {
+      expect(() => decodeMinecraftJson(new TextEncoder().encode('null'))).toThrow('parse string failure')
+    } finally {
+      parseNonErrorSpy.mockRestore()
+    }
+  })
+
+  it('guards the defensive Unicode scalar check while encoding UTF-8', () => {
+    const fakeIterator = (): Iterator<string> => {
+      let done = false
+      return {
+        next: (): IteratorResult<string> => {
+          if (done) return { done: true, value: undefined }
+          done = true
+          return { done: false, value: '' }
+        },
+      }
+    }
+    const iteratorSpy = vi
+      .spyOn(String.prototype, Symbol.iterator)
+      .mockImplementation(fakeIterator as unknown as () => StringIterator<string>)
+    try {
+      expectJsonError(() => encodeMinecraftJson('anything'))
+    } finally {
+      iteratorSpy.mockRestore()
     }
   })
 })

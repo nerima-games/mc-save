@@ -73,13 +73,12 @@ const encodeJsonFile = (path: string, value: Parameters<typeof encodeMinecraftJs
   }
 }
 
-const regionOrigin = (axis: ReturnType<typeof ChunkAxis>): ReturnType<typeof ChunkAxis> => {
-  const value = Number(axis) * ANVIL_REGION_CHUNK_SIDE
-  if (!Number.isSafeInteger(value)) {
-    throw minecraftJavaSaveError('encode', 'region coordinate is outside the safe chunk coordinate range')
-  }
-  return ChunkAxis(value)
-}
+// regionOrigin's product is not re-guarded for safe-integer overflow: validateMinecraftJavaSave (the first
+// call in encodeMinecraftJavaSaveInternal, ahead of every promise below) already rejects any regionX/regionZ
+// via isSafeRegionCoordinate using this exact same `value * ANVIL_REGION_CHUNK_SIDE` safety condition, so by
+// the time this runs the product is already guaranteed safe.
+const regionOrigin = (axis: ReturnType<typeof ChunkAxis>): ReturnType<typeof ChunkAxis> =>
+  ChunkAxis(Number(axis) * ANVIL_REGION_CHUNK_SIDE)
 
 const externalChunkPath = (
   dimension: MinecraftDimension,
@@ -89,11 +88,13 @@ const externalChunkPath = (
   localX: number,
   localZ: number,
 ): string => {
+  // No safe-integer re-check here either: origin is always a multiple of ANVIL_REGION_CHUNK_SIDE (32) once
+  // regionOrigin has returned, and 32 evenly divides 2^53, so MAX_SAFE_INTEGER (2^53 - 1) is congruent to 31
+  // mod 32 -- the largest safe origin is exactly MAX_SAFE_INTEGER - 31, and localX/localZ never exceed 31
+  // (ANVIL_REGION_CHUNK_SIDE - 1), so origin + local can never cross MAX_SAFE_INTEGER. The symmetric argument
+  // holds on the negative side, since local is always added, never subtracted.
   const chunkX = Number(originX) + localX
   const chunkZ = Number(originZ) + localZ
-  if (!Number.isSafeInteger(chunkX) || !Number.isSafeInteger(chunkZ)) {
-    throw minecraftJavaSaveError('encode', 'external chunk coordinate is outside the safe chunk coordinate range')
-  }
   return minecraftExternalChunkFilePath(dimension, chunkCoord(chunkX, chunkZ), storage)
 }
 

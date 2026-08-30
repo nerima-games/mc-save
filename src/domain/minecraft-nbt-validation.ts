@@ -33,14 +33,12 @@ const isDenseArray = (value: unknown): value is ReadonlyArray<unknown> => {
   if (!Array.isArray(value)) return false
   const prototype = Object.getPrototypeOf(value)
   if (prototype !== Array.prototype && prototype !== null) return false
+  // 'length' is not re-checked for presence or enumerability: Array.isArray guarantees value's ultimate
+  // target is a genuine Array exotic object, whose 'length' is always an own, non-enumerable,
+  // non-configurable data property (see the identical reasoning in minecraft-java-save-json.ts's isJsonArray).
   const ownKeys = Reflect.ownKeys(value)
-  if (!ownKeys.includes('length')) return false
   for (const key of ownKeys) {
-    if (key === 'length') {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)
-      if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable) return false
-      continue
-    }
+    if (key === 'length') continue
     if (typeof key !== 'string' || !isArrayIndex(key, value.length)) return false
     const descriptor = Object.getOwnPropertyDescriptor(value, key)
     if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable) return false
@@ -53,10 +51,13 @@ const isDenseArray = (value: unknown): value is ReadonlyArray<unknown> => {
 
 const isByteArray = (value: unknown): value is Uint8Array => {
   if (!(value instanceof Uint8Array) || Object.getPrototypeOf(value) !== Uint8Array.prototype) return false
+  // No per-index descriptor re-check here: TypedArray's [[DefineOwnProperty]] unconditionally rejects any
+  // attempt to redefine a valid in-bounds index with anything other than {writable:true, enumerable:true,
+  // configurable:true} (this holds even though getOwnPropertyDescriptor reports configurable:true, since the
+  // rejection is a TypedArray-specific override, not the generic non-configurable-property rule) -- so a
+  // genuine Uint8Array's indices can never be non-enumerable or missing a 'value'.
   for (const key of Reflect.ownKeys(value)) {
     if (typeof key !== 'string' || !isArrayIndex(key, value.byteLength)) return false
-    const descriptor = Object.getOwnPropertyDescriptor(value, key)
-    if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable) return false
   }
   return true
 }

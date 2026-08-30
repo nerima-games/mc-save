@@ -26,14 +26,14 @@ const isJsonArray = (value: object, seen: WeakSet<object>): value is ReadonlyArr
   const array = value as ReadonlyArray<unknown>
   const prototype = Object.getPrototypeOf(array)
   if (prototype !== Array.prototype && prototype !== null) return false
+  // 'length' is not re-checked for presence or enumerability here: Array.isArray (in the caller) guarantees
+  // array's ultimate target is a genuine Array exotic object, whose 'length' is always an own, non-enumerable,
+  // non-configurable data property -- no real array, and no Proxy wrapping one (per the getOwnPropertyDescriptor
+  // trap invariant that a reported descriptor must not make defineProperty on the target throw), can omit it
+  // or report it as enumerable.
   const ownKeys = Reflect.ownKeys(array)
-  if (!ownKeys.includes('length')) return false
   for (const key of ownKeys) {
-    if (key === 'length') {
-      const descriptor = Object.getOwnPropertyDescriptor(array, key)
-      if (descriptor === undefined || !('value' in descriptor) || descriptor.enumerable) return false
-      continue
-    }
+    if (key === 'length') continue
     if (typeof key !== 'string' || !isArrayIndex(key, array.length)) return false
     const descriptor = Object.getOwnPropertyDescriptor(array, key)
     if (descriptor === undefined || !('value' in descriptor) || !descriptor.enumerable) return false

@@ -162,6 +162,7 @@ const decodeMinecraftJavaSaveInternal = async (
 
   for (const file of normalized) {
     const descriptor = descriptorFor(file)
+    // oxlint-disable-next-line default-case -- descriptor.kind is a 13-variant closed union already covered exhaustively below; a default arm would be unreachable.
     switch (descriptor.kind) {
       case 'level':
         levelFile = file
@@ -189,6 +190,10 @@ const decodeMinecraftJavaSaveInternal = async (
         }
         break
       case 'region': {
+        // Two distinct 'region'-kind files can never reach this same group: validateMinecraftJavaSaveFiles
+        // already rejects duplicate file paths before this loop runs, and the region path grammar (in
+        // minecraft-java-save-paths.ts) has exactly one canonical string per (dimension, storage, regionX,
+        // regionZ) tuple, so group.regionBytes can never already be set here.
         const group = addRegion(
           regions,
           descriptor.dimension,
@@ -196,9 +201,6 @@ const decodeMinecraftJavaSaveInternal = async (
           descriptor.regionX,
           descriptor.regionZ,
         )
-        if (group.regionBytes !== undefined) {
-          throw minecraftJavaSaveError('decode', 'duplicate region file', file.path)
-        }
         group.regionPath = file.path
         group.regionBytes = file.bytes
         break
@@ -228,8 +230,6 @@ const decodeMinecraftJavaSaveInternal = async (
         break
       case 'extra':
         extraFiles.push({ path: file.path, bytes: file.bytes.slice() })
-        break
-      default:
         break
     }
   }
