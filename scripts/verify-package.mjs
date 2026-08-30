@@ -170,6 +170,18 @@ const verifyPackage = async () => {
     const installArguments = ['install', '--ignore-scripts', '--no-audit', '--no-fund']
     if (packageScope !== undefined && typeof publishRegistry === 'string') {
       installArguments.push(`--${packageScope}:registry=${publishRegistry}`)
+      // The archive declares @nerima-games/mc-kernel as a dependency, so this
+      // consumer's `npm install` resolves it from GitHub Packages too — which,
+      // unlike the CLI --registry flag above, needs credentials. `${NODE_AUTH_TOKEN}`
+      // is a literal npm config placeholder (never the token value itself); npm
+      // expands it from the environment at install time. `run()` inherits
+      // process.env by default, so the CI step's `env: NODE_AUTH_TOKEN` (or a
+      // locally exported one) reaches this file unchanged.
+      const registryHost = publishRegistry.replace(/^https?:\/\//, '')
+      await writeFile(
+        join(consumerDirectory, '.npmrc'),
+        `${packageScope}:registry=${publishRegistry}\n//${registryHost}/:_authToken=\${NODE_AUTH_TOKEN}\n`,
+      )
     }
     installArguments.push(archivePath)
     await run('npm', installArguments, consumerDirectory)
