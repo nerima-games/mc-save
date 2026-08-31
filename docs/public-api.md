@@ -28,6 +28,26 @@ envelope と integrity の主な公開値は次の通りです。
 - `SaveEnvelope`、`SaveEnvelopeDraft`、`SaveIntegrity`
 - `SaveEnvelopeSchema`、`SaveEnvelopeDraftSchema`
 - `saveEnvelope`、`sealSaveEnvelope`、`validateSaveEnvelope`
+
+### `undefined` ↔ `null` なフィールド
+
+```typescript
+const undefinedFieldsAsNull: <A, I>(
+  inner: Schema.Schema<A, I>,
+  fields: ReadonlyArray<string>,
+) => Schema.Schema<A, unknown>
+
+const restoreNullAsUndefined: (fields: ReadonlyArray<string>) => (value: unknown) => unknown
+const encodeUndefinedAsNull: (fields: ReadonlyArray<string>) => (value: unknown) => unknown
+```
+
+`canonicalize`（integrity checksum の入力）は payload 中の裸の `undefined` を拒否します。
+ドメイン型が特定フィールドを `T | undefined` として持つ場合（`Schema.optionalWith({ exact:
+true })` で表現できるキー省略ではなく、キーは常に存在し値だけが `undefined` になり得る場合）、
+`undefinedFieldsAsNull` はその named フィールドだけを対象に、保存時は `null`、復元後は
+`undefined` に変換します。指定していないフィールドの `null` はそのまま残るので、同じ payload
+内で `null` が別の意味を持っていても壊しません。フィールドを 1 つずつ明示するのは意図的で、
+一括で `undefined` を掃除する変換ではありません。
 - `DEFAULT_MAX_SAVE_BYTES`、`FIRST_VERSION`、`isFromFuture`
 
 `SaveEnvelope` は format、version、payload、canonical payload の byte length、checksum を持ちます。
