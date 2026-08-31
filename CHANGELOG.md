@@ -1,5 +1,11 @@
 # @nerima-games/mc-save
 
+## 0.4.1
+
+### Patch Changes
+
+- [#22](https://github.com/nerima-games/mc-save/pull/22) [`38f1f9e`](https://github.com/nerima-games/mc-save/commit/38f1f9ef96917b5b65498b00386d19ac1d77ae44) Thanks [@takeokunn](https://github.com/takeokunn)! - Pin `@nerima-games/mc-kernel` to `0.7.0` (from `0.4.0`), matching the org's exact-pin policy. The coordinate and identifier primitives this package consumes (`WorldId`, `ChunkAxis`, `ChunkCoord`, `chunkCoord`, `CHUNK_SIZE_XZ`) are unchanged in behavior across the four kernel releases in between; no save-format bytes or checksum inputs are affected.
+
 ## 0.4.0
 
 ### Minor Changes
