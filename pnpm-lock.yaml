@@ -12,8 +12,8 @@ importers:
   .:
     dependencies:
       '@nerima-games/mc-kernel':
-        specifier: 0.4.0
-        version: 0.4.0(effect@3.22.1)
+        specifier: 0.7.0
+        version: 0.7.0
       effect:
         specifier: 3.22.1
         version: 3.22.1
@@ -355,11 +355,9 @@ packages:
       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
 
-  '@nerima-games/mc-kernel@0.4.0':
-    resolution: {integrity: sha512-kUqt04yFmmo0RGQEROzjruIkKVbiH9PM9+noMxk6OGk3qWVlT5jRSvIehYwZy4wh9yOK+ZhtG0QjAUeXAC0R1A==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.4.0/9342d6e28b483341137f64f9e6a93f467924d45c}
-    engines: {node: '>=24.0.0', pnpm: '>=11.0.0'}
-    peerDependencies:
-      effect: ^3.22.1
+  '@nerima-games/mc-kernel@0.7.0':
+    resolution: {integrity: sha512-JrIshLsxTAbP6cARvuI/9BeORONp+3Xa8rtW1S2prB7C9A1nLiHtZrUI9FQ6eJba+9XcHdQ7tU4S88cHzXlMpA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.7.0/257fba8aa871ea57c036e9fe89284e4f57aff6be}
+    engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@oxc-parser/binding-android-arm-eabi@0.147.0':
     resolution: {integrity: sha512-fOtoGvIoirkvxQVw9J1WJPxz571XPgLsPf9uhRD+PJteUnvrJHMDmK9pw2yZEGGyismtRoEsp+JcXUdF/JDMDw==}
@@ -1590,7 +1588,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.3
     optional: true
 
-  '@nerima-games/mc-kernel@0.4.0(effect@3.22.1)':
+  '@nerima-games/mc-kernel@0.7.0':
     dependencies:
       effect: 3.22.1
 
@@ -2316,8 +2314,8 @@ snapshots:
   vite@7.3.6(@types/node@26.4.0)(jiti@2.7.0)(tsx@4.23.12)(yaml@2.9.0):
     dependencies:
       esbuild: 0.28.1
-      fdir: 6.5.0(picomatch@4.0.5)
-      picomatch: 4.0.5
+      fdir: 6.5.0(picomatch@4.0.7)
+      picomatch: 4.0.7
       postcss: 8.5.23
       rollup: 4.62.3
       tinyglobby: 0.2.17
