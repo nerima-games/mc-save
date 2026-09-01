@@ -1,5 +1,11 @@
 # @nerima-games/mc-save
 
+## 0.4.2
+
+### Patch Changes
+
+- [#24](https://github.com/nerima-games/mc-save/pull/24) [`4894155`](https://github.com/nerima-games/mc-save/commit/4894155fb09f83b54174533f88c9bb7271a81558) Thanks [@takeokunn](https://github.com/takeokunn)! - Add `test/migration.test.ts`, the evidence file the feature catalog's `save/versioned-persistence` row declared but the package never had. It documents, against a hand-authored v1 fixture (not produced by any encoder in this package), that `decodeSave` has no automatic upgrade path — it unconditionally refuses any envelope whose version does not match the format's current version — and demonstrates the migration path a consumer has to build for itself from `SaveEnvelopeSchema`, `Schema.decodeUnknown` against an old-version schema, and `encodeSave` under the current format. No source behavior changed.
+
 ## 0.4.1
 
 ### Patch Changes
