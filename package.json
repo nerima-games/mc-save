@@ -68,7 +68,7 @@
     "@changesets/changelog-github": "1.0.0",
     "@changesets/cli": "3.0.1",
     "@effect/vitest": "0.30.0",
-    "@types/node": "26.4.0",
+    "@types/node": "26.4.1",
     "@vitest/browser-playwright": "4.1.11",
     "@vitest/coverage-v8": "4.1.11",
     "knip": "6.33.0",
