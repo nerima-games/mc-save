@@ -41,6 +41,11 @@ package の `engines`、`packageManager`、lockfile、exports、changeset を re
 3. package version と changeset の意図が一致している
 4. consumer が使用する `@nerima-games/mc-kernel` version と lockfile が再現可能である
 
+`@nerima-games/mc-kernel` は exact pin で管理します。kernel の更新時は、その版の
+`docs/consumer-migration.md` と公開 API を確認し、mc-save が利用する shared type・guard・定数に
+該当する移行だけを同じ変更単位で適用します。保存済み wire value を変えない移行では、save
+format version の変更や `defineFormat` の migration は行いません。
+
 この repository では `pnpm changeset status` で release 状態を確認します。
 
 版上げは人手です。`pnpm changeset version` を実行すると `package.json` の version と CHANGELOG.md

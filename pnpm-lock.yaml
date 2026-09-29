@@ -12,8 +12,8 @@ importers:
   .:
     dependencies:
       '@nerima-games/mc-kernel':
-        specifier: 0.7.0
-        version: 0.7.0
+        specifier: 0.8.0
+        version: 0.8.0
       effect:
         specifier: 3.22.1
         version: 3.22.1
@@ -355,8 +355,8 @@ packages:
       '@emnapi/core': ^1.7.1 || ^2.0.0-alpha.4
       '@emnapi/runtime': ^1.7.1 || ^2.0.0-alpha.4
 
-  '@nerima-games/mc-kernel@0.7.0':
-    resolution: {integrity: sha512-JrIshLsxTAbP6cARvuI/9BeORONp+3Xa8rtW1S2prB7C9A1nLiHtZrUI9FQ6eJba+9XcHdQ7tU4S88cHzXlMpA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.7.0/257fba8aa871ea57c036e9fe89284e4f57aff6be}
+  '@nerima-games/mc-kernel@0.8.0':
+    resolution: {integrity: sha512-qBokXIEUoxaIequphJ8XSzI3fDDGCHgbzbms8PyTucWQ45+DL5wA1FAPtIU0OHvVEU4Jf2JJngErf4hIrZbFsA==, tarball: https://npm.pkg.github.com/download/@nerima-games/mc-kernel/0.8.0/8b20dd2bef6e1ab2344ea3be1b1cc393114616c7}
     engines: {node: '>=24.0.0', pnpm: '>=11.24.0'}
 
   '@oxc-parser/binding-android-arm-eabi@0.147.0':
@@ -1588,7 +1588,7 @@ snapshots:
       '@tybys/wasm-util': 0.10.3
     optional: true
 
-  '@nerima-games/mc-kernel@0.7.0':
+  '@nerima-games/mc-kernel@0.8.0':
     dependencies:
       effect: 3.22.1
 
