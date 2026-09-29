@@ -56,7 +56,7 @@ const unsupportedValue = (description: string): never => {
   throw new TypeError(`save contains an unsupported value: ${description}`)
 }
 
-export const canonicalize = (value: unknown, ancestors = new Set<object>()): Canonicalized => {
+export const canonicalize = (value: unknown, ancestors: Set<object> = new Set<object>()): Canonicalized => {
   if (typeof value === 'number' && !Number.isFinite(value)) {
     return { text: JSON.stringify(value), containsInvalidNumber: true }
   }

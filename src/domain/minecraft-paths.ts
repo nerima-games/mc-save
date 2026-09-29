@@ -229,4 +229,4 @@ export const minecraftWorldResourcePackPath = (): string => 'resourcepacks/resou
 export const minecraftStructurePath = (namespace: string, structure: string): string =>
   `generated/${pathSegment(namespace, 'structure namespace')}/structure/${relativePath(structure, 'structure name')}.nbt`
 
-export const ANVIL_REGION_BLOCK_SIDE = CHUNK_SIZE_XZ * ANVIL_REGION_CHUNK_SIDE
+export const ANVIL_REGION_BLOCK_SIDE: number = CHUNK_SIZE_XZ * ANVIL_REGION_CHUNK_SIDE

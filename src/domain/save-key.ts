@@ -6,7 +6,7 @@ import { Brand } from 'effect'
 // oxlint-disable no-redeclare
 export type SaveKey = string & Brand.Brand<'SaveKey'>
 
-export const SaveKey = Brand.refined<SaveKey>(
+export const SaveKey: Brand.Brand.Constructor<SaveKey> = Brand.refined<SaveKey>(
   (value) => value.trim().length > 0,
   (value) => Brand.error(`SaveKey must be a non-blank string, received ${JSON.stringify(value)}`),
 )

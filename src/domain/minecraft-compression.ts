@@ -1,4 +1,5 @@
 import { Data } from 'effect'
+import type * as Cause from 'effect/Cause'
 import { decodeLz4BlockStream, encodeLz4BlockStream } from './minecraft-lz4.js'
 
 export const MINECRAFT_COMPRESSION = {
@@ -10,13 +11,20 @@ export const MINECRAFT_COMPRESSION = {
 
 export type MinecraftCompression = keyof typeof MINECRAFT_COMPRESSION
 
-export const MINECRAFT_COMPRESSION_MAX_BYTES = 64 * 1024 * 1024
+export const MINECRAFT_COMPRESSION_MAX_BYTES: number = 64 * 1024 * 1024
 
-export class MinecraftCompressionError extends Data.TaggedError('MinecraftCompressionError')<{
+type MinecraftCompressionErrorFields = {
   readonly operation: 'encode' | 'decode'
   readonly compression: MinecraftCompression
   readonly reason: string
-}> {
+}
+
+const MinecraftCompressionErrorBase: new (
+  args: MinecraftCompressionErrorFields,
+) => Cause.YieldableError & { readonly _tag: 'MinecraftCompressionError' } & Readonly<MinecraftCompressionErrorFields> =
+  Data.TaggedError('MinecraftCompressionError')
+
+export class MinecraftCompressionError extends MinecraftCompressionErrorBase {
   override get message(): string {
     return `Minecraft ${this.compression} ${this.operation} failed: ${this.reason}`
   }

@@ -1,11 +1,12 @@
 /* oxlint-disable no-bitwise -- LZ4 block fields and xxHash32 are bit-packed by the format. */
 
 import { Data } from 'effect'
+import type * as Cause from 'effect/Cause'
 import { assertDefined } from './assert-defined.js'
 
-export const LZ4_BLOCK_MAGIC = new Uint8Array([0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b])
+export const LZ4_BLOCK_MAGIC: Uint8Array<ArrayBuffer> = new Uint8Array([0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b])
 export const LZ4_BLOCK_HEADER_BYTES = 21
-export const LZ4_BLOCK_SIZE = 64 * 1024
+export const LZ4_BLOCK_SIZE: number = 64 * 1024
 export const LZ4_COMPRESSION_LEVEL_BASE = 10
 export const LZ4_COMPRESSION_LEVEL = 6
 export const LZ4_COMPRESSION_METHOD_RAW = 0x10
@@ -14,8 +15,8 @@ export const LZ4_DEFAULT_SEED = 0x9747b28c
 export const LZ4_LAST_LITERALS = 5
 export const LZ4_MATCH_FIND_LIMIT = 12
 export const LZ4_MAX_OFFSET = 0xffff
-export const LZ4_HASH_SIZE = 1 << 16
-export const LZ4_MAX_OUTPUT_BYTES = 64 * 1024 * 1024
+export const LZ4_HASH_SIZE: number = 1 << 16
+export const LZ4_MAX_OUTPUT_BYTES: number = 64 * 1024 * 1024
 
 const PRIME_1 = 0x9e3779b1
 const PRIME_2 = 0x85ebca77
@@ -23,11 +24,18 @@ const PRIME_3 = 0xc2b2ae3d
 const PRIME_4 = 0x27d4eb2f
 const PRIME_5 = 0x165667b1
 
-export class MinecraftLz4Error extends Data.TaggedError('MinecraftLz4Error')<{
+type MinecraftLz4ErrorFields = {
   readonly operation: 'encode' | 'decode'
   readonly reason: string
   readonly offset?: number
-}> {
+}
+
+const MinecraftLz4ErrorBase: new (
+  args: MinecraftLz4ErrorFields,
+) => Cause.YieldableError & { readonly _tag: 'MinecraftLz4Error' } & Readonly<MinecraftLz4ErrorFields> =
+  Data.TaggedError('MinecraftLz4Error')
+
+export class MinecraftLz4Error extends MinecraftLz4ErrorBase {
   override get message(): string {
     const prefix = `Minecraft LZ4 ${this.operation} failed`
     return this.offset === undefined ? `${prefix}: ${this.reason}` : `${prefix} at byte offset ${String(this.offset)}: ${this.reason}`

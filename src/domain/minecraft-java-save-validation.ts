@@ -21,8 +21,8 @@ import { minecraftDimensionDirectory } from './minecraft-paths.js'
 import type { MinecraftDimension, MinecraftRegionStorage } from './minecraft-paths.js'
 
 export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES = 100_000
-export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024
-export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES: number = 64 * 1024 * 1024
+export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES: number = 512 * 1024 * 1024
 
 export type ResolvedMinecraftJavaSaveOptions = {
   readonly maxFiles: number

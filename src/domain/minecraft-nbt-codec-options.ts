@@ -7,7 +7,12 @@ export type NbtCodecOptions = {
   readonly maxStringBytes?: number
 }
 
-export const DEFAULT_NBT_CODEC_OPTIONS = {
+export const DEFAULT_NBT_CODEC_OPTIONS: {
+  readonly maxBytes: number
+  readonly maxDepth: 512
+  readonly maxElements: 1000000
+  readonly maxStringBytes: 65535
+} = {
   maxBytes: 64 * 1024 * 1024,
   maxDepth: 512,
   maxElements: 1_000_000,

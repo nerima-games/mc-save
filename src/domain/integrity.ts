@@ -6,7 +6,7 @@ import { canonicalize, checksumOf, utf8Bytes, type Canonicalized } from './integ
 
 export { sameSaveEnvelope } from './integrity-canonical.js'
 
-export const DEFAULT_MAX_SAVE_BYTES = 16 * 1024 * 1024
+export const DEFAULT_MAX_SAVE_BYTES: number = 16 * 1024 * 1024
 
 const integrityInput = (envelope: SaveEnvelope | SaveEnvelopeDraft): unknown => ({
   format: envelope.format,
@@ -59,7 +59,7 @@ export const sealSaveEnvelope = (
 
 export const validateSaveEnvelope = (
   envelope: SaveEnvelope | SaveEnvelopeDraft,
-  maxBytes = DEFAULT_MAX_SAVE_BYTES,
+  maxBytes: number = DEFAULT_MAX_SAVE_BYTES,
 ): Effect.Effect<SaveEnvelope, SaveDecodeError> => {
   if (!isValidMaxBytes(maxBytes)) return Effect.fail(invalidMaxBytesError(envelope, maxBytes))
 

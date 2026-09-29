@@ -153,7 +153,7 @@ export const saveDurably = <A, I>(
 export const loadDurably = <A, I>(
   format: SaveFormat<A, I>,
   key: SaveKey,
-  maxBytes = DEFAULT_MAX_SAVE_BYTES,
+  maxBytes: number = DEFAULT_MAX_SAVE_BYTES,
 ): Effect.Effect<Option.Option<A>, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
     const storage = yield* StoragePort

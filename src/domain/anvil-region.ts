@@ -1,15 +1,16 @@
 /* oxlint-disable no-bitwise -- Anvil location entries are three-byte big-endian values. */
 
 import { Data } from 'effect'
+import type * as Cause from 'effect/Cause'
 import { assertDefined } from './assert-defined.js'
 
 export const ANVIL_SECTOR_BYTES = 4096
 export const ANVIL_HEADER_SECTORS = 2
-export const ANVIL_HEADER_BYTES = ANVIL_HEADER_SECTORS * ANVIL_SECTOR_BYTES
+export const ANVIL_HEADER_BYTES: number = ANVIL_HEADER_SECTORS * ANVIL_SECTOR_BYTES
 export const ANVIL_REGION_CHUNK_SIDE = 32
-export const ANVIL_CHUNK_COUNT = ANVIL_REGION_CHUNK_SIDE * ANVIL_REGION_CHUNK_SIDE
+export const ANVIL_CHUNK_COUNT: number = ANVIL_REGION_CHUNK_SIDE * ANVIL_REGION_CHUNK_SIDE
 export const ANVIL_MAX_CHUNK_SECTORS = 0xff
-export const ANVIL_MAX_REGION_BYTES =
+export const ANVIL_MAX_REGION_BYTES: number =
   (ANVIL_HEADER_SECTORS + ANVIL_CHUNK_COUNT * ANVIL_MAX_CHUNK_SECTORS) * ANVIL_SECTOR_BYTES
 export const ANVIL_EXTERNAL_STREAM_FLAG = 0x80
 export const ANVIL_EXTERNAL_CHUNK_THRESHOLD = 256
@@ -25,10 +26,17 @@ export const ANVIL_COMPRESSION_IDS = {
 
 export type AnvilCompression = keyof typeof ANVIL_COMPRESSION_IDS
 
-export class AnvilRegionError extends Data.TaggedError('AnvilRegionError')<{
+type AnvilRegionErrorFields = {
   readonly reason: string
   readonly offset?: number
-}> {
+}
+
+const AnvilRegionErrorBase: new (
+  args: AnvilRegionErrorFields,
+) => Cause.YieldableError & { readonly _tag: 'AnvilRegionError' } & Readonly<AnvilRegionErrorFields> =
+  Data.TaggedError('AnvilRegionError')
+
+export class AnvilRegionError extends AnvilRegionErrorBase {
   override get message(): string {
     return this.offset === undefined
       ? `Anvil region is invalid: ${this.reason}`
