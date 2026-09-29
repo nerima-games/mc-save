@@ -112,8 +112,9 @@ type StorageService = {
 
 adapter を注入する `Layer` を作るには、この `StoragePort` tag 自身を使います。標準実装は `makeInMemoryStorage`、`InMemoryStorageLayer`、`makeIndexedDbStorage`、
 `indexedDbStorageLayer`、そして全 write を失敗させる `failingStorageLayer` です。
-`SaveKey` と `saveKeyForWorld` は空白 key と path traversal を防ぎ、`WorldId` は
-`@nerima-games/mc-kernel` の型を直接利用します。
+`SaveKey` と `saveKeyForWorld` は空白 key と path traversal を防ぎます。`WorldId`、`ChunkCoord`、
+`ChunkAxis` は `@nerima-games/mc-kernel` の公開型を直接利用し、mc-save は同等の brand や
+座標検証を再定義しません。依存する kernel の版は `package.json` と lockfile を参照してください。
 
 IndexedDB の store layout version は save format version と別管理です。IndexedDB adapter は
 sequence index、atomic batch、expected-value conflict、quota error mapping を実装します。

@@ -25,6 +25,10 @@
 これにより、保存層とシミュレーション・worldgen 間で座標表現が分裂しません。mc-save は
 kernel のゲーム意味論や clock を取り込まず、保存 path と container の計算に必要な共有型だけを使います。
 
+kernel の更新時も、mc-save が利用する公開型・guard・定数だけを移行対象にします。0.8.0 の
+`ItemStack`、chunk read/edit vocabulary、時間 brand は mc-save の責務境界に含まれず、対応する
+重複定義もありません。保存済み wire value と consumer の format schema はこの依存更新で変更しません。
+
 ## consumer が所有するもの
 
 - player、chunk、world metadata などの意味論 schema
