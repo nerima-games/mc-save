@@ -50,7 +50,8 @@ true })` で表現できるキー省略ではなく、キーは常に存在し�
 一括で `undefined` を掃除する変換ではありません。
 - `DEFAULT_MAX_SAVE_BYTES`、`FIRST_VERSION`、`isFromFuture`
 
-`SaveEnvelope` は format、version、payload、canonical payload の byte length、checksum を持ちます。
+`SaveEnvelope` は format、version、payload と `integrity` を持ちます。canonical payload の byte length と
+checksum は `integrity` 内の値で、envelope のトップレベルにはありません。
 `sealSaveEnvelope` と `validateSaveEnvelope` は persistence adapter の外でも再利用できます。
 
 ## Persistence
@@ -79,12 +80,19 @@ const listFrom: <A, I>(
 `listFrom` で再検証します。`listFrom` は媒体エラーを Effect の失敗として返し、個々の破損は
 `SaveListing.corrupt` に残して他の key を読み続けます。
 
-複数保存と durable 保存も公開されています。
+複数保存、durable 保存、retry も公開されています。
 
 - `saveBatchEntry` と `saveBatch`: 全 entry の encode・封印後に `commitBatch` を一度実行する原子的な書き込み
+- `SaveBatchEntry`: `key` と prepared envelope を持つ entry 型
 - `saveDurably` と `loadDurably`: 現行値と予約 suffix の previous 値を使う durable 操作
+- `withStorageRetry` と `StorageRetryPolicy`: `StorageService` の全操作に同じ retry を適用する wrapper。
+  `StorageRetryPolicy` は `Schedule.Schedule<unknown, StorageError>` と
+  `(error: StorageError) => boolean` の 2 要素で、後者が quota error のような adapter 固有の失敗を
+  汎用 retry から外す
 - `SaveWriteOptions`: `extensions` と `maxBytes`
 - `SaveReadOptions`: `maxBytes`
+- `ListedSave` と `ListedSaveFailure`: `SaveListing` の構成型。失敗側は `SaveDecodeError` と
+  媒体エラーで `_tag` が分かれる
 
 ## Key と StoragePort
 
@@ -99,8 +107,11 @@ type StorageService = {
 }
 ```
 
-`StoragePort` はこの 6 操作だけを要求します。標準実装は `makeInMemoryStorage`、
-`InMemoryStorageLayer`、`makeIndexedDbStorage`、`indexedDbStorageLayer` です。
+`StoragePort` はこの 6 操作だけを要求します。`commitBatch` の引数は `StorageMutation` で、
+`Put` と `Remove` の並びで 1 つの atomic checkpoint を表します。
+
+adapter を注入する `Layer` を作るには、この `StoragePort` tag 自身を使います。標準実装は `makeInMemoryStorage`、`InMemoryStorageLayer`、`makeIndexedDbStorage`、
+`indexedDbStorageLayer`、そして全 write を失敗させる `failingStorageLayer` です。
 `SaveKey` と `saveKeyForWorld` は空白 key と path traversal を防ぎ、`WorldId` は
 `@nerima-games/mc-kernel` の型を直接利用します。
 
@@ -111,6 +122,8 @@ sequence index、atomic batch、expected-value conflict、quota error mapping �
 
 `emptyRegistry`、`registerFormat`、`registerFormats`、`lookupFormat`、`describeRegistry` は、
 同名 format の登録を `DuplicateFormatError` で拒否する immutable registry API です。
+registry は `FormatRegistry`（`ReadonlyMap<string, RegisteredSaveFormat>`）で、
+`RegisteredSaveFormat` は name、version、そして型付けされていない `schema: unknown` を持ちます。
 registry に migration chain はありません。
 
 公開 error は `StorageError`、`SaveDecodeError`、`DuplicateFormatError` です。媒体障害、
@@ -132,3 +145,13 @@ registry に migration chain はありません。
 `custom` として名前空間付きアルゴリズム名を含む未解釈バイト列を保持しますが、任意の custom
 アルゴリズムをこのライブラリが解凍するわけではありません。プレイヤーやチャンクの意味論 schema
 は consumer が `defineFormat` で定義します。
+
+上の entry point と並んで、この層の型・定数・error クラスも `src/index.ts` から export されます。
+consumer が自分のコードで名指しするものを挙げると、次のような形です。
+
+- `MinecraftCompression`、`MinecraftCompressionOptions`、`MinecraftCompressionError`、
+  `AnvilRegion`、`AnvilChunkRecord`、`AnvilCompression`、`AnvilRegionError`、
+  `MinecraftRegionFiles`、`MinecraftExternalChunkFile`、`MinecraftRegionFilesOptions`、
+  `MinecraftRegionFilesError`
+- `NbtDocument`、`NbtCodecOptions`、`DEFAULT_NBT_CODEC_OPTIONS`、`encodeModifiedUtf8` /
+  `decodeModifiedUtf8`
