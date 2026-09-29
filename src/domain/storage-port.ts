@@ -55,7 +55,12 @@ export type StorageService = {
   readonly keys: Effect.Effect<ReadonlyArray<SaveKey>, StorageError>
 }
 
-export class StoragePort extends Context.Tag('@nerima-games/mc-save/StoragePort')<StoragePort, StorageService>() {}
+// Same shape as mc-kernel's `ClockPort`: the tag constructor is bound to a name
+// because `--isolatedDeclarations` refuses an expression in an `extends` clause.
+const StoragePortBase: Context.TagClass<StoragePort, '@nerima-games/mc-save/StoragePort', StorageService> =
+  Context.Tag('@nerima-games/mc-save/StoragePort')<StoragePort, StorageService>()
+
+export class StoragePort extends StoragePortBase {}
 
 /**
  * The canonical in-memory adapter.

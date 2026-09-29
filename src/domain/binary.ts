@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 
 /** Define a wire-compatible Uint8Array with an exact byte length. */
-export const fixedUint8Array = (length: number) => {
+export const fixedUint8Array = (length: number): Schema.filter<typeof Schema.Uint8Array> => {
   if (!Number.isSafeInteger(length) || length < 0) {
     throw new RangeError(
       `fixed Uint8Array length must be a non-negative safe integer, received ${String(length)}`,

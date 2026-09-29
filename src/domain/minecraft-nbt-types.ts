@@ -1,4 +1,5 @@
 import { Data } from 'effect'
+import type * as Cause from 'effect/Cause'
 import { encodeModifiedUtf8 } from './minecraft-utf8.js'
 
 export const NBT_TAG_IDS = {
@@ -19,10 +20,17 @@ export const NBT_TAG_IDS = {
 
 export type NbtTagType = keyof typeof NBT_TAG_IDS
 
-export class NbtFormatError extends Data.TaggedError('NbtFormatError')<{
+type NbtFormatErrorFields = {
   readonly reason: string
   readonly offset?: number
-}> {
+}
+
+const NbtFormatErrorBase: new (
+  args: NbtFormatErrorFields,
+) => Cause.YieldableError & { readonly _tag: 'NbtFormatError' } & Readonly<NbtFormatErrorFields> =
+  Data.TaggedError('NbtFormatError')
+
+export class NbtFormatError extends NbtFormatErrorBase {
   override get message(): string {
     return this.offset === undefined
       ? `NBT data is invalid: ${this.reason}`

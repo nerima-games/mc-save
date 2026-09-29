@@ -1,13 +1,21 @@
 /* oxlint-disable no-bitwise -- UTF-8 continuation bytes are defined by bit fields. */
 
 import { Data } from 'effect'
+import type * as Cause from 'effect/Cause'
 import { assertDefined } from './assert-defined.js'
 import type { MinecraftJsonValue } from './minecraft-java-save-types.js'
 
-export class MinecraftJsonError extends Data.TaggedError('MinecraftJsonError')<{
+type MinecraftJsonErrorFields = {
   readonly operation: 'encode' | 'decode'
   readonly reason: string
-}> {
+}
+
+const MinecraftJsonErrorBase: new (
+  args: MinecraftJsonErrorFields,
+) => Cause.YieldableError & { readonly _tag: 'MinecraftJsonError' } & Readonly<MinecraftJsonErrorFields> =
+  Data.TaggedError('MinecraftJsonError')
+
+export class MinecraftJsonError extends MinecraftJsonErrorBase {
   override get message(): string {
     return `Minecraft JSON ${this.operation} failed: ${this.reason}`
   }

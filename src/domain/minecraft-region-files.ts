@@ -9,7 +9,7 @@ import {
   encodeAnvilRegion,
 } from './anvil-region.js'
 
-export const MINECRAFT_EXTERNAL_CHUNK_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+export const MINECRAFT_EXTERNAL_CHUNK_DEFAULT_MAX_BYTES: number = 64 * 1024 * 1024
 
 export class MinecraftRegionFilesError extends Error {
   readonly _tag = 'MinecraftRegionFilesError'

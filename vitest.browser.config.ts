@@ -1,7 +1,7 @@
 import { playwright } from '@vitest/browser-playwright'
 import { defineConfig } from 'vitest/config'
 
-export default defineConfig({
+const config: ReturnType<typeof defineConfig> = defineConfig({
   test: {
     browser: {
       enabled: true,
@@ -12,3 +12,5 @@ export default defineConfig({
     include: ['test/browser/**/*.browser.ts'],
   },
 })
+
+export default config

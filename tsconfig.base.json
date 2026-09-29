@@ -43,6 +43,7 @@
     "strict": true,
     "noImplicitAny": true,
     "strictNullChecks": true,
+    "strictBuiltinIteratorReturn": true,
     "strictFunctionTypes": true,
     "strictBindCallApply": true,
     "strictPropertyInitialization": true,
@@ -64,6 +65,15 @@
     "allowSyntheticDefaultImports": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
+    // Public declarations must be derivable from each source file's explicit
+    // annotations. This prevents an implementation-only inference change from
+    // silently changing the package API; any Tag or nominal-looking shape is
+    // handled by an explicitly typed base or wrapper in the module that owns it.
+    "isolatedDeclarations": true,
+    // A type-only import must say so. The emitted JavaScript then follows from
+    // the import statement alone, with no whole-program analysis deciding which
+    // specifiers survive — which is what a package shipping ESM to fifteen
+    // consumers wants.
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "noUncheckedSideEffectImports": true,

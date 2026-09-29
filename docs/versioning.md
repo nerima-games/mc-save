@@ -41,10 +41,16 @@ package の `engines`、`packageManager`、lockfile、exports、changeset を re
 3. package version と changeset の意図が一致している
 4. consumer が使用する `@nerima-games/mc-kernel` version と lockfile が再現可能である
 
-この repository では `pnpm changeset status` で release 状態を確認します。publish 自体は
-`.github/workflows/release.yaml` が自動で行います: `pnpm changeset version` で `package.json`
-の version と CHANGELOG.md を更新する PR を出し、それが `main` に merge されると `detect` job が
-push 前後の `package.json` version を比較して変化を検知し、変化がある場合のみ `publish` job が
-`pnpm verify && pnpm package:verify` を再実行してから `pnpm publish --no-git-checks` を実行し、
-成功後に `tag` job が `v<version>` を打って push します。version が変わらない push（ドキュメント
-変更など）では publish/tag job は実行されません。
+この repository では `pnpm changeset status` で release 状態を確認します。
+
+版上げは人手です。`pnpm changeset version` を実行すると `package.json` の version と CHANGELOG.md
+が更新され、その差分を PR として `main` に merge します。この版上げ PR を自動生成する仕組みは
+repository にありません。
+
+版上げ PR の merge を受けた publish は `.github/workflows/release.yaml` が自動で行います。
+`push` to `main` を契機に `detect` job が push 前後の `package.json` version を比較して変化を検知し、
+変化がある場合のみ `publish` job が `pnpm verify` と `pnpm package:verify` を再実行してから
+`pnpm publish --no-git-checks` を実行し、成功後に `tag` job が `v<version>` を打って push します。
+version が変わらない push（ドキュメント変更など）では publish/tag job は実行されません。
+CHANGELOG.md は repository 内では更新されますが、`package.json` の `files` に含まれないため
+配布物には同梱されません。
