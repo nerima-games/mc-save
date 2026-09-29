@@ -2,7 +2,7 @@ allowBuilds:
   esbuild: true
 
 minimumReleaseAgeExclude:
-  - '@nerima-games/mc-kernel@0.7.0'
+  - '@nerima-games/mc-kernel@0.8.0'
 
 overrides:
   # GHSA-2v37-7h3g-55p8: nanoid's custom generator can loop indefinitely when
