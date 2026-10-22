@@ -8,12 +8,12 @@ description: >-
 # Copy this directory to <repo>/.github/actions/nix-setup/ verbatim.
 # It is the single place where the nix-installer and cachix-action SHAs are
 # pinned; bumping them here bumps every workflow in the repository. Mirrors
-# nerima-lisp/.github/templates/actions/nix-setup exactly — nerima-games uses
-# ONE shared cache (`takeokunn-nerima-games`) across all 16 repos rather than
+# nerima-lisp/.github/templates/actions/nix-setup exactly. nerima-games uses
+# ONE shared cache (`takeokunn-nerima-games`) across all 16 repos instead of
 # nerima-lisp's one-cache-per-repo convention, because every repo's devShell
-# is nixpkgs-only (nodejs_24/corepack_24/typescript-language-server/oxlint,
-# no repository-specific build output) — see repos_nerima_games.tf's Cachix
-# comment in private-terraform.
+# is nixpkgs-only (nodejs_26/corepack_24/typescript-language-server/oxlint/
+# ast-grep, no repository-specific build output). See repos_nerima_games.tf's
+# Cachix comment in private-terraform.
 
 # NOTE: `actions/checkout` intentionally lives in the caller, not here: a
 # local composite action cannot check the repository out, because its own
@@ -35,7 +35,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+    - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
     - name: Resolve Cachix mode
       id: cachix-mode
@@ -57,14 +57,14 @@ runs:
 
     - name: Configure Cachix (pull-only)
       if: ${{ inputs.cachix-cache != '' && steps.cachix-mode.outputs.push != 'true' }}
-      uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
       with:
         name: ${{ inputs.cachix-cache }}
         skipPush: true
 
     - name: Configure Cachix (push-enabled)
       if: ${{ inputs.cachix-cache != '' && steps.cachix-mode.outputs.push == 'true' }}
-      uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
       with:
         name: ${{ inputs.cachix-cache }}
         authToken: ${{ inputs.cachix-auth-token }}

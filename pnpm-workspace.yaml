@@ -10,3 +10,9 @@ overrides:
   # @vitest/browser-playwright > @vitest/browser|vitest > vite > postcss > nanoid
   # (`pnpm why nanoid`, 20 paths). No direct dependency on nanoid exists.
   nanoid: ">=3.3.18"
+  # Pin audited transitives to patched versions until upstream ranges include them.
+  vite: 7.3.7
+  '@vitest/mocker': 4.1.12
+  source-map-js: 1.2.2
+  launch-editor: 2.14.2
+  shell-quote: 1.11.0

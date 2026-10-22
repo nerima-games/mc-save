@@ -40,10 +40,9 @@
           pkgs = pkgsFor system;
         in
         {
-          # Node 24 matches the `engines` field and the CI runner. pnpm comes
-          # from corepack rather than nixpkgs so that the version is decided by
-          # the `packageManager` field in package.json — one source of truth
-          # instead of two that can drift.
+          # Node 26 matches the CI runner and satisfies the Node 24 engines
+          # minimum. pnpm comes from corepack rather than nixpkgs so its version
+          # follows the `packageManager` field in package.json.
           #
           # oxlint is intentionally supplied by Nix rather than package.json.
           # This keeps the executable version in the reproducible development
@@ -58,7 +57,7 @@
           # would fail its own documentation.
           default = pkgs.mkShell {
             packages = [
-              pkgs.nodejs_24
+              pkgs.nodejs_26
               pkgs.corepack_24
               pkgs.typescript-language-server
               pkgs.oxlint
