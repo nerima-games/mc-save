@@ -40,9 +40,9 @@
           pkgs = pkgsFor system;
         in
         {
-          # Node 26 matches the CI runner and satisfies the Node 24 engines
-          # minimum. pnpm comes from corepack rather than nixpkgs so its version
-          # follows the `packageManager` field in package.json.
+          # Node 26 matches CI; the engines field allows Node 24. Corepack supplies
+          # pnpm rather than nixpkgs, and package.json's `packageManager` field
+          # controls its version without a second source that can drift.
           #
           # oxlint is intentionally supplied by Nix rather than package.json.
           # This keeps the executable version in the reproducible development
