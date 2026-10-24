@@ -23,6 +23,8 @@
  */
 
 export * from './domain/envelope.js'
+export * from './application/revisioned-save.js'
+export * from './application/write-queue.js'
 export * from './domain/binary.js'
 export * from './domain/batch-save.js'
 export * from './domain/durable-save.js'
@@ -49,5 +51,6 @@ export * from './domain/optional-fields.js'
 export * from './domain/persistence.js'
 export * from './domain/registry.js'
 export * from './domain/save-key.js'
+export * from './domain/save-slices.js'
 export * from './domain/storage-port.js'
 export * from './domain/storage-retry.js'
