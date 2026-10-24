@@ -1,61 +1,46 @@
-# バージョニング
+# Versioning
 
-## 二つの版
+## Two independent versions
 
-package version と save format version は別の契約です。
+The package version and save format version are separate contracts.
 
-| 版 | 意味 | 定義場所 |
+| Version | Meaning | Defined in |
 | --- | --- | --- |
-| package version | npm package の配布版 | `package.json` の `version` |
-| format version | 個別 payload schema の現行世代 | `defineFormat({ version })` |
+| Package version | Published package release | `version` in `package.json` |
+| Format version | Current schema generation for one payload | `defineFormat({ version })` |
 
-package version を上げても format version は自動では変わりません。format version を変える
-場合は schema、fixture、consumer の release 判断を同時に更新します。
+Changing the package version does not change a save format version. A format-version change should update the schema, fixtures, and consumer release plan together.
 
-## 現行 format 契約
+## Current format contract
 
-format は name と version の厳密な組み合わせです。`decodeSave` は次を拒否します。
+A format is identified by an exact name and version. `decodeSave` rejects:
 
-- 別 format の envelope
-- 現行より新しい future version
-- 現行と異なる過去 version
-- integrity、byte length、payload schema が不正な envelope
+- An envelope for a different format
+- A future version
+- An older version than the current format
+- An envelope with invalid integrity, byte length, or payload schema
 
-旧版を現行版へ自動変換する migration chain はありません。互換性を提供しない版を現行
-実装として選ぶ場合、consumer は必要なデータを明示的に再生成・再保存する運用を持つ必要があります。
-この拒否は、解釈できないデータを破損データとして上書き・削除しないためのものです。
+There is no automatic migration chain for ordinary save formats. Consumers that do not support an older format must decide how to preserve, migrate, or regenerate that data. The rejection prevents unsupported data from being treated as corrupt and overwritten or deleted.
+
+The save-slice API is a separate migration boundary. It resolves an explicit unique path from one slice version to another and decodes all slices before calling restore callbacks.
 
 ## IndexedDB layout version
 
-IndexedDB の object store、index、record layout の版は save format version と別です。layout
-upgrade は adapter 内部の保存媒体契約であり、Minecraft payload の schema migration ではありません。
-layout upgrade 後も envelope の format/version/integrity 検証は変わりません。
+The IndexedDB object-store, index, and record-layout version is independent of the save format version. A layout upgrade changes the adapter's storage contract, not a Minecraft payload schema. Envelope format, version, and integrity checks remain in force after a layout upgrade.
 
-## package release
+## Package releases
 
-package の `engines`、`packageManager`、lockfile、exports、changeset を release artifact の
-入力とします。変更を公開する場合は、少なくとも次を同じ変更単位で確認します。
+Release inputs include `engines`, `packageManager`, the lockfile, exports, and the Changesets entry. Before publishing a change, verify that:
 
-1. source と declaration の public export が一致している
-2. `pnpm verify`、coverage、browser、`package:verify` が通る
-3. package version と changeset の意図が一致している
-4. consumer が使用する `@nerima-games/mc-kernel` version と lockfile が再現可能である
+1. Source and declaration exports agree.
+2. `pnpm verify`, coverage, browser tests, and `pnpm package:verify` pass.
+3. The package version and changeset intent agree.
+4. The exact `@nerima-games/mc-kernel` version and lockfile are reproducible for consumers.
 
-`@nerima-games/mc-kernel` は exact pin で管理します。kernel の更新時は、その版の
-`docs/consumer-migration.md` と公開 API を確認し、mc-save が利用する shared type・guard・定数に
-該当する移行だけを同じ変更単位で適用します。保存済み wire value を変えない移行では、save
-format version の変更や `defineFormat` の migration は行いません。
+`@nerima-games/mc-kernel` is pinned exactly. When updating it, review that version's consumer-migration and public API documentation, then apply only the changes relevant to the shared types, guards, and constants used by mc-save. If a migration does not change persisted wire values, it does not require a save format version change.
 
-この repository では `pnpm changeset status` で release 状態を確認します。
+Use `pnpm changeset status` to review the pending release state.
 
-版上げは人手です。`pnpm changeset version` を実行すると `package.json` の version と CHANGELOG.md
-が更新され、その差分を PR として `main` に merge します。この版上げ PR を自動生成する仕組みは
-repository にありません。
+Package version bumps are manual. `pnpm changeset version` updates `package.json` and `CHANGELOG.md`; review that diff in a release pull request. The repository does not create that version-bump pull request automatically.
 
-版上げ PR の merge を受けた publish は `.github/workflows/release.yaml` が自動で行います。
-`push` to `main` を契機に `detect` job が push 前後の `package.json` version を比較して変化を検知し、
-変化がある場合のみ `publish` job が `pnpm verify` と `pnpm package:verify` を再実行してから
-`pnpm publish --no-git-checks` を実行し、成功後に `tag` job が `v<version>` を打って push します。
-version が変わらない push（ドキュメント変更など）では publish/tag job は実行されません。
-CHANGELOG.md は repository 内では更新されますが、`package.json` の `files` に含まれないため
-配布物には同梱されません。
+After a version-bump pull request is merged, `.github/workflows/release.yaml` compares the package version before and after the push to `main`. If it changed, the workflow reruns `pnpm verify` and `pnpm package:verify`, publishes with `pnpm publish --no-git-checks`, then pushes a `v<version>` tag. Pushes that do not change the version, such as documentation-only changes, do not run publish or tag jobs. `CHANGELOG.md` is maintained in the repository but is not included in the package because it is not listed in `package.json`'s `files`.

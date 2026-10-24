@@ -51,7 +51,7 @@ const verifyArchiveContents = async (archivePath) => {
 const verifyRuntimeImport = async (consumerDirectory, packageName) => {
   const packageLiteral = JSON.stringify(packageName)
   const runtimeProbe = `
-import { Effect, Option, Schedule, Schema } from 'effect'
+import { Effect, Option, Result, Schedule, Schema } from 'effect'
 import * as packageModule from ${packageLiteral}
 
 const functionExports = ['defineFormat', 'encodeSave', 'decodeSave', 'saveTo', 'loadFrom', 'withStorageRetry']
@@ -64,11 +64,11 @@ if (typeof packageModule.makeInMemoryStorage !== 'object' || packageModule.makeI
   throw new Error('missing runtime export: makeInMemoryStorage')
 }
 
-const format = packageModule.defineFormat({
+const format = Result.getOrThrow(packageModule.defineFormat({
   name: 'package-verify',
   version: 1,
   schema: Schema.Struct({ value: Schema.String }),
-})
+}))
 const envelope = await Effect.runPromise(packageModule.encodeSave(format, { value: 'ok' }))
 const decoded = await Effect.runPromise(packageModule.decodeSave(format, envelope))
 if (decoded.value !== 'ok') {
@@ -99,14 +99,14 @@ if (!Option.isSome(retryStored) || retryStored.value.payload.value !== 'ok') {
 const verifyTypeImport = async (consumerDirectory, packageName) => {
   const packageLiteral = JSON.stringify(packageName)
   const typeProbe = `
-import { Schedule, Schema } from 'effect'
+import { Result, Schedule, Schema } from 'effect'
 import { defineFormat, type SaveFormat, type StorageRetryPolicy } from ${packageLiteral}
 
-const format: SaveFormat<string, string> = defineFormat({
+const format: SaveFormat<string, string> = Result.getOrThrow(defineFormat({
   name: 'package-type-verify',
   version: 1,
   schema: Schema.String,
-})
+}))
 void format
 const retryPolicy: StorageRetryPolicy = { schedule: Schedule.recurs(1), shouldRetry: () => true }
 void retryPolicy

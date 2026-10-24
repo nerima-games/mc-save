@@ -1,95 +1,86 @@
 # @nerima-games/mc-save
 
-`@nerima-games/mc-save` は Minecraft のセーブデータを扱う TypeScript ライブラリです。
-保存対象のゲーム意味論は持たず、現行版専用の format codec、整合性付き envelope、
-保存 Port、Java 版の wire/container codec を提供します。
+`@nerima-games/mc-save` is a TypeScript library for Minecraft save data. It provides strict format codecs, integrity-checked envelopes, storage operations, and Minecraft Java wire and container codecs without owning game-specific schemas or save policy.
 
-## 責務
+## Responsibilities
 
-このリポジトリが所有するものは次の境界です。
+- Effect 4 format codecs, envelopes, integrity checks, and size limits
+- `StoragePort`, in-memory and IndexedDB adapters, batch and durable operations, retries, revision writes, and a sequential write queue
+- Save-slice bundle encoding, migration-path resolution, and restore preflight using `@nerima-games/mc-kernel` 0.9 contracts
+- Java modified UTF-8, NBT, gzip/zlib/none/LZ4, Anvil regions, external `.mcc` chunks, and standard save paths
+- Shared `WorldId`, coordinate brands, and save-slice contracts from `@nerima-games/mc-kernel`
 
-- `Effect` ベースの現行版専用 format codec と format registry
-- サイズ制限、canonical bytes、checksum を含む envelope の検証
-- `StoragePort`、インメモリ実装、IndexedDB 実装、batch/durable 操作、retry wrapper
-- Java 26.1 の modified UTF-8、NBT、gzip/zlib/none/LZ4、Anvil region、`.mca`/`.mcc`、標準パス helper
-- `mc-kernel` の `WorldId`、`ChunkCoord`、`ChunkAxis`、`CHUNK_SIZE_XZ` の再利用
+Consumers keep player, chunk, and world schemas, settings policy, save timing, simulation state, and session lifecycle in their own packages.
 
-チャンク・プレイヤー・ワールドの意味論 schema、保存タイミング、ゲーム状態の更新は consumer が
-定義します。mc-save は特定のゲームドメインを import しません。
+## Setup
 
-## セットアップ
-
-~~~console
+```console
 nix develop
 pnpm install --frozen-lockfile
-~~~
+```
 
-Nix を使わない場合は Node.js 24 以上と pnpm 11 以上を用意してください。バージョンは
-`package.json` の `engines` と `packageManager` が正です。
+Without Nix, use Node.js 24 or newer and pnpm 12.14.0. `package.json` defines the supported engines and package-manager version.
 
-## API の最小例
+## Minimal API example
 
-~~~typescript
-import { Effect, Schema } from 'effect'
+```typescript
+import { Effect, Result, Schema } from 'effect'
 import { defineFormat, InMemoryStorageLayer, SaveKey, saveTo } from '@nerima-games/mc-save'
 
-const PlayerFormat = defineFormat({
+const playerFormat = defineFormat({
   name: 'player',
   version: 1,
   schema: Schema.Struct({ health: Schema.Number }),
 })
 
-await Effect.runPromise(
-  saveTo(PlayerFormat, SaveKey('player'), { health: 20 }).pipe(
-    Effect.provide(InMemoryStorageLayer),
-  ),
-)
-~~~
+const savePlayer = Result.isSuccess(playerFormat)
+  ? saveTo(playerFormat.success, SaveKey('player'), { health: 20 })
+  : Effect.fail(playerFormat.failure)
 
-`saveTo` は schema で値を encode し、canonical bytes・checksum・サイズ制限を検証した sealed
-envelope を保存します。`encodeSave` は整合性をまだ付けていない draft を返します。
-format version は厳密一致で判定され、異なる version の payload を自動変換しません。
+await Effect.runPromise(savePlayer.pipe(Effect.provide(InMemoryStorageLayer)))
+```
 
-## 構成
+`defineFormat` returns a `Result`; handle invalid definitions before using the format. `saveTo` encodes the value, seals and validates the envelope, then writes it. `decodeSave` accepts only the exact format name and version and does not migrate older payloads.
 
-~~~text
-src/index.ts                         公開 entry point
-src/domain/format*.ts                format 定義・codec・検証
-src/domain/envelope.ts               envelope の構造
-src/domain/integrity*.ts             canonical bytes・checksum・サイズ検証
-src/domain/persistence.ts            codec と StoragePort の接続
-src/domain/storage-port.ts           保存媒体の Port と in-memory adapter
-src/domain/indexeddb-*.ts            IndexedDB の layout・runtime・adapter
-src/domain/batch-save.ts             複数保存の準備と atomic commit
-src/domain/durable-save.ts           durable save/load
-src/domain/minecraft-*.ts            Java wire/container codec と標準パス
-src/domain/anvil-region.ts           Anvil region container
-test/                                Node・fake IndexedDB・Chromium の検証
-docs/                                実装と運用の説明
-~~~
+## Repository structure
 
-## 開発と検証
+```text
+src/index.ts                         public entry point
+src/application/                     generic revision writes and write queue
+src/domain/format*.ts                format definition and codecs
+src/domain/envelope.ts               envelope structure
+src/domain/integrity*.ts             canonical bytes, checksum, and size checks
+src/domain/persistence.ts            codecs joined to StoragePort
+src/domain/storage-port.ts           storage service and in-memory adapter
+src/domain/indexeddb-*.ts             IndexedDB layout, runtime, and adapter
+src/domain/save-slices.ts             save-slice bundles and migration preflight
+src/domain/minecraft-*.ts             Minecraft Java codecs and standard paths
+test/                                Node, fake IndexedDB, and Chromium checks
+docs/                                API, ownership, migration, and test guides
+```
 
-~~~console
+## Verification
+
+```console
 pnpm verify
 pnpm test:coverage
 pnpm test:browser
 pnpm package:verify
-nix flake check --all-systems
-~~~
+pnpm audit
+```
 
-`pnpm verify` は型検査、source policy、lint、Node テストを実行します。`test:coverage` は
-branches/functions/lines/statements の 100% 閾値を検査し、`test:browser` は Chromium の実 IndexedDB
-を検査します。配布物の境界は `package:verify` で pack 後の一時 consumer から確認します。
+`pnpm verify` runs type checks, lint, and Node tests. Coverage requires 100% for branches, functions, lines, and statements. Browser tests use Chromium's real IndexedDB. Package verification packs the library and checks it from a clean consumer.
 
-## 設計上の境界
+## Compatibility boundaries
 
-- 保存する sealed envelope は現行 format version と integrity 情報を持ちます。
-- `encodeSave` は draft を返し、`saveTo`・`saveBatch`・`saveDurably` は sealed envelope を永続化します。
-- 読み込み時は保存媒体から得た値を再検証し、破損・future version・不一致 version を明示的な error にします。
-- Minecraft の意味論 schema はこのパッケージに含めません。NBT/Anvil payload に何を入れるかは consumer が決めます。
-- IndexedDB の内部 store layout version は save format version と別の実装バージョンです。
-- 旧版セーブを現行版へ自動変換する migration chain は提供しません。
+- Persisted envelopes contain the format name, version, payload, and integrity metadata.
+- `encodeSave` returns an unsealed draft; persistence operations store a sealed envelope.
+- Stored values are revalidated at read boundaries.
+- Older product-specific payloads require an explicit consumer migration. The save-slice API validates and migrates registered slices before calling restore callbacks.
+- Minecraft NBT and Anvil codecs preserve supported wire data; consumers define game-specific schema meaning.
+- IndexedDB layout versions are independent of save format versions.
+
+See [the 0.6.0 migration guide](docs/migration.md), [public API reference](docs/public-api.md), and [verification guide](docs/testing.md).
 
 ## License
 

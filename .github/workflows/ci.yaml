@@ -44,6 +44,9 @@ jobs:
       - name: Install dependencies
         run: nix develop --command pnpm install --frozen-lockfile
 
+      - name: W0-2 conformance
+        uses: nerima-games/.github/conformance/ast-grep@80f37b5991898a73d3a6e168f6e8be37f2abb845
+
       - name: Verify
         run: nix develop --command pnpm verify
 

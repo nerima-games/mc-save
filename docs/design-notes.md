@@ -1,73 +1,64 @@
-# 設計ノート
+# Design notes
 
-## DN-1: format version は厳密一致
+## DN-1: Format versions require an exact match
 
-`decodeSave` は format name と version を確認し、future version と current version 以外を
-拒否します。旧版を暗黙に読み替えると、保存データがいつ変換されたか追跡できず、失敗時の
-復旧判断も壊れます。version を上げるときは consumer が新しい format を定義し、必要なら
-明示的な外部変換を所有します。
+`decodeSave` checks the format name and version. It rejects future versions and versions other than the current one. Implicitly reading an older payload would make conversions hard to trace and complicate recovery after a failed migration. Consumers define a new format and own any explicit conversion.
 
-## DN-2: draft と sealed を分ける
+## DN-2: Keep draft and sealed envelopes separate
 
-`encodeSave` の結果は schema 変換済みの draft です。`prepareSave` が canonical bytes、
-checksum、サイズ制限を検証して sealed envelope にします。保存 Port が受け付ける型を sealed
-だけにすることで、整合性検証前の値が永続化境界へ流れません。
+`encodeSave` returns a schema-encoded draft. Persistence preparation checks canonical bytes, checksum, and size before producing a sealed envelope. Storage APIs accept only the sealed type, so unchecked values do not cross the persistence boundary.
 
-## DN-3: canonical bytes は integrity の共通境界
+## DN-3: Canonical bytes define integrity
 
-checksum は payload の意味ではなく、保存 envelope の canonical representation に対して計算
-します。encode、seal、decode、IndexedDB record の各経路が同じ canonical bytes を使い、
-JSON の property order や runtime object identity に依存しないようにします。
+The checksum is calculated over the envelope's canonical representation, not the payload's meaning. Encoding, sealing, decoding, and IndexedDB records use the same canonical bytes so integrity does not depend on object identity or property insertion order.
 
-## DN-4: 外部から戻る値は必ず再検証する
+## DN-4: Revalidate values read from storage
 
-`StoragePort` の戻り値は TypeScript 上では envelope でも、実体は IndexedDB など外部媒体から
-戻った unknown なデータです。`loadFrom` は envelope schema、サイズ、checksum、format schema の
-順で検証します。壊れた 1 record を扱う `listFrom` は、媒体全体の failure と record 単位の
-decode failure を分離します。
+Although `StoragePort` is typed to return an envelope, the runtime value came from IndexedDB or another external medium. `loadFrom` validates the envelope schema, size, checksum, format, and payload schema. `listFrom` keeps record-level decode failures separate from failures to read the medium itself.
 
-## DN-5: atomic batch は Port の責務
+## DN-5: Atomic batches belong to the port
 
-`commitBatch` は全 mutation を順に検証し、途中で失敗した場合は変更前の snapshot を残します。
-batch preparation は codec 側、commit の atomicity は adapter 側という分離により、複数 record
-保存でも IndexedDB と in-memory の意味を揃えます。
+`commitBatch` validates each mutation and retains the pre-change snapshot if a mutation fails. Batch preparation belongs to the codec and commit atomicity belongs to the adapter, which keeps IndexedDB and in-memory behavior aligned.
 
-## DN-6: durable save は通常 key と分離する
+## DN-6: Durable recovery keys stay out of normal listings
 
-durable save は保存中断後の復旧に使う一時 key と previous key を持ちます。通常の listing から
-復旧用 key を除外し、commit 後にのみ昇格させます。durable の一時状態は save format version の
-migration ではありません。
+`saveDurably` reads the envelope at the head key. When it decodes as the current format, one atomic `commitBatch` writes that envelope to `durablePreviousKey(key)` and the new sealed envelope to the head key. If there is no valid current head, it writes only the new head; a future-version head fails rather than being overwritten. Normal listings omit the recovery key, which lets `loadDurably` recover after an interrupted update without treating recovery as a format migration.
 
-## DN-7: retry は媒体ではなく Port wrapper に集約する
+## DN-7: Retry policy wraps the port
 
-`withStorageRetry` は全 Port 操作に同じ schedule と判定関数を適用します。quota error など
-retry 可能かどうかは媒体固有なので、`StorageRetryPolicy` として明示的に注入します。
-呼び出し側ごとに retry を書くと、put と batch で挙動がずれます。
+`withStorageRetry` applies one schedule and predicate to port operations. Whether a failure can be retried depends on the adapter, so callers inject a `StorageRetryPolicy`. Keeping retry at the port wrapper prevents `put` and batch operations from drifting apart.
 
-## DN-8: Java codec は意味論から独立させる
+## DN-8: Java codecs do not interpret game semantics
 
-modified UTF-8、NBT、圧縮は Java wire format の実装です。NBT の schema や tag の用途は
-consumer が決め、mc-save は特定の world/player model を import しません。深さ・サイズ・
-文字列長の上限は codec options で明示します。
+Modified UTF-8, NBT, and compression implement Java wire formats. Consumers decide which NBT schemas and tags their game uses; mc-save does not import a world or player model. Codec options expose limits for depth, size, and string length.
 
-## DN-9: Anvil は byte layout を検証する
+## DN-9: Validate Anvil byte layout
 
-Anvil region は 32 x 32 chunk の index、8 KiB の header、4 KiB sector 単位の record、
-compression id、payload length、padding を扱います。大きい payload の external
-`.mcc` record と region/entity/poi の path も同じ container 層で検証します。
+Anvil regions contain a 32 by 32 chunk index, an 8 KiB header, records allocated in 4 KiB sectors, compression identifiers, payload lengths, and padding. Oversized payloads can use external `.mcc` records. Region, entity, and POI paths use the same container layer.
 
-## DN-10: パスと座標は純粋関数にする
+## DN-10: Keep path and coordinate calculations pure
 
-dimension directory、region coordinate、負数座標の floor division、region 内 local coordinate、
-player id などの path segment 検証は `minecraft-paths.ts` に集約します。座標の型と chunk size は
-`mc-kernel` から再利用し、consumer の保存処理が同じ規則を再実装しないようにします。
+Dimension directories, region coordinates, floor division for negative coordinates, local coordinates within a region, and path-segment validation are centralized in `minecraft-paths.ts`. Coordinate types and chunk size come from `mc-kernel` so consumers do not reimplement those rules.
 
-## 回帰テストの対応
+## DN-11: Publish revisioned data by publishing the head last
 
-設計判断は次のテスト群で固定します。
+`writeRevisionedSave` writes chunks before the head so readers do not observe a head that points to unpublished chunks. After a typed write failure it attempts to restore the previous head and chunk values. Once the new head is written, obsolete chunk cleanup is best-effort.
 
-- format/envelope/integrity: `test/format-roundtrip.test.ts`、`test/durable-save.test.ts`
-- batch/Port/retry: `test/batch-save.test.ts`、`test/storage-port.test.ts`、`test/storage-retry.test.ts`
-- IndexedDB layout/runtime: `test/indexeddb-*.test.ts`、`test/browser/`
-- Java codec: `test/minecraft-*.test.ts`、`test/anvil-region.test.ts`、`test/minecraft-region-files.test.ts`
-- path/key: `test/minecraft-paths.test.ts`、`test/save-key.test.ts`
+## DN-12: Preflight every save slice before restoring any slice
+
+`restoreSaveBundle` clones and validates the input, checks registration coverage, resolves a unique forward migration path, applies migrations, and decodes every registered slice before invoking a restore callback. A malformed bundle or migration failure therefore cannot leave some slices restored and others untouched. Consumer callbacks and session lifecycle remain outside mc-save.
+
+## DN-13: Keep the write queue generic
+
+`makeWriteQueue` provides serial write mechanics without owning settings state, callbacks, or session behavior. Later writes run after typed failures. A successful write clears the remembered failure; `drain` waits for the queue and reports the last write's typed failure if it failed.
+
+## Regression tests
+
+The tests for these decisions include:
+
+- Format and integrity: `test/format-roundtrip.test.ts`, `test/durable-save.test.ts`, and `test/migration.test.ts`
+- Batch, port, retry, and revision writes: `test/batch-save.test.ts`, `test/storage-port.test.ts`, `test/storage-retry.test.ts`, and `test/revisioned-save.test.ts`
+- Save-slice bundles and queue: `test/save-slices.test.ts`, `test/save-migration-path.test.ts`, and `test/write-queue.test.ts`
+- IndexedDB layout and runtime: `test/indexeddb-*.test.ts` and `test/browser/`
+- Java codecs: `test/minecraft-*.test.ts`, `test/anvil-region.test.ts`, and `test/minecraft-region-files.test.ts`
+- Paths and keys: `test/minecraft-paths.test.ts` and `test/save-key.test.ts`
