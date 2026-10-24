@@ -178,8 +178,8 @@ importers:
         specifier: 0.8.0
         version: 0.8.0
       effect:
-        specifier: 3.22.1
-        version: 3.22.1
+        specifier: 3.22.3
+        version: 3.22.3
     devDependencies:
       '@changesets/changelog-github':
         specifier: 1.0.1
@@ -189,7 +189,7 @@ importers:
         version: 3.0.3
       '@effect/vitest':
         specifier: 0.30.0
-        version: 0.30.0(effect@3.22.1)(vitest@4.1.11)
+        version: 0.30.0(effect@3.22.3)(vitest@4.1.11)
       '@types/node':
         specifier: 26.6.5
         version: 26.6.5
@@ -1109,6 +1109,9 @@ packages:
   effect@3.22.1:
     resolution: {integrity: sha512-TNoXushmPOBAjJlthF5d2QwnX2xBPEtcNJr5XKNKbRLbDvBcOYkXlYDfvGfSA0zriwLFuCll5MDtNMAdZL17PQ==}
 
+  effect@3.22.3:
+    resolution: {integrity: sha512-pQU7KTFcqHCjCbhMsiv2vFLPtCfKMspA3ChglcRfAMt/h7KlGoEtRL4eaM5Bq5chTgIysITM+fUAW87HQFKl3A==}
+
   es-module-lexer@2.3.2:
     resolution: {integrity: sha512-poHGpORABojJJucnV9KbOavETW8lBVnphkW77ER5/BQ5Fz7oXSoCNek7IH3vR5nRjdsEz926ibFYX8KtLQmdyw==}
 
@@ -1628,9 +1631,9 @@ snapshots:
       fast-wrap-ansi: 0.2.2
       sisteransi: 1.0.5
 
-  '@effect/vitest@0.30.0(effect@3.22.1)(vitest@4.1.11)':
+  '@effect/vitest@0.30.0(effect@3.22.3)(vitest@4.1.11)':
     dependencies:
-      effect: 3.22.1
+      effect: 3.22.3
       vitest: 4.1.11(@types/node@26.6.5)(@vitest/browser-playwright@4.1.11)(@vitest/coverage-v8@4.1.11)(vite@7.3.7(@types/node@26.6.5)(jiti@2.7.0)(tsx@4.23.15)(yaml@2.9.0))
 
   '@emnapi/core@1.11.2':
@@ -2147,6 +2150,11 @@ snapshots:
   dataloader@2.2.3: {}
 
   effect@3.22.1:
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      fast-check: 3.23.2
+
+  effect@3.22.3:
     dependencies:
       '@standard-schema/spec': 1.1.0
       fast-check: 3.23.2
