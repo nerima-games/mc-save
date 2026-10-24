@@ -1,6 +1,6 @@
 /* oxlint-disable no-bitwise -- UTF-8 continuation bytes are defined by bit fields. */
 
-import { Data } from 'effect'
+import { Data, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
 import { assertDefined } from './assert-defined.js'
 import type { MinecraftJsonValue } from './minecraft-java-save-types.js'
@@ -84,125 +84,126 @@ const isJsonValueInternal = (value: unknown, seen: WeakSet<object>): value is Mi
 
   if (seen.has(value)) return false
   seen.add(value)
-  try {
-    return Array.isArray(value) ? isJsonArray(value, seen) : isJsonObject(value, seen)
-  } finally {
-    seen.delete(value)
-  }
+  const result = Result.try({
+    try: () => Array.isArray(value) ? isJsonArray(value, seen) : isJsonObject(value, seen),
+    catch: () => false,
+  })
+  seen.delete(value)
+  return Result.getOrElse(result, () => false)
 }
 
-export const isMinecraftJsonValue = (value: unknown): value is MinecraftJsonValue => {
-  try {
-    return isJsonValueInternal(value, new WeakSet<object>())
-  } catch {
-    return false
-  }
-}
+export const isMinecraftJsonValue = (value: unknown): value is MinecraftJsonValue =>
+  isJsonValueInternal(value, new WeakSet<object>())
 
 const continuation = (value: number): boolean => (value & 0xc0) === 0x80
 
-const decodeUtf8 = (bytes: Uint8Array): string => {
-  const codePoints: number[] = []
-  let offset = 0
-  while (offset < bytes.byteLength) {
-    const first = assertDefined(bytes[offset], 'decodeUtf8: offset is within byteLength but byte is missing')
-    if (first <= 0x7f) {
-      codePoints.push(first)
-      offset += 1
-      continue
-    }
-
-    if (first >= 0xc2 && first <= 0xdf) {
-      if (offset + 1 >= bytes.byteLength) throw jsonError('decode', 'truncated two-byte UTF-8 sequence')
-      const second = assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a two-byte sequence')
-      if (!continuation(second)) throw jsonError('decode', 'invalid UTF-8 continuation byte')
-      codePoints.push(((first & 0x1f) << 6) | (second & 0x3f))
-      offset += 2
-      continue
-    }
-
-    if (first >= 0xe0 && first <= 0xef) {
-      if (offset + 2 >= bytes.byteLength) throw jsonError('decode', 'truncated three-byte UTF-8 sequence')
-      const second = assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a three-byte sequence')
-      const third = assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a three-byte sequence')
-      if (!continuation(second) || !continuation(third)) {
-        throw jsonError('decode', 'invalid UTF-8 continuation byte')
+const decodeUtf8 = (bytes: Uint8Array): Result.Result<string, MinecraftJsonError> =>
+  Result.gen(function* () {
+    const codePoints: number[] = []
+    let offset = 0
+    while (offset < bytes.byteLength) {
+      const first = yield* Result.mapError(assertDefined(bytes[offset], 'decodeUtf8: offset is within byteLength but byte is missing'), (reason) => jsonError('decode', reason))
+      if (first <= 0x7f) {
+        codePoints.push(first)
+        offset += 1
+        continue
       }
-      if ((first === 0xe0 && second < 0xa0) || (first === 0xed && second >= 0xa0)) {
-        throw jsonError('decode', 'UTF-8 sequence is overlong or encodes a surrogate')
+
+      if (first >= 0xc2 && first <= 0xdf) {
+        if (offset + 1 >= bytes.byteLength) return yield* Result.fail(jsonError('decode', 'truncated two-byte UTF-8 sequence'))
+        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a two-byte sequence'), (reason) => jsonError('decode', reason))
+        if (!continuation(second)) return yield* Result.fail(jsonError('decode', 'invalid UTF-8 continuation byte'))
+        codePoints.push(((first & 0x1f) << 6) | (second & 0x3f))
+        offset += 2
+        continue
       }
-      codePoints.push(((first & 0x0f) << 12) | ((second & 0x3f) << 6) | (third & 0x3f))
-      offset += 3
-      continue
-    }
 
-    if (first >= 0xf0 && first <= 0xf4) {
-      if (offset + 3 >= bytes.byteLength) throw jsonError('decode', 'truncated four-byte UTF-8 sequence')
-      const second = assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a four-byte sequence')
-      const third = assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a four-byte sequence')
-      const fourth = assertDefined(bytes[offset + 3], 'decodeUtf8: missing fourth byte of a four-byte sequence')
-      if (!continuation(second) || !continuation(third) || !continuation(fourth)) {
-        throw jsonError('decode', 'invalid UTF-8 continuation byte')
+      if (first >= 0xe0 && first <= 0xef) {
+        if (offset + 2 >= bytes.byteLength) return yield* Result.fail(jsonError('decode', 'truncated three-byte UTF-8 sequence'))
+        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a three-byte sequence'), (reason) => jsonError('decode', reason))
+        const third = yield* Result.mapError(assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a three-byte sequence'), (reason) => jsonError('decode', reason))
+        if (!continuation(second) || !continuation(third)) return yield* Result.fail(jsonError('decode', 'invalid UTF-8 continuation byte'))
+        if ((first === 0xe0 && second < 0xa0) || (first === 0xed && second >= 0xa0)) {
+          return yield* Result.fail(jsonError('decode', 'UTF-8 sequence is overlong or encodes a surrogate'))
+        }
+        codePoints.push(((first & 0x0f) << 12) | ((second & 0x3f) << 6) | (third & 0x3f))
+        offset += 3
+        continue
       }
-      if ((first === 0xf0 && second < 0x90) || (first === 0xf4 && second > 0x8f)) {
-        throw jsonError('decode', 'UTF-8 sequence is outside the Unicode scalar range')
+
+      if (first >= 0xf0 && first <= 0xf4) {
+        if (offset + 3 >= bytes.byteLength) return yield* Result.fail(jsonError('decode', 'truncated four-byte UTF-8 sequence'))
+        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a four-byte sequence'), (reason) => jsonError('decode', reason))
+        const third = yield* Result.mapError(assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a four-byte sequence'), (reason) => jsonError('decode', reason))
+        const fourth = yield* Result.mapError(assertDefined(bytes[offset + 3], 'decodeUtf8: missing fourth byte of a four-byte sequence'), (reason) => jsonError('decode', reason))
+        if (!continuation(second) || !continuation(third) || !continuation(fourth)) {
+          return yield* Result.fail(jsonError('decode', 'invalid UTF-8 continuation byte'))
+        }
+        if ((first === 0xf0 && second < 0x90) || (first === 0xf4 && second > 0x8f)) {
+          return yield* Result.fail(jsonError('decode', 'UTF-8 sequence is outside the Unicode scalar range'))
+        }
+        codePoints.push(((first & 0x07) << 18) | ((second & 0x3f) << 12) | ((third & 0x3f) << 6) | (fourth & 0x3f))
+        offset += 4
+        continue
       }
-      codePoints.push(
-        ((first & 0x07) << 18) | ((second & 0x3f) << 12) | ((third & 0x3f) << 6) | (fourth & 0x3f),
-      )
-      offset += 4
-      continue
+
+      return yield* Result.fail(jsonError('decode', 'invalid UTF-8 leading byte'))
     }
+    return yield* Result.try({
+      try: () => String.fromCodePoint(...codePoints),
+      catch: () => jsonError('decode', 'UTF-8 input contains too many code points'),
+    })
+  })
 
-    throw jsonError('decode', 'invalid UTF-8 leading byte')
-  }
-  return String.fromCodePoint(...codePoints)
-}
-
-const encodeUtf8 = (value: string): Uint8Array => {
-  const bytes: number[] = []
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)
-    if (codePoint === undefined) throw jsonError('encode', 'string contains an invalid Unicode scalar')
-    if (codePoint <= 0x7f) {
-      bytes.push(codePoint)
-    } else if (codePoint <= 0x7ff) {
-      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f))
-    } else if (codePoint <= 0xffff) {
-      bytes.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f))
-    } else {
-      bytes.push(
-        0xf0 | (codePoint >> 18),
-        0x80 | ((codePoint >> 12) & 0x3f),
-        0x80 | ((codePoint >> 6) & 0x3f),
-        0x80 | (codePoint & 0x3f),
-      )
+const encodeUtf8 = (value: string): Result.Result<Uint8Array, MinecraftJsonError> =>
+  Result.gen(function* () {
+    const bytes: number[] = []
+    for (const character of value) {
+      const codePoint = character.codePointAt(0)
+      if (codePoint === undefined) return yield* Result.fail(jsonError('encode', 'string contains an invalid Unicode scalar'))
+      if (codePoint <= 0x7f) {
+        bytes.push(codePoint)
+      } else if (codePoint <= 0x7ff) {
+        bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f))
+      } else if (codePoint <= 0xffff) {
+        bytes.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f))
+      } else {
+        bytes.push(0xf0 | (codePoint >> 18), 0x80 | ((codePoint >> 12) & 0x3f), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f))
+      }
     }
-  }
-  return Uint8Array.from(bytes)
-}
+    return yield* Result.try({
+      try: () => Uint8Array.from(bytes),
+      catch: () => jsonError('encode', 'UTF-8 output could not be allocated'),
+    })
+  })
 
-export const encodeMinecraftJson = (value: MinecraftJsonValue): Uint8Array => {
-  if (!isMinecraftJsonValue(value)) throw jsonError('encode', 'value is not a finite JSON value')
-  let text: string | undefined
-  try {
-    text = JSON.stringify(value)
-  } catch (error) {
-    throw jsonError('encode', error instanceof Error ? error.message : String(error))
-  }
-  if (text === undefined) throw jsonError('encode', 'value cannot be serialized as JSON')
-  return encodeUtf8(text)
-}
+export const encodeMinecraftJson = (value: MinecraftJsonValue): Result.Result<Uint8Array, MinecraftJsonError> =>
+  Result.gen(function* () {
+    const snapshot = yield* Result.try({
+      try: () => structuredClone(value),
+      catch: () => jsonError('encode', 'value could not be copied as JSON data'),
+    })
+    if (!isMinecraftJsonValue(snapshot)) return yield* Result.fail(jsonError('encode', 'value is not a finite JSON value'))
+    const text = yield* Result.try({
+      try: () => JSON.stringify(snapshot),
+      catch: (error) => jsonError('encode', error instanceof Error ? error.message : String(error)),
+    })
+    if (text === undefined) return yield* Result.fail(jsonError('encode', 'value cannot be serialized as JSON'))
+    return yield* encodeUtf8(text)
+  })
 
-export const decodeMinecraftJson = (bytes: Uint8Array): MinecraftJsonValue => {
-  if (!(bytes instanceof Uint8Array)) throw jsonError('decode', 'input must be a Uint8Array')
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(decodeUtf8(bytes))
-  } catch (error) {
-    if (error instanceof MinecraftJsonError) throw error
-    throw jsonError('decode', error instanceof Error ? error.message : String(error))
-  }
-  if (!isMinecraftJsonValue(parsed)) throw jsonError('decode', 'document is not a finite JSON value')
-  return parsed
-}
+export const decodeMinecraftJson = (bytes: Uint8Array): Result.Result<MinecraftJsonValue, MinecraftJsonError> =>
+  Result.gen(function* () {
+    if (!(bytes instanceof Uint8Array)) return yield* Result.fail(jsonError('decode', 'input must be a Uint8Array'))
+    const snapshot = yield* Result.try({
+      try: () => bytes.slice(),
+      catch: () => jsonError('decode', 'input could not be copied'),
+    })
+    const text = yield* decodeUtf8(snapshot)
+    const parsed = yield* Result.try({
+      try: () => JSON.parse(text),
+      catch: (error) => jsonError('decode', error instanceof Error ? error.message : String(error)),
+    })
+    if (!isMinecraftJsonValue(parsed)) return yield* Result.fail(jsonError('decode', 'document is not a finite JSON value'))
+    return parsed
+  })

@@ -1,3 +1,4 @@
+import { Result } from 'effect'
 import type { SaveEnvelope } from '../../src/domain/envelope.js'
 import { saveEnvelope } from '../../src/domain/envelope.js'
 import { sealSaveEnvelope } from '../../src/domain/integrity.js'
@@ -7,7 +8,7 @@ export const sealedTestEnvelope = (
   version: number,
   payload: unknown,
   extensions?: Readonly<Record<string, unknown>>,
-): SaveEnvelope => sealSaveEnvelope(saveEnvelope(format, version, payload), extensions)
+): SaveEnvelope => Result.getOrThrow(sealSaveEnvelope(saveEnvelope(format, version, payload), extensions))
 
 // Widens a value's static type to `T` with NO runtime transformation (no clone, no serialization) and
 // no type assertion: `Record<string, any>` indexing is `any` by construction, which is assignable

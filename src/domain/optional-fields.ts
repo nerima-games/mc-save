@@ -11,7 +11,7 @@
  * domain meaning. Each field a consumer swaps is a deliberate per-field
  * decision, not a blanket normalization.
  */
-import { Schema } from 'effect'
+import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === 'object' && value !== null
@@ -23,13 +23,30 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
  */
 export const restoreNullAsUndefined =
   (fields: ReadonlyArray<string>) =>
-  (value: unknown): unknown => {
-    if (!isRecord(value)) return value
-    const patch: Record<string, unknown> = {}
-    for (const field of fields) {
-      if (Object.hasOwn(value, field) && value[field] === null) patch[field] = undefined
+  (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
+    if (!isRecord(value)) return Result.succeed(value)
+    const captured = Result.try({
+      try: () => {
+        const keys = new Set(Object.keys(value))
+        for (const field of fields) {
+          if (!keys.has(field) && Object.getOwnPropertyDescriptor(value, field) !== undefined) keys.add(field)
+        }
+        return {
+          hasSymbolKeys: Object.getOwnPropertySymbols(value).length > 0,
+          output: Object.fromEntries([...keys].map((key) => [key, value[key]] as const)),
+        }
+      },
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(captured)) return Result.fail(captured.failure)
+    if (captured.success.hasSymbolKeys) {
+      return Result.fail(new SchemaIssue.InvalidValue({ message: 'Symbol-keyed fields are not supported' }, value))
     }
-    return Object.keys(patch).length === 0 ? value : { ...value, ...patch }
+    const output = captured.success.output
+    for (const field of fields) {
+      if (Object.hasOwn(output, field) && output[field] === null) output[field] = undefined
+    }
+    return Result.succeed(output)
   }
 
 /**
@@ -39,13 +56,30 @@ export const restoreNullAsUndefined =
  */
 export const encodeUndefinedAsNull =
   (fields: ReadonlyArray<string>) =>
-  (value: unknown): unknown => {
-    if (!isRecord(value)) return value
-    const patch: Record<string, unknown> = {}
-    for (const field of fields) {
-      if (Object.hasOwn(value, field) && value[field] === undefined) patch[field] = null
+  (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
+    if (!isRecord(value)) return Result.succeed(value)
+    const captured = Result.try({
+      try: () => {
+        const keys = new Set(Object.keys(value))
+        for (const field of fields) {
+          if (!keys.has(field) && Object.getOwnPropertyDescriptor(value, field) !== undefined) keys.add(field)
+        }
+        return {
+          hasSymbolKeys: Object.getOwnPropertySymbols(value).length > 0,
+          output: Object.fromEntries([...keys].map((key) => [key, value[key]] as const)),
+        }
+      },
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(captured)) return Result.fail(captured.failure)
+    if (captured.success.hasSymbolKeys) {
+      return Result.fail(new SchemaIssue.InvalidValue({ message: 'Symbol-keyed fields are not supported' }, value))
     }
-    return Object.keys(patch).length === 0 ? value : { ...value, ...patch }
+    const output = captured.success.output
+    for (const field of fields) {
+      if (Object.hasOwn(output, field) && output[field] === undefined) output[field] = null
+    }
+    return Result.succeed(output)
   }
 
 /**
@@ -54,12 +88,20 @@ export const encodeUndefinedAsNull =
  * `Schema.transform(Schema.Unknown, inner, { strict: false, decode, encode })`
  * shape a format author would otherwise hand-write per field.
  */
-export const undefinedFieldsAsNull = <A, I>(
-  inner: Schema.Schema<A, I>,
+export const undefinedFieldsAsNull = <A>(
+  inner: Schema.Codec<A, unknown>,
   fields: ReadonlyArray<string>,
-): Schema.Schema<A, unknown> =>
-  Schema.transform(Schema.Unknown, inner, {
-    strict: false,
-    decode: restoreNullAsUndefined(fields),
-    encode: encodeUndefinedAsNull(fields),
-  })
+): Schema.Codec<A, unknown> =>
+  Schema.decodeTo<Schema.Codec<A, unknown>, Schema.Unknown, never, never>(
+    inner,
+    SchemaTransformation.transformEffect({
+      decode: (value) => {
+        const decoded = restoreNullAsUndefined(fields)(value)
+        return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success)
+      },
+      encode: (value) => {
+        const encoded = encodeUndefinedAsNull(fields)(value)
+        return Result.isFailure(encoded) ? Effect.fail(encoded.failure) : Effect.succeed(encoded.success)
+      },
+    }),
+  )(Schema.Unknown)

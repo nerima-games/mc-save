@@ -1,10 +1,9 @@
 /** The IndexedDB-backed implementation of `StoragePort`. */
-import { Effect, Layer, Option, Scope } from 'effect'
+import { Effect, Layer, Option, Result, Scope } from 'effect'
 import type { SaveEnvelope } from './envelope.js'
 import { StorageError } from './errors.js'
 import {
   INSERTION_INDEX_NAME,
-  SAVE_STORE_NAME,
   type IndexedDbStorageOptions,
 } from './indexeddb-layout.js'
 import { asRecord, readEnvelope, readKeys, readSequence } from './indexeddb-records.js'
@@ -23,20 +22,14 @@ export {
 } from './indexeddb-layout.js'
 export type { IndexedDbStorageOptions } from './indexeddb-layout.js'
 
+const conflictError = (key: SaveKey): StorageError =>
+  new StorageError({ operation: 'indexeddb.commitBatch:conflict', key })
+
 const matchesExpected = (record: unknown, expected: Option.Option<SaveEnvelope>): boolean => {
   if (Option.isNone(expected)) return record === undefined
-  try {
-    const envelope = readEnvelope(record)
-    return envelope !== undefined && sameSaveEnvelope(envelope, expected.value)
-  } catch {
-    return false
-  }
-}
-
-const assertExpected = (key: SaveKey, record: unknown, expected: Option.Option<SaveEnvelope>): void => {
-  if (!matchesExpected(record, expected)) {
-    throw new StorageError({ operation: 'indexeddb.commitBatch:conflict', key })
-  }
+  if (record === undefined) return false
+  const envelope = readEnvelope(record)
+  return Result.isSuccess(envelope) && sameSaveEnvelope(envelope.success, expected.value)
 }
 
 const serviceFor = (database: IdbDatabase): StorageService => ({
@@ -46,35 +39,42 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
       'readonly',
       'indexeddb.get',
       key,
-      (store, deliver, onResult) => {
+      (store, deliver, onResult, fail) => {
         onResult(store.get(key), (record) => {
           if (record === undefined) {
             deliver(Option.none())
             return
           }
           const envelope = readEnvelope(record)
-          if (envelope === undefined) {
-            throw new TypeError(
-              `${SAVE_STORE_NAME} holds a record at "${key}" that this adapter did not write`,
-            )
+          if (Result.isFailure(envelope)) {
+            fail(envelope.failure)
+            return
           }
-          deliver(Option.some(envelope))
+          deliver(Option.some(envelope.success))
         })
       },
     ),
 
   put: (key, envelope) =>
-    runTransaction<void>(database, 'readwrite', 'indexeddb.put', key, (store, deliver, onResult) => {
+    runTransaction<void>(database, 'readwrite', 'indexeddb.put', key, (store, deliver, onResult, fail) => {
       onResult(store.get(key), (existing) => {
         const existingSeq = readSequence(existing, 'seq')
-        if (existingSeq !== undefined) {
-          store.put({ key, seq: existingSeq, envelope })
+        if (Result.isFailure(existingSeq)) {
+          fail(existingSeq.failure)
+          return
+        }
+        if (existingSeq.success !== undefined) {
+          store.put({ key, seq: existingSeq.success, envelope })
           deliver(undefined)
           return
         }
         onResult(store.index(INSERTION_INDEX_NAME).openCursor(null, 'prev'), (cursor) => {
           const highest = readSequence(asRecord(cursor)?.['value'], 'seq')
-          store.put({ key, seq: highest === undefined ? 0 : highest + 1, envelope })
+          if (Result.isFailure(highest)) {
+            fail(highest.failure)
+            return
+          }
+          store.put({ key, seq: highest.success === undefined ? 0 : highest.success + 1, envelope })
           deliver(undefined)
         })
       })
@@ -95,7 +95,7 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
           'readwrite',
           'indexeddb.commitBatch',
           undefined,
-          (store, deliver, onResult) => {
+          (store, deliver, onResult, fail) => {
             const apply = (index: number, nextSequence: number): void => {
               const mutation = mutations[index]
               if (mutation === undefined) {
@@ -103,32 +103,44 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
                 return
               }
               if (mutation._tag === 'Remove') {
-                if (mutation.expected === undefined) {
+                const expected = mutation.expected
+                if (expected === undefined) {
                   onResult(store.delete(mutation.key), () => apply(index + 1, nextSequence))
                   return
                 }
-                const expected = mutation.expected
                 onResult(store.get(mutation.key), (existing) => {
-                  assertExpected(mutation.key, existing, expected)
+                  if (!matchesExpected(existing, expected)) {
+                    fail(conflictError(mutation.key))
+                    return
+                  }
                   onResult(store.delete(mutation.key), () => apply(index + 1, nextSequence))
                 })
                 return
               }
+              const expected = mutation.expected
               onResult(store.get(mutation.key), (existing) => {
-                if (mutation.expected !== undefined) {
-                  assertExpected(mutation.key, existing, mutation.expected)
+                if (expected !== undefined && !matchesExpected(existing, expected)) {
+                  fail(conflictError(mutation.key))
+                  return
                 }
                 const existingSequence = readSequence(existing, 'seq')
-                const sequence = existingSequence ?? nextSequence
+                if (Result.isFailure(existingSequence)) {
+                  fail(existingSequence.failure)
+                  return
+                }
+                const sequence = existingSequence.success ?? nextSequence
                 onResult(store.put({ key: mutation.key, seq: sequence, envelope: mutation.envelope }), () =>
-                  apply(index + 1, existingSequence === undefined ? nextSequence + 1 : nextSequence),
+                  apply(index + 1, existingSequence.success === undefined ? nextSequence + 1 : nextSequence),
                 )
               })
             }
-
             onResult(store.index(INSERTION_INDEX_NAME).openCursor(null, 'prev'), (cursor) => {
               const highest = readSequence(asRecord(cursor)?.['value'], 'seq')
-              apply(0, highest === undefined ? 0 : highest + 1)
+              if (Result.isFailure(highest)) {
+                fail(highest.failure)
+                return
+              }
+              apply(0, highest.success === undefined ? 0 : highest.success + 1)
             })
           },
         ),
@@ -141,7 +153,7 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
           'readonly',
           'indexeddb.readBatch',
           undefined,
-          (store, deliver, onResult) => {
+          (store, deliver, onResult, fail) => {
             const results: Array<Option.Option<SaveEnvelope>> = []
             const read = (index: number): void => {
               const key = keys[index]
@@ -154,12 +166,11 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
                   results.push(Option.none())
                 } else {
                   const envelope = readEnvelope(record)
-                  if (envelope === undefined) {
-                    throw new TypeError(
-                      `${SAVE_STORE_NAME} holds a record at "${key}" that this adapter did not write`,
-                    )
+                  if (Result.isFailure(envelope)) {
+                    fail(envelope.failure)
+                    return
                   }
-                  results.push(Option.some(envelope))
+                  results.push(Option.some(envelope.success))
                 }
                 read(index + 1)
               })
@@ -173,9 +184,14 @@ const serviceFor = (database: IdbDatabase): StorageService => ({
     'readonly',
     'indexeddb.keys',
     undefined,
-    (store, deliver, onResult) => {
+    (store, deliver, onResult, fail) => {
       onResult(store.index(INSERTION_INDEX_NAME).getAllKeys(), (result) => {
-        deliver(readKeys(result))
+        const keys = readKeys(result)
+        if (Result.isFailure(keys)) {
+          fail(keys.failure)
+          return
+        }
+        deliver(keys.success)
       })
     },
   ),
@@ -196,4 +212,4 @@ export const makeIndexedDbStorage = (
 export const indexedDbStorageLayer = (
   options: IndexedDbStorageOptions,
 ): Layer.Layer<StoragePort, StorageError> =>
-  Layer.scoped(StoragePort, makeIndexedDbStorage(options))
+  Layer.effect(StoragePort, makeIndexedDbStorage(options))

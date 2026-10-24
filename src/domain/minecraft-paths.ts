@@ -1,5 +1,6 @@
-import { CHUNK_SIZE_XZ, ChunkAxis, chunkCoord } from '@nerima-games/mc-kernel'
-import type { ChunkCoord } from '@nerima-games/mc-kernel'
+import { ChunkAxis, chunkCoord, CHUNK_SIZE_XZ } from '@nerima-games/mc-kernel/domain/coordinates'
+import type { ChunkCoord } from '@nerima-games/mc-kernel/domain/coordinates'
+import { Result } from 'effect'
 import { ANVIL_EXTERNAL_FILE_EXTENSION, ANVIL_REGION_CHUNK_SIDE } from './anvil-region.js'
 
 export type MinecraftDimension = 'overworld' | 'the_nether' | 'the_end' | `${string}:${string}`
@@ -12,20 +13,25 @@ const MAP_ID = /^(?:0|[1-9]\d*)$/
 const isSafeDimensionIdentifierPart = (value: string): boolean =>
   DIMENSION_IDENTIFIER_PART.test(value) && value !== '.' && value !== '..'
 
-const pathSegment = (value: string, label: string): string => {
+const pathSegment = (value: string, label: string): Result.Result<string, TypeError> => {
   if (!PATH_SEGMENT.test(value) || value === '.' || value === '..') {
-    throw new TypeError(`${label} must be a single safe path segment`)
+    return Result.fail(new TypeError(`${label} must be a single safe path segment`))
   }
-  return value
+  return Result.succeed(value)
 }
 
-const relativePath = (value: string, label: string): string => {
-  const segments = value.split('/')
-  if (segments.length === 0 || segments.some((segment) => segment.length === 0)) {
-    throw new TypeError(`${label} must be a safe relative path`)
-  }
-  return segments.map((segment) => pathSegment(segment, label)).join('/')
-}
+const relativePath = (value: string, label: string): Result.Result<string, TypeError> =>
+  Result.gen(function* () {
+    const segments = value.split('/')
+    if (segments.length === 0 || segments.some((segment) => segment.length === 0)) {
+      return yield* Result.fail(new TypeError(`${label} must be a safe relative path`))
+    }
+    const validated: string[] = []
+    for (const segment of segments) {
+      validated.push(yield* pathSegment(segment, label))
+    }
+    return validated.join('/')
+  })
 
 const dimensionDirectoryForCustomIdentifier = (dimension: string): string | undefined => {
   const parts = dimension.split(':')
@@ -47,84 +53,85 @@ const dimensionDirectoryForCustomIdentifier = (dimension: string): string | unde
   return `dimensions/${namespace}/${path}`
 }
 
-const validatedChunkCoordinate = (coord: ChunkCoord): ChunkCoord => {
+const validatedChunkCoordinate = (coord: ChunkCoord): Result.Result<ChunkCoord, TypeError> => {
   if (coord === null || typeof coord !== 'object') {
-    throw new TypeError('chunk coordinate must be an object')
+    return Result.fail(new TypeError('chunk coordinate must be an object'))
   }
 
-  try {
-    return chunkCoord(coord.cx, coord.cz)
-  } catch {
-    throw new TypeError('chunk coordinate axes must be safe integers')
-  }
+  return Result.gen(function* () {
+    const axes = yield* Result.try({
+      try: () => ({ cx: coord.cx, cz: coord.cz }),
+      catch: () => new TypeError('chunk coordinate must be an object'),
+    })
+    const cx = yield* Result.mapError(
+      ChunkAxis.result(axes.cx),
+      () => new TypeError('chunk coordinate axes must be safe integers'),
+    )
+    const cz = yield* Result.mapError(
+      ChunkAxis.result(axes.cz),
+      () => new TypeError('chunk coordinate axes must be safe integers'),
+    )
+    return chunkCoord(cx, cz)
+  })
 }
 
-export const minecraftDimensionDirectory = (dimension: MinecraftDimension): string => {
+export const minecraftDimensionDirectory = (
+  dimension: string,
+): Result.Result<string, TypeError> => {
   switch (dimension) {
     case 'overworld':
-      return 'dimensions/minecraft/overworld'
+    case 'minecraft:overworld':
+      return Result.succeed('dimensions/minecraft/overworld')
     case 'the_nether':
-      return 'dimensions/minecraft/the_nether'
+    case 'minecraft:the_nether':
+      return Result.succeed('dimensions/minecraft/the_nether')
     case 'the_end':
-      return 'dimensions/minecraft/the_end'
-    default:
-      break
-  }
-
-  if (dimension === 'minecraft:overworld') {
-    return 'dimensions/minecraft/overworld'
-  }
-  if (dimension === 'minecraft:the_nether') {
-    return 'dimensions/minecraft/the_nether'
-  }
-  if (dimension === 'minecraft:the_end') {
-    return 'dimensions/minecraft/the_end'
-  }
-
-  const directory = dimensionDirectoryForCustomIdentifier(dimension)
-  if (directory !== undefined) {
-    return directory
-  }
-
-  throw new TypeError(`unsupported Minecraft dimension ${String(dimension)}`)
-}
-
-export const anvilRegionCoordinate = (coord: ChunkCoord): { readonly rx: ChunkAxis; readonly rz: ChunkAxis } => {
-  const validated = validatedChunkCoordinate(coord)
-  return {
-    rx: ChunkAxis(Math.floor(validated.cx / ANVIL_REGION_CHUNK_SIDE)),
-    rz: ChunkAxis(Math.floor(validated.cz / ANVIL_REGION_CHUNK_SIDE)),
+    case 'minecraft:the_end':
+      return Result.succeed('dimensions/minecraft/the_end')
+    default: {
+      const directory = dimensionDirectoryForCustomIdentifier(dimension)
+      return directory === undefined
+        ? Result.fail(new TypeError(`unsupported Minecraft dimension ${String(dimension)}`))
+        : Result.succeed(directory)
+    }
   }
 }
 
-export const anvilChunkLocalCoordinate = (coord: ChunkCoord): { readonly x: number; readonly z: number } => {
-  const validated = validatedChunkCoordinate(coord)
-  return {
+export const anvilRegionCoordinate = (
+  coord: ChunkCoord,
+): Result.Result<{ readonly rx: ChunkAxis; readonly rz: ChunkAxis }, TypeError> =>
+  Result.gen(function* () {
+    const validated = yield* validatedChunkCoordinate(coord)
+    // Flooring a validated safe integer by the region side stays within safe integers.
+    const rx = ChunkAxis(Math.floor(validated.cx / ANVIL_REGION_CHUNK_SIDE))
+    const rz = ChunkAxis(Math.floor(validated.cz / ANVIL_REGION_CHUNK_SIDE))
+    return { rx, rz }
+  })
+
+export const anvilChunkLocalCoordinate = (
+  coord: ChunkCoord,
+): Result.Result<{ readonly x: number; readonly z: number }, TypeError> =>
+  Result.map(validatedChunkCoordinate(coord), (validated) => ({
     x: ((validated.cx % ANVIL_REGION_CHUNK_SIDE) + ANVIL_REGION_CHUNK_SIDE) % ANVIL_REGION_CHUNK_SIDE,
     z: ((validated.cz % ANVIL_REGION_CHUNK_SIDE) + ANVIL_REGION_CHUNK_SIDE) % ANVIL_REGION_CHUNK_SIDE,
-  }
-}
+  }))
 
-export const anvilChunkIndex = (coord: ChunkCoord): number => {
-  const local = anvilChunkLocalCoordinate(coord)
-  return local.x + local.z * ANVIL_REGION_CHUNK_SIDE
-}
+export const anvilChunkIndex = (coord: ChunkCoord): Result.Result<number, TypeError> =>
+  Result.map(anvilChunkLocalCoordinate(coord), (local) => local.x + local.z * ANVIL_REGION_CHUNK_SIDE)
 
-export const anvilRegionFileName = (coord: ChunkCoord): string => {
-  const region = anvilRegionCoordinate(coord)
-  return `r.${String(region.rx)}.${String(region.rz)}.mca`
-}
+export const anvilRegionFileName = (coord: ChunkCoord): Result.Result<string, TypeError> =>
+  Result.map(anvilRegionCoordinate(coord), ({ rx, rz }) => `r.${String(rx)}.${String(rz)}.mca`)
 
-const minecraftRegionStorageDirectory = (storage: MinecraftRegionStorage): string => {
+const minecraftRegionStorageDirectory = (
+  storage: MinecraftRegionStorage,
+): Result.Result<string, TypeError> => {
   switch (storage) {
     case 'region':
-      return 'region'
     case 'entities':
-      return 'entities'
     case 'poi':
-      return 'poi'
+      return Result.succeed(storage)
     default:
-      throw new TypeError(`unsupported Minecraft region storage ${String(storage)}`)
+      return Result.fail(new TypeError(`unsupported Minecraft region storage ${String(storage)}`))
   }
 }
 
@@ -132,28 +139,32 @@ export const minecraftRegionFilePath = (
   dimension: MinecraftDimension,
   coord: ChunkCoord,
   storage: MinecraftRegionStorage = 'region',
-): string => {
-  const directory = minecraftDimensionDirectory(dimension)
-  const file = anvilRegionFileName(coord)
-  const storageDirectory = minecraftRegionStorageDirectory(storage)
-  return `${directory}/${storageDirectory}/${file}`
-}
+): Result.Result<string, TypeError> =>
+  Result.gen(function* () {
+    const directory = yield* minecraftDimensionDirectory(dimension)
+    const storageDirectory = yield* minecraftRegionStorageDirectory(storage)
+    const file = yield* anvilRegionFileName(coord)
+    return `${directory}/${storageDirectory}/${file}`
+  })
 
-export const minecraftExternalChunkFileName = (coord: ChunkCoord): string => {
-  const validated = validatedChunkCoordinate(coord)
-  return `c.${String(validated.cx)}.${String(validated.cz)}${ANVIL_EXTERNAL_FILE_EXTENSION}`
-}
+export const minecraftExternalChunkFileName = (
+  coord: ChunkCoord,
+): Result.Result<string, TypeError> =>
+  Result.map(validatedChunkCoordinate(coord), (validated) =>
+    `c.${String(validated.cx)}.${String(validated.cz)}${ANVIL_EXTERNAL_FILE_EXTENSION}`,
+  )
 
 export const minecraftExternalChunkFilePath = (
   dimension: MinecraftDimension,
   coord: ChunkCoord,
   storage: MinecraftRegionStorage = 'region',
-): string => {
-  const directory = minecraftDimensionDirectory(dimension)
-  const storageDirectory = minecraftRegionStorageDirectory(storage)
-  const file = minecraftExternalChunkFileName(coord)
-  return `${directory}/${storageDirectory}/${file}`
-}
+): Result.Result<string, TypeError> =>
+  Result.gen(function* () {
+    const directory = yield* minecraftDimensionDirectory(dimension)
+    const storageDirectory = yield* minecraftRegionStorageDirectory(storage)
+    const file = yield* minecraftExternalChunkFileName(coord)
+    return `${directory}/${storageDirectory}/${file}`
+  })
 
 export const minecraftLevelDataPath = (): string => 'level.dat'
 
@@ -163,61 +174,87 @@ export const minecraftIconPath = (): string => 'icon.png'
 
 export const minecraftSessionLockPath = (): string => 'session.lock'
 
-export const minecraftPlayerDataPath = (playerId: string): string => `players/data/${pathSegment(playerId, 'player id')}.dat`
+export const minecraftPlayerDataPath = (playerId: string): Result.Result<string, TypeError> =>
+  Result.map(pathSegment(playerId, 'player id'), (segment) => `players/data/${segment}.dat`)
 
-export const minecraftStatsPath = (playerId: string): string => `players/stats/${pathSegment(playerId, 'player id')}.json`
+export const minecraftStatsPath = (playerId: string): Result.Result<string, TypeError> =>
+  Result.map(pathSegment(playerId, 'player id'), (segment) => `players/stats/${segment}.json`)
 
-export const minecraftAdvancementsPath = (playerId: string): string =>
-  `players/advancements/${pathSegment(playerId, 'player id')}.json`
+export const minecraftAdvancementsPath = (playerId: string): Result.Result<string, TypeError> =>
+  Result.map(pathSegment(playerId, 'player id'), (segment) => `players/advancements/${segment}.json`)
 
 export const minecraftDataFilePath = (
   namespace: string,
   name: string,
   dimension?: MinecraftDimension,
-): string => {
-  const dataDirectory = dimension === undefined ? 'data' : `${minecraftDimensionDirectory(dimension)}/data`
-  return `${dataDirectory}/${pathSegment(namespace, 'data namespace')}/${relativePath(name, 'data file name')}`
-}
+): Result.Result<string, TypeError> =>
+  Result.gen(function* () {
+    const dataDirectory =
+      dimension === undefined
+        ? 'data'
+        : `${yield* minecraftDimensionDirectory(dimension)}/data`
+    const validatedNamespace = yield* pathSegment(namespace, 'data namespace')
+    const validatedName = yield* relativePath(name, 'data file name')
+    return `${dataDirectory}/${validatedNamespace}/${validatedName}`
+  })
 
-export const minecraftCommandStoragePath = (namespace: string, dimension?: MinecraftDimension): string =>
-  minecraftDataFilePath(namespace, 'command_storage.dat', dimension)
+export const minecraftCommandStoragePath = (
+  namespace: string,
+  dimension?: MinecraftDimension,
+): Result.Result<string, TypeError> => minecraftDataFilePath(namespace, 'command_storage.dat', dimension)
 
-export const minecraftRaidsPath = (): string => minecraftDataFilePath('minecraft', 'raids.dat')
+export const minecraftRaidsPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'raids.dat')
 
-export const minecraftScoreboardPath = (): string => minecraftDataFilePath('minecraft', 'scoreboard.dat')
+export const minecraftScoreboardPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'scoreboard.dat')
 
-export const minecraftWorldBorderPath = (): string => minecraftDataFilePath('minecraft', 'world_border.dat')
+export const minecraftWorldBorderPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'world_border.dat')
 
-export const minecraftEnderDragonFightPath = (): string =>
+export const minecraftEnderDragonFightPath = (): Result.Result<string, TypeError> =>
   minecraftDataFilePath('minecraft', 'ender_dragon_fight.dat', 'the_end')
 
-export const minecraftWanderingTraderPath = (): string => minecraftDataFilePath('minecraft', 'wandering_trader.dat')
+export const minecraftWanderingTraderPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'wandering_trader.dat')
 
-export const minecraftCustomBossEventsPath = (): string =>
+export const minecraftCustomBossEventsPath = (): Result.Result<string, TypeError> =>
   minecraftDataFilePath('minecraft', 'custom_boss_events.dat')
 
-export const minecraftWeatherPath = (): string => minecraftDataFilePath('minecraft', 'weather.dat')
+export const minecraftWeatherPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'weather.dat')
 
-export const minecraftScheduledEventsPath = (): string => minecraftDataFilePath('minecraft', 'scheduled_events.dat')
+export const minecraftScheduledEventsPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'scheduled_events.dat')
 
-export const minecraftGameRulesPath = (): string => minecraftDataFilePath('minecraft', 'game_rules.dat')
+export const minecraftGameRulesPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'game_rules.dat')
 
-export const minecraftWorldGenSettingsPath = (): string => minecraftDataFilePath('minecraft', 'world_gen_settings.dat')
+export const minecraftWorldGenSettingsPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'world_gen_settings.dat')
 
-export const minecraftWorldClocksPath = (): string => minecraftDataFilePath('minecraft', 'world_clocks.dat')
+export const minecraftWorldClocksPath = (): Result.Result<string, TypeError> =>
+  minecraftDataFilePath('minecraft', 'world_clocks.dat')
 
-export const minecraftWorldClockPath = (namespace: string, id: string): string =>
-  `data/${pathSegment(namespace, 'world clock namespace')}/world_clock/${relativePath(id, 'world clock id')}.json`
+export const minecraftWorldClockPath = (
+  namespace: string,
+  id: string,
+): Result.Result<string, TypeError> =>
+  Result.gen(function* () {
+    const validatedNamespace = yield* pathSegment(namespace, 'world clock namespace')
+    const validatedId = yield* relativePath(id, 'world clock id')
+    return `data/${validatedNamespace}/world_clock/${validatedId}.json`
+  })
 
-export const minecraftMapFilePath = (mapId: number | string): string => {
+export const minecraftMapFilePath = (mapId: number | string): Result.Result<string, TypeError> => {
   const name = typeof mapId === 'number' ? String(mapId) : mapId
   if (
     (typeof mapId === 'number' && (!Number.isSafeInteger(mapId) || mapId < 0)) ||
     (typeof mapId === 'string' && !MAP_ID.test(mapId))
   ) {
-    throw new TypeError('map id must be a non-negative safe integer')
+    return Result.fail(new TypeError('map id must be a non-negative safe integer'))
   }
-  return `data/minecraft/maps/${name}.dat`
+  return Result.succeed(`data/minecraft/maps/${name}.dat`)
 }
 
 export const minecraftLastIdPath = (): string => 'data/minecraft/last_id.dat'
@@ -226,7 +263,14 @@ export const minecraftChunkTicketsPath = (): string => 'data/minecraft/chunk_tic
 
 export const minecraftWorldResourcePackPath = (): string => 'resourcepacks/resources.zip'
 
-export const minecraftStructurePath = (namespace: string, structure: string): string =>
-  `generated/${pathSegment(namespace, 'structure namespace')}/structure/${relativePath(structure, 'structure name')}.nbt`
+export const minecraftStructurePath = (
+  namespace: string,
+  structure: string,
+): Result.Result<string, TypeError> =>
+  Result.gen(function* () {
+    const validatedNamespace = yield* pathSegment(namespace, 'structure namespace')
+    const validatedName = yield* relativePath(structure, 'structure name')
+    return `generated/${validatedNamespace}/structure/${validatedName}.nbt`
+  })
 
 export const ANVIL_REGION_BLOCK_SIDE: number = CHUNK_SIZE_XZ * ANVIL_REGION_CHUNK_SIDE

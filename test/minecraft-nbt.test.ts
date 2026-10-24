@@ -1,28 +1,51 @@
 /* oxlint-disable no-bitwise -- test fixtures construct exact big-endian NBT bytes. */
 
-import { describe, expect, it } from 'vitest'
+import { Result } from 'effect'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_NBT_CODEC_OPTIONS,
   NBT_TAG_IDS,
   NbtFormatError,
-  decodeNbt,
-  encodeNbt,
-  nbtByte,
-  nbtByteArray,
-  nbtCompound,
-  nbtDocument,
-  nbtDouble,
+  decodeNbt as decodeNbtResult,
+  encodeNbt as encodeNbtResult,
+  nbtByte as nbtByteResult,
+  nbtByteArray as nbtByteArrayResult,
+  nbtCompound as nbtCompoundResult,
+  nbtDocument as nbtDocumentResult,
+  nbtDouble as nbtDoubleResult,
   nbtEnd,
-  nbtFloat,
-  nbtInt,
-  nbtIntArray,
-  nbtList,
-  nbtLong,
-  nbtLongArray,
-  nbtShort,
-  nbtString,
+  nbtFloat as nbtFloatResult,
+  nbtInt as nbtIntResult,
+  nbtIntArray as nbtIntArrayResult,
+  nbtList as nbtListResult,
+  nbtLong as nbtLongResult,
+  nbtLongArray as nbtLongArrayResult,
+  nbtShort as nbtShortResult,
+  nbtString as nbtStringResult,
   isMinecraftNbtDocument,
 } from '../src/domain/minecraft-nbt.js'
+import { assertLong, tagId } from '../src/domain/minecraft-nbt-codec-support.js'
+import { resolveNbtCodecOptions, type ResolvedNbtCodecOptions } from '../src/domain/minecraft-nbt-codec-options.js'
+import { decodeNbtBytes } from '../src/domain/minecraft-nbt-decoding.js'
+import { encodeNbtDocument } from '../src/domain/minecraft-nbt-encoding.js'
+import { isMinecraftNbtTag } from '../src/domain/minecraft-nbt-validation.js'
+
+const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+const decodeNbt = (...args: Parameters<typeof decodeNbtResult>) => unwrapResult(decodeNbtResult(...args))
+const encodeNbt = (...args: Parameters<typeof encodeNbtResult>) => unwrapResult(encodeNbtResult(...args))
+const nbtByte = (...args: Parameters<typeof nbtByteResult>) => unwrapResult(nbtByteResult(...args))
+const nbtByteArray = (...args: Parameters<typeof nbtByteArrayResult>) => unwrapResult(nbtByteArrayResult(...args))
+const nbtCompound = (...args: Parameters<typeof nbtCompoundResult>) => unwrapResult(nbtCompoundResult(...args))
+const nbtDocument = (...args: Parameters<typeof nbtDocumentResult>) => unwrapResult(nbtDocumentResult(...args))
+const nbtDouble = (...args: Parameters<typeof nbtDoubleResult>) => unwrapResult(nbtDoubleResult(...args))
+const nbtFloat = (...args: Parameters<typeof nbtFloatResult>) => unwrapResult(nbtFloatResult(...args))
+const nbtInt = (...args: Parameters<typeof nbtIntResult>) => unwrapResult(nbtIntResult(...args))
+const nbtIntArray = (...args: Parameters<typeof nbtIntArrayResult>) => unwrapResult(nbtIntArrayResult(...args))
+const nbtList = (...args: Parameters<typeof nbtListResult>) => unwrapResult(nbtListResult(...args))
+const nbtLong = (...args: Parameters<typeof nbtLongResult>) => unwrapResult(nbtLongResult(...args))
+const nbtLongArray = (...args: Parameters<typeof nbtLongArrayResult>) => unwrapResult(nbtLongArrayResult(...args))
+const nbtShort = (...args: Parameters<typeof nbtShortResult>) => unwrapResult(nbtShortResult(...args))
+const nbtString = (...args: Parameters<typeof nbtStringResult>) => unwrapResult(nbtStringResult(...args))
 
 const expectNbtError = (operation: () => unknown): void => {
   expect(operation).toThrowError(NbtFormatError)
@@ -35,6 +58,20 @@ const expectNbtError = (operation: () => unknown): void => {
  * parameter type with no type assertion at the call site.
  */
 const asUnchecked = (value: unknown): any => value
+
+const invalidStringIterator = (): StringIterator<string> => {
+  let done = false
+  const iterator: StringIterator<string> = {
+    next: (): IteratorResult<string> => {
+      if (done) return { done: true, value: undefined }
+      done = true
+      return { done: false, value: '' }
+    },
+    [Symbol.iterator]: () => iterator,
+    [Symbol.dispose]: (): void => undefined,
+  }
+  return iterator
+}
 
 const rootWithPayload = (payload: ReadonlyArray<number>): Uint8Array =>
   Uint8Array.from([NBT_TAG_IDS.compound, 0, 0, ...payload])
@@ -101,6 +138,52 @@ describe('Minecraft NBT factories and codec', () => {
     expect(longValue.value).toStrictEqual([1n, 2n])
   })
 
+  it('rejects unreadable NBT tag discriminants without throwing', () => {
+    expect(isMinecraftNbtTag(null)).toBe(false)
+    const unreadableType = Object.defineProperty({}, 'type', {
+      enumerable: true,
+      get: () => {
+        throw new Error('unreadable tag type')
+      },
+    })
+    expect(isMinecraftNbtTag(unreadableType)).toBe(false)
+    expect(isMinecraftNbtTag(nbtEnd())).toBe(true)
+  })
+
+  it('maps invalid modified UTF-8 from tag and document constructors', () => {
+    const iteratorSpy = vi.spyOn(String.prototype, Symbol.iterator).mockImplementation(invalidStringIterator)
+    try {
+      expectNbtError(() => nbtString('invalid'))
+      expectNbtError(() => nbtCompound([['invalid', nbtByte(1)]]))
+      expectNbtError(() => nbtDocument('invalid', nbtCompound([])))
+    } finally {
+      iteratorSpy.mockRestore()
+    }
+  })
+
+  it('maps invalid modified UTF-8 from the NBT writer after document validation', () => {
+    const resolved = unwrapResult(resolveNbtCodecOptions(DEFAULT_NBT_CODEC_OPTIONS))
+    let restoreIterator: () => void = () => undefined
+    const options: ResolvedNbtCodecOptions = {
+      ...resolved,
+      get maxBytes() {
+        const iteratorSpy = vi.spyOn(String.prototype, Symbol.iterator).mockImplementation(invalidStringIterator)
+        restoreIterator = () => iteratorSpy.mockRestore()
+        return resolved.maxBytes
+      },
+    }
+    const document = nbtDocument('', nbtCompound([]))
+    const encoded = (() => {
+      try {
+        return encodeNbtDocument(document, options)
+      } finally {
+        restoreIterator()
+      }
+    })()
+    expect(Result.isFailure(encoded)).toBe(true)
+    expect(() => Result.getOrThrow(encoded)).toThrowError(NbtFormatError)
+  })
+
   it('validates factory ranges, tag relationships, names, and root shape', () => {
     expect(() => nbtByte(-129)).toThrowError(NbtFormatError)
     expect(() => nbtByte(128)).toThrowError(NbtFormatError)
@@ -111,9 +194,15 @@ describe('Minecraft NBT factories and codec', () => {
     expect(() => nbtLong(asUnchecked(1))).toThrowError(NbtFormatError)
     expect(() => nbtLong(-9223372036854775809n)).toThrowError(NbtFormatError)
     expect(() => nbtLong(9223372036854775808n)).toThrowError(NbtFormatError)
+    // @ts-expect-error -- unknown tag ids are rejected at runtime
+    expect(Result.isFailure(tagId('unknown'))).toBe(true)
+    expect(Result.isFailure(assertLong(0x8000000000000000n))).toBe(true)
     expect(() => nbtFloat(asUnchecked('1'))).toThrowError(NbtFormatError)
     expect(() => nbtDouble(asUnchecked('1'))).toThrowError(NbtFormatError)
     expect(() => nbtByteArray(asUnchecked([1]))).toThrowError(NbtFormatError)
+    const unreadableByteArray = new Uint8Array([1])
+    Object.defineProperty(unreadableByteArray, 'slice', { value: () => { throw new Error('byte array copy failed') } })
+    expect(() => nbtByteArray(unreadableByteArray)).toThrowError(NbtFormatError)
     expect(() => nbtString(asUnchecked(1))).toThrowError(NbtFormatError)
     expect(() => nbtString('a'.repeat(65536))).toThrowError(NbtFormatError)
     expect(() => nbtList(asUnchecked(null), [])).toThrowError(NbtFormatError)
@@ -125,12 +214,15 @@ describe('Minecraft NBT factories and codec', () => {
     expect(() => nbtList('byte', [nbtString('wrong')])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['duplicate', nbtByte(1)], ['duplicate', nbtByte(2)]])).toThrowError(NbtFormatError)
     expect(() => nbtCompound(asUnchecked([[1, nbtByte(1)]]))).toThrowError(NbtFormatError)
+    expect(() => nbtCompound(asUnchecked([['missing value']]))).toThrowError(NbtFormatError)
     expect(() => nbtCompound(asUnchecked(null))).toThrowError(NbtFormatError)
     expect(() => nbtCompound([asUnchecked(null)])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['value', asUnchecked(null)]])).toThrowError(NbtFormatError)
+    expect(() => nbtCompound([['unknown', asUnchecked({ type: 'unknown' })]])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['end', nbtEnd()]])).toThrowError(NbtFormatError)
     expect(() => nbtCompound([['a'.repeat(65536), nbtByte(1)]])).toThrowError(NbtFormatError)
     expect(() => nbtIntArray([1.5])).toThrowError(NbtFormatError)
+    expect(() => nbtIntArray(asUnchecked([1, 'bad']))).toThrowError(NbtFormatError)
     expect(() => nbtIntArray(asUnchecked(null))).toThrowError(NbtFormatError)
     expect(() => nbtLongArray([asUnchecked(1)])).toThrowError(NbtFormatError)
     expect(() => nbtLongArray(asUnchecked(null))).toThrowError(NbtFormatError)
@@ -219,11 +311,13 @@ describe('Minecraft NBT factories and codec', () => {
     )
   })
 
-  it('rejects a SharedArrayBuffer-backed input, which has no ArrayBuffer for DataView', () => {
-    // Still `instanceof Uint8Array`, so it passes decodeNbt's own guard, but its
-    // `.buffer` is a SharedArrayBuffer, which DataView's constructor rejects — the
-    // reader's own guard against that throws a plain TypeError, not NbtFormatError.
-    expect(() => decodeNbt(new Uint8Array(new SharedArrayBuffer(0)))).toThrow(TypeError)
+  it('decodes a SharedArrayBuffer-backed input after copying it', () => {
+    const encoded = encodeNbt(nbtDocument('', nbtCompound([])))
+    const shared = new Uint8Array(new SharedArrayBuffer(encoded.byteLength))
+    shared.set(encoded)
+
+    expect(Result.isFailure(decodeNbtResult(shared))).toBe(false)
+    expect(decodeNbt(shared)).toStrictEqual(nbtDocument('', nbtCompound([])))
   })
 
   it('rejects malformed root structure, lengths, ids, duplicates, and trailing bytes', () => {
@@ -304,9 +398,11 @@ describe('Minecraft NBT factories and codec', () => {
       },
       value: 1,
     }
-    expectNbtError(() =>
-      encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['unstable', unstableType]] } })),
+    const encodedSnapshot = encodeNbt(
+      asUnchecked({ name: '', root: { type: 'compound', entries: [['unstable', unstableType]] } }),
     )
+    expect(encodedSnapshot.byteLength).toBeGreaterThan(0)
+    expect(typeReads).toBe(1)
     expectNbtError(() =>
       encodeNbt(asUnchecked({ name: '', root: { type: 'compound', entries: [['unknown', { type: 'unknown' }]] } })),
     )
@@ -362,4 +458,105 @@ describe('Minecraft NBT factories and codec', () => {
 
     expect(decodeNbt(encodeNbt(original))).toStrictEqual(original)
   })
+
+  it('maps unreadable factory arrays and tag getters to NbtFormatError', () => {
+    const unreadableEntries = new Proxy([], {
+      get: (target, key, receiver) => {
+        if (key === 'length') throw new Error('array length failed')
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    expectNbtError(() => nbtCompound(unreadableEntries))
+    expectNbtError(() => nbtList('byte', unreadableEntries))
+
+    const unreadableTag = new Proxy({ type: 'byte', value: 1 }, {
+      get: (target, key, receiver) => {
+        if (key === 'type') throw new Error('tag type failed')
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    expectNbtError(() => nbtDocument('', asUnchecked(unreadableTag)))
+    expectNbtError(() => nbtCompound([['value', asUnchecked(unreadableTag)]]))
+  })
+
+
+  it('maps NBT input and output byte-copy failures to format errors', () => {
+    const originalSlice = Uint8Array.prototype.slice
+    const byteArrayDocument = nbtDocument('', nbtCompound([['bytes', nbtByteArray(new Uint8Array([0x7f]))]]))
+    const byteCopySpy = vi.spyOn(Uint8Array.prototype, 'slice').mockImplementation(function (
+      this: Uint8Array,
+      start?: number,
+      end?: number,
+    ) {
+      if (this.byteLength === 1 && this[0] === 0x7f) throw new Error('byte array copy failed')
+      return originalSlice.call(this, start, end)
+    })
+    try {
+      expectNbtError(() => encodeNbt(byteArrayDocument))
+    } finally {
+      byteCopySpy.mockRestore()
+    }
+
+    const outputCopySpy = vi.spyOn(Uint8Array.prototype, 'slice').mockImplementation(function (
+      this: Uint8Array,
+      start?: number,
+      end?: number,
+    ) {
+      if (this.byteLength === 1024) throw new Error('encoded output copy failed')
+      return originalSlice.call(this, start, end)
+    })
+    try {
+      expectNbtError(() => encodeNbt(nbtDocument('', nbtCompound([]))))
+    } finally {
+      outputCopySpy.mockRestore()
+    }
+
+    const encodedEmpty = new Uint8Array(encodeNbt(nbtDocument('', nbtCompound([]))))
+    const readCopySpy = vi.spyOn(Uint8Array.prototype, 'slice').mockImplementation(function (
+      this: Uint8Array,
+      start?: number,
+      end?: number,
+    ) {
+      if (start !== undefined) throw new Error('decoded byte sequence copy failed')
+      return originalSlice.call(this, start, end)
+    })
+    try {
+      expectNbtError(() => decodeNbt(encodedEmpty))
+    } finally {
+      readCopySpy.mockRestore()
+    }
+
+    const options = unwrapResult(resolveNbtCodecOptions(undefined))
+    const outOfBoundsView = new Uint8Array([NBT_TAG_IDS.compound])
+    Object.defineProperty(outOfBoundsView, 'byteLength', { value: 2 })
+    expect(Result.isFailure(decodeNbtBytes(outOfBoundsView, options))).toBe(true)
+  })
+
+  it('maps unreadable codec options, uncopyable snapshots, and shared-buffer input to NbtFormatError', () => {
+    const document = nbtDocument('', nbtCompound([]))
+    const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable NBT options') } })
+    expectNbtError(() => encodeNbt(document, unreadableOptions))
+    expectNbtError(() => decodeNbt(new Uint8Array([10, 0, 0, 0]), unreadableOptions))
+
+    const uncloneableDocument = new Proxy(document, {})
+    expectNbtError(() => encodeNbt(asUnchecked(uncloneableDocument)))
+
+    const uncopiableBytes = new Uint8Array(encodeNbt(document))
+    Object.defineProperty(uncopiableBytes, 'slice', {
+      value: () => {
+        throw new Error('input copy failed')
+      },
+    })
+    expectNbtError(() => decodeNbt(uncopiableBytes))
+
+    const sharedBytes = new Uint8Array(new SharedArrayBuffer(1))
+    expectNbtError(() => decodeNbt(sharedBytes))
+
+    const validBytes = new Uint8Array(encodeNbt(document))
+    const sharedSnapshot = new Uint8Array(new SharedArrayBuffer(validBytes.byteLength))
+    sharedSnapshot.set(validBytes)
+    Object.defineProperty(validBytes, 'slice', { value: () => sharedSnapshot })
+    expectNbtError(() => decodeNbt(validBytes))
+  })
+
 })

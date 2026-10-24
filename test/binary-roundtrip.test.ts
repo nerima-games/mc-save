@@ -37,8 +37,8 @@
  */
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Option, Schema } from 'effect'
-import { defineFormat, encodeSave } from '../src/domain/format.js'
+import { Effect, Option, Result, Schema } from 'effect'
+import { defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
 import { loadFrom, saveTo } from '../src/domain/persistence.js'
 import { InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { fixedUint8Array } from '../src/domain/binary.js'
@@ -54,8 +54,8 @@ import { sealedTestEnvelope } from './support/save-envelope.js'
  * that has an optional field and never proves it survives a round trip has not
  * tested the mechanism the whole save system rested on.
  *
- * `fixedUint8Array` retains the WIRE shape of `Schema.Uint8Array` while making
- * the dimension invariant executable. A save file that can only be read by a
+ * `fixedUint8Array` preserves the numeric-array wire shape while making the
+ * dimension invariant executable. A save file that can only be read by a
  * JavaScript runtime is the reference's mistake, not a constraint.
  */
 const ChunkSchema = Schema.Struct({
@@ -65,6 +65,11 @@ const ChunkSchema = Schema.Struct({
 
 type Chunk = Schema.Schema.Type<typeof ChunkSchema>
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const ChunkFormat = defineFormat({
   name: 'mc-save/test/chunk',
   version: 1,
@@ -101,16 +106,16 @@ describe('a chunk across the storage medium', () => {
 
       yield* storage.put(CHUNK_KEY, sealedTestEnvelope(ChunkFormat.name, ChunkFormat.version, { blocks: [1, 2, 3] }))
 
-      const loaded = yield* Effect.either(loadFrom(ChunkFormat, CHUNK_KEY))
+      const loaded = yield* Effect.result(loadFrom(ChunkFormat, CHUNK_KEY))
 
-      expect(loaded).toMatchObject({
-        _tag: 'Left',
-        left: {
+      expect(Result.isFailure(loaded)).toBe(true)
+      if (Result.isFailure(loaded)) {
+        expect(loaded.failure).toMatchObject({
           _tag: 'SaveDecodeError',
           format: ChunkFormat.name,
           version: ChunkFormat.version,
-        },
-      })
+        })
+      }
     }).pipe(Effect.provide(storageLayer)),
   )
 
@@ -205,9 +210,10 @@ describe('a chunk across the storage medium', () => {
 describe('fixedUint8Array', () => {
   effect('rejects invalid lengths before a format can ship', () =>
     Effect.sync(() => {
-      expect(() => fixedUint8Array(-1)).toThrow(RangeError)
-      expect(() => fixedUint8Array(1.5)).toThrow(RangeError)
-      expect(() => fixedUint8Array(Number.POSITIVE_INFINITY)).toThrow(RangeError)
+      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(-1))([]))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(1.5))([0]))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(Number.POSITIVE_INFINITY))([0]))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(1))([256]))).toBe(true)
     }),
   )
 })

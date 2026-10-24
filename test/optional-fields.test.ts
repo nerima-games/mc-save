@@ -1,7 +1,7 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Schema } from 'effect'
-import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
+import { Effect, Result, Schema } from 'effect'
+import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
 import {
   encodeUndefinedAsNull,
   restoreNullAsUndefined,
@@ -14,6 +14,11 @@ type Widget = {
   readonly tags: ReadonlyArray<string>
 }
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const WidgetSchema = undefinedFieldsAsNull(
   Schema.Struct({
     id: Schema.String,
@@ -30,6 +35,8 @@ const WIDGET_FORMAT = defineFormat({
 })
 
 describe('undefinedFieldsAsNull', () => {
+  const OptionalUnknownSchema = undefinedFieldsAsNull(Schema.Unknown, ['note'])
+
   effect('round-trips a present undefined field through the real integrity path', () =>
     Effect.gen(function* () {
       // Without the swap this file demonstrates, `encodeSave` would fail here:
@@ -56,10 +63,19 @@ describe('undefinedFieldsAsNull', () => {
       expect(restored).toStrictEqual(original)
     }),
   )
+
+  effect('surfaces optional-field transformation failures through both schema directions', () =>
+    Effect.sync(() => {
+      const value = { note: undefined, [Symbol('extra')]: true }
+
+      expect(Result.isFailure(Schema.decodeUnknownResult(OptionalUnknownSchema)(value))).toBe(true)
+      expect(Result.isFailure(Schema.encodeUnknownResult(OptionalUnknownSchema)(value))).toBe(true)
+    }),
+  )
 })
 
 describe('restoreNullAsUndefined', () => {
-  const restore = restoreNullAsUndefined(['note'])
+  const restore = (value: unknown) => Result.getOrThrow(restoreNullAsUndefined(['note'])(value))
 
   effect('leaves a non-record value untouched', () =>
     Effect.sync(() => {
@@ -89,10 +105,40 @@ describe('restoreNullAsUndefined', () => {
       expect(restore({ id: 'a', note: 'hi' })).toStrictEqual({ id: 'a', note: 'hi' })
     }),
   )
+
+  effect('restores a non-enumerable own optional field', () =>
+    Effect.sync(() => {
+      const value = { id: 'a' }
+      Object.defineProperty(value, 'note', { value: null, enumerable: false })
+
+      expect(restore(value)).toStrictEqual({ id: 'a', note: undefined })
+    }),
+  )
+
+  effect('rejects symbol-keyed input', () =>
+    Effect.sync(() => {
+      const value = { id: 'a', [Symbol('extra')]: true }
+
+      expect(Result.isFailure(restoreNullAsUndefined(['note'])(value))).toBe(true)
+    }),
+  )
+
+  effect('returns a typed failure when an input getter throws', () =>
+    Effect.sync(() => {
+      const value = Object.defineProperty({ id: 'a' }, 'note', {
+        enumerable: true,
+        get: () => {
+          throw new Error('unreadable optional field')
+        },
+      })
+
+      expect(Result.isFailure(restoreNullAsUndefined(['note'])(value))).toBe(true)
+    }),
+  )
 })
 
 describe('encodeUndefinedAsNull', () => {
-  const encode = encodeUndefinedAsNull(['note'])
+  const encode = (value: unknown) => Result.getOrThrow(encodeUndefinedAsNull(['note'])(value))
 
   effect('leaves a non-record value untouched', () =>
     Effect.sync(() => {
@@ -120,6 +166,36 @@ describe('encodeUndefinedAsNull', () => {
   effect('leaves a defined value at the named field untouched', () =>
     Effect.sync(() => {
       expect(encode({ id: 'a', note: 'hi' })).toStrictEqual({ id: 'a', note: 'hi' })
+    }),
+  )
+
+  effect('encodes a non-enumerable own optional field', () =>
+    Effect.sync(() => {
+      const value = { id: 'a' }
+      Object.defineProperty(value, 'note', { value: undefined, enumerable: false })
+
+      expect(encode(value)).toStrictEqual({ id: 'a', note: null })
+    }),
+  )
+
+  effect('rejects symbol-keyed input', () =>
+    Effect.sync(() => {
+      const value = { id: 'a', [Symbol('extra')]: true }
+
+      expect(Result.isFailure(encodeUndefinedAsNull(['note'])(value))).toBe(true)
+    }),
+  )
+
+  effect('returns a typed failure when an input getter throws', () =>
+    Effect.sync(() => {
+      const value = Object.defineProperty({ id: 'a' }, 'note', {
+        enumerable: true,
+        get: () => {
+          throw new Error('unreadable optional field')
+        },
+      })
+
+      expect(Result.isFailure(encodeUndefinedAsNull(['note'])(value))).toBe(true)
     }),
   )
 })

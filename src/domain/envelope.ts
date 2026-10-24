@@ -47,55 +47,47 @@ export type SaveEnvelope = {
 
 export type SaveEnvelopeDraft = Omit<SaveEnvelope, 'integrity'>
 
-const safeVersionSchema = Schema.Number.pipe(
-  Schema.greaterThanOrEqualTo(FIRST_VERSION),
-  Schema.filter((value): value is number => Number.isSafeInteger(value), {
-    message: () => 'Save envelope version must be a safe integer',
-  }),
+const safeVersionSchema: Schema.Codec<number, number, never, never> = Schema.Number.check(
+  Schema.makeFilter<number>((value) =>
+    Number.isSafeInteger(value) && value >= FIRST_VERSION
+      ? undefined
+      : 'Save envelope version must be a positive safe integer',
+  ),
 )
 
-const safeByteLengthSchema = Schema.Number.pipe(
-  Schema.greaterThanOrEqualTo(0),
-  Schema.filter((value): value is number => Number.isSafeInteger(value), {
-    message: () => 'Save integrity byte length must be a safe integer',
-  }),
+const safeByteLengthSchema: Schema.Codec<number, number, never, never> = Schema.Number.check(
+  Schema.makeFilter<number>((value) =>
+    Number.isSafeInteger(value) && value >= 0
+      ? undefined
+      : 'Save integrity byte length must be a non-negative safe integer',
+  ),
 )
 
-export const SaveEnvelopeSchema: Schema.Schema<SaveEnvelope> = Schema.Struct({
-  format: Schema.String.pipe(
-    Schema.minLength(1),
-    Schema.filter((value): value is string => value.trim().length > 0, {
-      message: () => 'Save envelope format must be a non-blank string',
-    }),
+export const SaveEnvelopeSchema: Schema.Codec<SaveEnvelope, unknown, never, never> = Schema.Struct({
+  format: Schema.String.check(
+    Schema.makeFilter<string>((value) => value.trim().length > 0 ? undefined : 'Save envelope format must be a non-blank string'),
   ),
   version: safeVersionSchema,
-  payload: Schema.Unknown.pipe(
-    Schema.filter((value): value is unknown => value !== undefined, {
-      message: () => 'Save envelope payload must be present',
-    }),
+  payload: Schema.Unknown.check(
+    Schema.makeFilter<unknown>((value) => value !== undefined ? undefined : 'Save envelope payload must be present'),
   ),
   integrity: Schema.Struct({
     algorithm: Schema.Literal('fnv1a32'),
     byteLength: safeByteLengthSchema,
-    checksum: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{8}$/u)),
+    checksum: Schema.String.check(Schema.makeFilter<string>((value) => /^[0-9a-f]{8}$/u.test(value) ? undefined : 'Save integrity checksum must be eight lowercase hexadecimal characters')),
   }),
-  extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  extensions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 })
 
-export const SaveEnvelopeDraftSchema: Schema.Schema<SaveEnvelopeDraft> = Schema.Struct({
-  format: Schema.String.pipe(
-    Schema.minLength(1),
-    Schema.filter((value): value is string => value.trim().length > 0, {
-      message: () => 'Save envelope format must be a non-blank string',
-    }),
+export const SaveEnvelopeDraftSchema: Schema.Codec<SaveEnvelopeDraft, unknown, never, never> = Schema.Struct({
+  format: Schema.String.check(
+    Schema.makeFilter<string>((value) => value.trim().length > 0 ? undefined : 'Save envelope format must be a non-blank string'),
   ),
   version: safeVersionSchema,
-  payload: Schema.Unknown.pipe(
-    Schema.filter((value): value is unknown => value !== undefined, {
-      message: () => 'Save envelope payload must be present',
-    }),
+  payload: Schema.Unknown.check(
+    Schema.makeFilter<unknown>((value) => value !== undefined ? undefined : 'Save envelope payload must be present'),
   ),
-  extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  extensions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 })
 
 export const saveEnvelope = (format: string, version: number, payload: unknown): SaveEnvelopeDraft => ({

@@ -21,7 +21,7 @@ export const withStorageRetry = (
   storage: StorageService,
   policy: StorageRetryPolicy,
 ): StorageService => {
-  const schedule = policy.schedule.pipe(Schedule.whileInput(policy.shouldRetry))
+  const schedule = policy.schedule.pipe(Schedule.while(({ input }) => policy.shouldRetry(input)))
   const retry = <A>(
     operation: () => Effect.Effect<A, StorageError>,
     operationName: string,

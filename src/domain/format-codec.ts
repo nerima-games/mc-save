@@ -1,4 +1,4 @@
-import { Effect, Schema } from 'effect'
+import { Effect, Result, Schema } from 'effect'
 import {
   isFromFuture,
   SaveEnvelopeDraftSchema,
@@ -14,35 +14,29 @@ const validateEncodedPayload = (
   version: number,
   payload: unknown,
 ): Effect.Effect<void, SaveDecodeError> => {
-  try {
-    const canonical = canonicalize(payload)
-    if (canonical.containsInvalidNumber) {
-      return Effect.fail(
-        new SaveDecodeError({
-          format,
-          version,
-          reason: 'save contains a non-finite number',
-        }),
-      )
-    }
-    return Effect.succeed(undefined)
-  } catch (cause) {
+  const canonical = canonicalize(payload)
+  if (Result.isFailure(canonical)) {
+    return Effect.fail(
+      new SaveDecodeError({ format, version, reason: canonical.failure, cause: canonical.failure }),
+    )
+  }
+  if (canonical.success.containsInvalidNumber) {
     return Effect.fail(
       new SaveDecodeError({
         format,
         version,
-        reason: cause instanceof Error ? cause.message : 'the encoded value is not storage-compatible',
-        cause,
+        reason: 'save contains a non-finite number',
       }),
     )
   }
+  return Effect.void
 }
 
 export const encodeSave = <A, I>(
   format: SaveFormat<A, I>,
   value: A,
 ): Effect.Effect<SaveEnvelopeDraft, SaveDecodeError> =>
-  Schema.encode(format.schema)(value).pipe(
+  Schema.encodeEffect(format.schema)(value).pipe(
     Effect.mapError(
       (cause) =>
         new SaveDecodeError({
@@ -64,7 +58,7 @@ export const decodeSave = <A, I>(
   value: unknown,
 ): Effect.Effect<A, SaveDecodeError> =>
   Effect.gen(function* () {
-    const envelope = yield* Schema.decodeUnknown(SaveEnvelopeDraftSchema)(value).pipe(
+    const envelope = yield* Schema.decodeUnknownEffect(SaveEnvelopeDraftSchema)(value).pipe(
       Effect.mapError(
         (cause) =>
           new SaveDecodeError({
@@ -100,7 +94,7 @@ export const decodeSave = <A, I>(
       })
     }
 
-    return yield* Schema.decodeUnknown(format.schema)(envelope.payload).pipe(
+    return yield* Schema.decodeUnknownEffect(format.schema)(envelope.payload).pipe(
       Effect.mapError(
         (cause) =>
           new SaveDecodeError({

@@ -1,7 +1,13 @@
 /* oxlint-disable no-bitwise -- test fixtures construct exact Minecraft LZ4 block fields. */
 
+import { Result } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { decodeLz4BlockStream, encodeLz4BlockStream, MinecraftLz4Error } from '../src/domain/minecraft-lz4.js'
+import { decodeLz4BlockStream as decodeLz4BlockStreamResult, encodeLz4BlockStream as encodeLz4BlockStreamResult, MinecraftLz4Error } from '../src/domain/minecraft-lz4.js'
+
+const decodeLz4BlockStream = (...args: Parameters<typeof decodeLz4BlockStreamResult>) =>
+  Result.getOrThrow(decodeLz4BlockStreamResult(...args))
+const encodeLz4BlockStream = (...args: Parameters<typeof encodeLz4BlockStreamResult>) =>
+  Result.getOrThrow(encodeLz4BlockStreamResult(...args))
 
 const MAGIC = Uint8Array.from([0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b])
 const DEFAULT_LEVEL = 6
@@ -292,4 +298,86 @@ describe('Minecraft LZ4 block stream codec', () => {
     const badBlockChecksum = makeBlockStream([{ encoded: input, decoded: input, checksum: xxHash32(input) ^ 1 }])
     expectLz4Error(() => decodeLz4BlockStream(badBlockChecksum))
   })
+
+  it('maps missing indexed bytes from copied LZ4 snapshots to codec errors', () => {
+    const unreadableSnapshot = (
+      bytes: Uint8Array,
+      missingIndex: number,
+      blockStart?: number,
+    ): Uint8Array => {
+      const unreadable = (value: Uint8Array): Uint8Array =>
+        new Proxy(value, {
+          get(target, property) {
+            if (property === 'byteLength') return target.byteLength
+            if (property === String(missingIndex)) return undefined
+            return Reflect.get(target, property, target)
+          },
+        })
+      const snapshot = new Proxy(bytes.slice(), {
+        get(target, property) {
+          if (property === 'byteLength') return target.byteLength
+          if (property === 'slice') {
+            return (start?: number, end?: number) => {
+              const block = target.slice(start, end)
+              return start === blockStart ? unreadable(block) : block
+            }
+          }
+          if (blockStart === undefined && property === String(missingIndex)) return undefined
+          return Reflect.get(target, property, target)
+        },
+      })
+      const input = bytes.slice()
+      Object.defineProperty(input, 'slice', { value: () => snapshot })
+      return input
+    }
+
+    const emptyStream = makeBlockStream([])
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(emptyStream, 8)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(emptyStream, 17)))
+
+    const compressedStream = (encoded: number[]): Uint8Array =>
+      makeBlockStream([
+        {
+          encoded: Uint8Array.from(encoded),
+          decoded: Uint8Array.from([0x2a]),
+          method: LZ4_METHOD,
+        },
+      ])
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0, 0, 0]), 0, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0xf0, 0]), 1, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0x10, 0x2a]), 1, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0, 0, 0]), 1, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0, 0, 0]), 2, 21)))
+  })
+
+  it('maps unreadable limits and LZ4 input-copy failures to codec errors', () => {
+    const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable options') } })
+    expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), unreadableOptions))
+    expectLz4Error(() => decodeLz4BlockStream(new Uint8Array(), unreadableOptions))
+
+    const uncopiableInput = new Uint8Array([1])
+    Object.defineProperty(uncopiableInput, 'slice', {
+      value: () => {
+        throw new Error('input copy failed')
+      },
+    })
+    expectLz4Error(() => decodeLz4BlockStream(uncopiableInput))
+
+    const encoded = encodeLz4BlockStream(new Uint8Array([1]))
+    const originalSlice = Uint8Array.prototype.slice
+    const uncopiableBlock = new Uint8Array(encoded)
+    Object.defineProperty(uncopiableBlock, 'slice', {
+      value: () => {
+        const snapshot = originalSlice.call(uncopiableBlock)
+        Object.defineProperty(snapshot, 'slice', {
+          value: () => {
+            throw new Error('block copy failed')
+          },
+        })
+        return snapshot
+      },
+    })
+    expectLz4Error(() => decodeLz4BlockStream(uncopiableBlock))
+  })
+
 })

@@ -1,4 +1,4 @@
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schedule, Schema } from 'effect'
 import {
   decodeSave,
   defineFormat,
@@ -19,7 +19,7 @@ const Chunk = Schema.Struct({
   blocks: Schema.Array(Schema.Number),
 })
 
-const World = defineFormat({
+const World = Result.getOrThrow(defineFormat({
   name: 'mc-save/benchmark/world',
   version: 1,
   schema: Schema.Struct({
@@ -27,7 +27,7 @@ const World = defineFormat({
     chunks: Schema.Array(Chunk),
     entities: Schema.Array(Schema.Struct({ id: Schema.String, health: Schema.Number })),
   }),
-})
+}))
 
 const world = {
   dimension: 'overworld',
@@ -53,7 +53,7 @@ const baselineSave = <A, I>(format: SaveFormat<A, I>, value: A) =>
       : Option.none<SaveEnvelope>()
     if (Option.isSome(old)) yield* validateStored(old.value).pipe(Effect.option)
     const encoded = yield* encodeSave(format, value)
-    const sealed = sealSaveEnvelope(encoded)
+    const sealed = yield* Effect.fromResult(sealSaveEnvelope(encoded))
     yield* validateSaveEnvelope(sealed)
     yield* storage.commitBatch(
       Option.isSome(latestGood)
@@ -69,7 +69,7 @@ const measure = (run: Effect.Effect<void, unknown, never>, iterations: number): 
   Effect.runPromise(
     Effect.gen(function* () {
       const started = performance.now()
-      yield* Effect.repeatN(run, iterations - 1)
+      yield* Effect.repeat(run, Schedule.recurs(iterations - 1))
       return (performance.now() - started) / iterations
     }),
   )

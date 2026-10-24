@@ -1,5 +1,5 @@
-import { ChunkAxis } from '@nerima-games/mc-kernel'
-import { assertDefined } from './assert-defined.js'
+import { ChunkAxis } from '@nerima-games/mc-kernel/domain/coordinates'
+import { Result } from 'effect'
 import type { MinecraftDimension, MinecraftRegionStorage } from './minecraft-paths.js'
 
 type KnownPlayerJsonCategory = 'stats' | 'advancements'
@@ -55,7 +55,7 @@ const isSafeSegment = (value: string): boolean =>
 const isSafeDimensionPart = (value: string): boolean =>
   SAFE_DIMENSION_PART.test(value) && value !== '.' && value !== '..'
 
-const isSafeCoordinateText = (value: string): boolean => {
+const isSafeCoordinateText = (value: string | undefined): boolean => {
   // No separate INTEGER_COORDINATE regex re-check here: coordinate() below is only ever called with a
   // string already captured by REGION_FILE/EXTERNAL_CHUNK_FILE, whose capture group is exactly the
   // INTEGER_COORDINATE pattern, so it can never fail this same test again. The round-trip check alone
@@ -65,9 +65,11 @@ const isSafeCoordinateText = (value: string): boolean => {
   return Number.isSafeInteger(number) && String(number) === value
 }
 
-const coordinate = (value: string, label: string): ReturnType<typeof ChunkAxis> => {
-  if (!isSafeCoordinateText(value)) throw new TypeError(`${label} must be a canonical safe integer`)
-  return ChunkAxis(Number(value))
+const coordinate = (value: string | undefined, label: string): Result.Result<ReturnType<typeof ChunkAxis>, TypeError> => {
+  if (!isSafeCoordinateText(value)) {
+    return Result.fail(new TypeError(`${label} must be a canonical safe integer`))
+  }
+  return Result.succeed(ChunkAxis(Number(value)))
 }
 
 const dimensionFromDirectory = (segments: ReadonlyArray<string>): MinecraftDimension | undefined => {
@@ -94,47 +96,50 @@ const storageAt = (value: string | undefined): MinecraftRegionStorage | undefine
   }
 }
 
-const parseRegion = (segments: ReadonlyArray<string>, path: string): MinecraftJavaSavePath | undefined => {
-  if (segments.length < 5) return undefined
-  const storage = storageAt(segments.at(-2))
-  const file = segments.at(-1)
-  if (storage === undefined || file === undefined) return undefined
-  const dimension = dimensionFromDirectory(segments.slice(0, -2))
-  if (dimension === undefined) return undefined
-  const regionMatch = REGION_FILE.exec(file)
-  if (regionMatch !== null) {
-    // Both capture groups are mandatory (non-optional) in REGION_FILE, so a successful match always
-    // populates them; the assertion just tells TypeScript what the regex already guarantees.
-    const regionX = assertDefined(regionMatch[1], 'REGION_FILE matched without its region x capture group')
-    const regionZ = assertDefined(regionMatch[2], 'REGION_FILE matched without its region z capture group')
+const parseRegion = (
+  segments: ReadonlyArray<string>,
+  path: string,
+): Result.Result<MinecraftJavaSavePath | undefined, TypeError> =>
+  Result.gen(function* () {
+    if (segments.length < 5) return undefined
+    const storage = storageAt(segments.at(-2))
+    const file = segments.at(-1)
+    if (storage === undefined || file === undefined) return undefined
+    const dimension = dimensionFromDirectory(segments.slice(0, -2))
+    if (dimension === undefined) return undefined
+
+    const regionMatch = REGION_FILE.exec(file)
+    if (regionMatch !== null) {
+      const regionX = regionMatch[1]
+      const regionZ = regionMatch[2]
+      return {
+        kind: 'region',
+        dimension,
+        storage,
+        regionX: yield* coordinate(regionX, 'region x'),
+        regionZ: yield* coordinate(regionZ, 'region z'),
+        path,
+      }
+    }
+
+    const externalMatch = EXTERNAL_CHUNK_FILE.exec(file)
+    if (externalMatch === null) return undefined
+    const chunkX = externalMatch[1]
+    const chunkZ = externalMatch[2]
     return {
-      kind: 'region',
+      kind: 'externalChunk',
       dimension,
       storage,
-      regionX: coordinate(regionX, 'region x'),
-      regionZ: coordinate(regionZ, 'region z'),
+      chunkX: yield* coordinate(chunkX, 'chunk x'),
+      chunkZ: yield* coordinate(chunkZ, 'chunk z'),
       path,
     }
-  }
-  const externalMatch = EXTERNAL_CHUNK_FILE.exec(file)
-  if (externalMatch === null) return undefined
-  const chunkX = assertDefined(externalMatch[1], 'EXTERNAL_CHUNK_FILE matched without its chunk x capture group')
-  const chunkZ = assertDefined(externalMatch[2], 'EXTERNAL_CHUNK_FILE matched without its chunk z capture group')
-  return {
-    kind: 'externalChunk',
-    dimension,
-    storage,
-    chunkX: coordinate(chunkX, 'chunk x'),
-    chunkZ: coordinate(chunkZ, 'chunk z'),
-    path,
-  }
-}
+  })
 
 const playerPath = (segments: ReadonlyArray<string>, path: string): MinecraftJavaSavePath | undefined => {
   if (segments.length !== 3 || segments[0] !== 'players') return undefined
-  const category = segments[1]
-  // segments.length === 3 above guarantees index 2 exists.
-  const file = assertDefined(segments[2], 'playerPath: segments.length === 3 but index 2 is missing')
+  const category = segments.slice(1, 2).join('')
+  const file = segments.slice(2, 3).join('')
   if (category !== 'data' && category !== 'stats' && category !== 'advancements') return undefined
   if (!isSafeSegment(file)) return undefined
   const playerIdWithExtension = file
@@ -143,12 +148,7 @@ const playerPath = (segments: ReadonlyArray<string>, path: string): MinecraftJav
   const playerId = playerIdWithExtension.slice(0, -extension.length)
   if (!isSafeSegment(playerId)) return undefined
   if (category === 'data') return { kind: 'playerData', playerId, path }
-  return {
-    kind: 'playerJson',
-    category,
-    playerId,
-    path,
-  }
+  return { kind: 'playerJson', category, playerId, path }
 }
 
 const dataPath = (segments: ReadonlyArray<string>, path: string): MinecraftJavaSavePath | undefined => {
@@ -201,22 +201,25 @@ const structurePath = (segments: ReadonlyArray<string>, path: string): Minecraft
   return { kind: 'structure', namespace, name: [...nameSegments.slice(0, -1), name].join('/'), path }
 }
 
-export const parseMinecraftJavaSavePath = (path: string): MinecraftJavaSavePath => {
-  const segments = path.split('/')
-  if (path === 'level.dat') return { kind: 'level', path }
-  if (path === 'level.dat_old') return { kind: 'levelBackup', path }
-  if (path === 'session.lock') return { kind: 'sessionLock', path }
-  if (path === 'icon.png') return { kind: 'icon', path }
-  if (path === 'resourcepacks/resources.zip') return { kind: 'resourcePack', path }
-  const player = playerPath(segments, path)
-  if (player !== undefined) return player
-  const region = parseRegion(segments, path)
-  if (region !== undefined) return region
-  const worldClock = worldClockPath(segments, path)
-  if (worldClock !== undefined) return worldClock
-  const data = dataPath(segments, path)
-  if (data !== undefined) return data
-  const structure = structurePath(segments, path)
-  if (structure !== undefined) return structure
-  return { kind: 'extra', path }
-}
+export const parseMinecraftJavaSavePath = (
+  path: string,
+): Result.Result<MinecraftJavaSavePath, TypeError> =>
+  Result.gen(function* () {
+    const segments = path.split('/')
+    if (path === 'level.dat') return { kind: 'level', path }
+    if (path === 'level.dat_old') return { kind: 'levelBackup', path }
+    if (path === 'session.lock') return { kind: 'sessionLock', path }
+    if (path === 'icon.png') return { kind: 'icon', path }
+    if (path === 'resourcepacks/resources.zip') return { kind: 'resourcePack', path }
+    const player = playerPath(segments, path)
+    if (player !== undefined) return player
+    const region = yield* parseRegion(segments, path)
+    if (region !== undefined) return region
+    const worldClock = worldClockPath(segments, path)
+    if (worldClock !== undefined) return worldClock
+    const data = dataPath(segments, path)
+    if (data !== undefined) return data
+    const structure = structurePath(segments, path)
+    if (structure !== undefined) return structure
+    return { kind: 'extra', path }
+  })

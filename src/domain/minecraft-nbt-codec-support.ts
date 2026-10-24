@@ -1,52 +1,59 @@
+import { Option, Result } from 'effect'
 import { NBT_TAG_IDS } from './minecraft-nbt-types.js'
-import type { NbtTagType } from './minecraft-nbt-types.js'
+import type { NbtFormatError, NbtTagType } from './minecraft-nbt-types.js'
 import { nbtError } from './minecraft-nbt-codec-options.js'
 
 export type NbtPayloadTagType = Exclude<NbtTagType, 'end'>
 
-export const tagTypeFromId = (id: number): NbtTagType | undefined => {
+export const tagTypeFromId = (id: number): Option.Option<NbtTagType> => {
   switch (id) {
     case NBT_TAG_IDS.end:
-      return 'end'
+      return Option.some('end')
     case NBT_TAG_IDS.byte:
-      return 'byte'
+      return Option.some('byte')
     case NBT_TAG_IDS.short:
-      return 'short'
+      return Option.some('short')
     case NBT_TAG_IDS.int:
-      return 'int'
+      return Option.some('int')
     case NBT_TAG_IDS.long:
-      return 'long'
+      return Option.some('long')
     case NBT_TAG_IDS.float:
-      return 'float'
+      return Option.some('float')
     case NBT_TAG_IDS.double:
-      return 'double'
+      return Option.some('double')
     case NBT_TAG_IDS.byteArray:
-      return 'byteArray'
+      return Option.some('byteArray')
     case NBT_TAG_IDS.string:
-      return 'string'
+      return Option.some('string')
     case NBT_TAG_IDS.list:
-      return 'list'
+      return Option.some('list')
     case NBT_TAG_IDS.compound:
-      return 'compound'
+      return Option.some('compound')
     case NBT_TAG_IDS.intArray:
-      return 'intArray'
+      return Option.some('intArray')
     case NBT_TAG_IDS.longArray:
-      return 'longArray'
+      return Option.some('longArray')
     default:
-      return undefined
+      return Option.none()
   }
 }
 
-export const tagId = (type: NbtTagType): number => NBT_TAG_IDS[type]
+export const tagId = (type: NbtTagType): Result.Result<number, NbtFormatError> =>
+  Object.prototype.hasOwnProperty.call(NBT_TAG_IDS, type)
+    ? Result.succeed(NBT_TAG_IDS[type])
+    : Result.fail(nbtError(`unknown NBT tag type ${String(type)}`))
 
-export const assertInteger = (name: string, value: number, minimum: number, maximum: number): void => {
-  if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    throw nbtError(`${name} must be an integer in [${String(minimum)}, ${String(maximum)}]`)
-  }
-}
+export const assertInteger = (
+  name: string,
+  value: number,
+  minimum: number,
+  maximum: number,
+): Result.Result<number, NbtFormatError> =>
+  Number.isInteger(value) && value >= minimum && value <= maximum
+    ? Result.succeed(value)
+    : Result.fail(nbtError(`${name} must be an integer in [${String(minimum)}, ${String(maximum)}]`))
 
-export const assertLong = (value: bigint): void => {
-  if (typeof value !== 'bigint' || value < -0x8000000000000000n || value > 0x7fffffffffffffffn) {
-    throw nbtError('long value is outside the signed 64-bit range')
-  }
-}
+export const assertLong = (value: bigint): Result.Result<bigint, NbtFormatError> =>
+  typeof value === 'bigint' && value >= -0x8000000000000000n && value <= 0x7fffffffffffffffn
+    ? Result.succeed(value)
+    : Result.fail(nbtError('long value is outside the signed 64-bit range'))

@@ -1,39 +1,16 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Schema } from 'effect'
+import { Effect, Result, Schema, SchemaGetter, SchemaTransformation } from 'effect'
 import { SaveEnvelopeSchema, saveEnvelope, type SaveEnvelope } from '../src/domain/envelope.js'
 import { sealAndValidateSaveEnvelope, sealSaveEnvelope, validateSaveEnvelope } from '../src/domain/integrity.js'
-import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
+import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
 
 /**
- * What this file establishes about versioning, read first:
- *
- * `decodeSave` (`src/domain/format-codec.ts`) accepts exactly one version —
- * `format.version` — and unconditionally rejects every other one, including
- * older ones, with "only the current format version is accepted". That
- * rejection is exercised by `format-roundtrip.test.ts`'s "rejects an older
- * version when no compatibility decoder exists". `git log` on
- * `envelope.ts` / `format-codec.ts` / `format-definition.ts` shows no format
- * has ever had two live versions in this package's history, and no
- * migration/upgrade helper exists anywhere in `src/` (`grep -ri migrat
- * src test` finds nothing before this file). mc-save's own "migration"
- * capability is therefore NOT an automatic upgrade path — it is: (a) a
- * version field that survives storage untouched, (b) unconditional,
- * clearly-labelled rejection of any non-current version so a mismatch never
- * silently misdecodes, and (c) `SaveEnvelopeSchema` exported so a consumer
- * can inspect `envelope.version` and the raw `payload` *before* `decodeSave`
- * would refuse it.
- *
- * A real migration — old bytes becoming a value the current schema accepts —
- * has to be assembled by the consumer from those three primitives: decode
- * the raw envelope, decode `payload` against a schema for the OLD version,
- * transform to the current domain shape, then `encodeSave` under the
- * CURRENT format. This file builds exactly that consumer-side path against
- * a hand-authored v1 fixture (not produced by the current encoder — see
- * `oldFixtureEnvelope` below) and proves it reads correctly. It also proves
- * `decodeSave` itself still refuses the v1 envelope directly, so the two
- * tests together document the real contract: no free migration, but a safe
- * one is buildable.
+ * `decodeSave` accepts only the declared format version. Consumers that need
+ * an older payload must decode it with its old schema and explicitly migrate it
+ * before encoding under the current format. The legacy v3 tests below exercise
+ * the storage envelope boundary: validate format, version, and integrity
+ * before a consumer hands the payload to slice restoration.
  */
 
 /**
@@ -43,9 +20,29 @@ import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
  * bare `null` per empty slot directly in the array — the pre-widening
  * format never routed slots through a named-field null/undefined swap.
  */
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
+const ChunkSaveV1BlocksSchema = Schema.Array(
+  Schema.Number.check(
+    Schema.makeFilter<number>((value) =>
+      Number.isSafeInteger(value) && value >= 0 && value <= 255
+        ? undefined
+        : 'v1 block byte must be an integer between 0 and 255',
+    ),
+  ),
+).pipe(
+  Schema.decodeTo(Schema.Uint8Array, {
+    decode: SchemaGetter.transform((bytes: ReadonlyArray<number>) => new Uint8Array(bytes)),
+    encode: SchemaGetter.transform((bytes: Uint8Array) => Array.from(bytes)),
+  }),
+)
+
 const ChunkSaveV1Schema = Schema.Struct({
   worldId: Schema.String,
-  blocks: Schema.Uint8Array,
+  blocks: ChunkSaveV1BlocksSchema,
   inventory: Schema.Array(Schema.NullOr(Schema.String)),
 })
 
@@ -57,11 +54,18 @@ const ChunkSaveV1Schema = Schema.Struct({
  * own transform or every empty slot decodes as `null` while the rest of the
  * domain uses `undefined` for "absent".
  */
-const InventorySlotSchema = Schema.transform(Schema.NullOr(Schema.String), Schema.UndefinedOr(Schema.String), {
-  strict: true,
-  decode: (value) => value ?? undefined,
-  encode: (value) => value ?? null,
-})
+const InventorySlotSchema: Schema.Codec<string | undefined, string | null> = Schema.decodeTo<
+  Schema.Codec<string | undefined, string | undefined, never, never>,
+  Schema.Codec<string | null, string | null, never, never>,
+  never,
+  never
+>(
+  Schema.UndefinedOr(Schema.String),
+  SchemaTransformation.transformEffect<string | undefined, string | null>({
+    decode: (value) => Effect.succeed(value ?? undefined),
+    encode: (value) => Effect.succeed(value ?? null),
+  }),
+)(Schema.NullOr(Schema.String))
 
 /**
  * The current (v2) wire shape. `blocks` widened to two bytes per block, so
@@ -72,12 +76,12 @@ const InventorySlotSchema = Schema.transform(Schema.NullOr(Schema.String), Schem
 const ChunkSaveV2Schema = Schema.Struct({
   worldId: Schema.String,
   blocks: Schema.Array(
-    Schema.Number.pipe(
-      Schema.greaterThanOrEqualTo(0),
-      Schema.lessThanOrEqualTo(65535),
-      Schema.filter((value): value is number => Number.isInteger(value), {
-        message: () => 'block id must be an integer',
-      }),
+    Schema.Number.check(
+      Schema.makeFilter<number>((value) =>
+        Number.isSafeInteger(value) && value >= 0 && value <= 65535
+          ? undefined
+          : 'block id must be an integer between 0 and 65535',
+      ),
     ),
   ),
   inventory: Schema.Array(InventorySlotSchema),
@@ -104,17 +108,10 @@ const migrateChunkV1toV2 = (old: ChunkSaveV1): ChunkSaveV2 => ({
 })
 
 /**
- * A save as an earlier build actually wrote it, hand-authored in its wire
- * shape rather than produced by any encoder: v1, `blocks` as a plain array
- * of byte values (the JSON-safe form `Schema.Uint8Array` itself decodes
- * from — see `Schema.Uint8Array`'s "Encoded side" in its own error
- * messages), `inventory` using bare `null`. Sealed with the same
- * `sealSaveEnvelope` mc-save has always shipped (integrity is format- and
- * version-agnostic — see `integrity.ts`, unchanged across every commit that
- * touched versioning), so this is a validly-checksummed envelope. Nothing
- * here passes through `ChunkSaveV2Schema` or `encodeSave`, and building the
- * wire object by hand (rather than via `Schema.encode(ChunkSaveV1Schema)`)
- * keeps it independent of any schema this file also uses to read it back.
+ * An earlier build's v1 wire payload. `blocks` used the JSON-safe encoded side
+ * of `Schema.Uint8Array`: an array of byte values. Empty inventory slots used
+ * bare `null`. The v1 schema adapter validates those bytes before constructing
+ * the typed array used by the migration.
  */
 const oldFixtureWirePayload = {
   worldId: 'overworld-alpha',
@@ -122,8 +119,25 @@ const oldFixtureWirePayload = {
   inventory: ['diamond_pickaxe', null, null, 'torch'],
 }
 
-const oldFixtureEnvelope: SaveEnvelope = sealSaveEnvelope(
-  saveEnvelope(CURRENT_CHUNK_FORMAT.name, 1, oldFixtureWirePayload),
+const oldFixtureEnvelope: SaveEnvelope = Result.getOrThrow(
+  sealSaveEnvelope(saveEnvelope(CURRENT_CHUNK_FORMAT.name, 1, oldFixtureWirePayload)),
+)
+
+const LEGACY_V3_FORMAT = defineFormat({
+  name: 'mc-save/test/migration/legacy-world',
+  version: 3,
+  schema: Schema.Unknown,
+})
+
+const legacyV3Payload = {
+  slices: {
+    world: { version: 3, data: { id: 'overworld-alpha' } },
+    chunks: { version: 3, data: [{ x: 4, z: -2, blocks: [0, 300] }] },
+  },
+}
+
+const legacyV3Envelope: SaveEnvelope = Result.getOrThrow(
+  sealSaveEnvelope(saveEnvelope(LEGACY_V3_FORMAT.name, LEGACY_V3_FORMAT.version, legacyV3Payload)),
 )
 
 describe('migrating a save written by an earlier build', () => {
@@ -142,12 +156,12 @@ describe('migrating a save written by an earlier build', () => {
       // Step 1: open the raw envelope the way a consumer must, before
       // `decodeSave` would refuse it — this is the exported primitive that
       // makes migration buildable at all.
-      const envelope = yield* Schema.decodeUnknown(SaveEnvelopeSchema)(oldFixtureEnvelope)
+      const envelope = yield* Schema.decodeUnknownEffect(SaveEnvelopeSchema)(oldFixtureEnvelope)
       expect(envelope.version).not.toBe(CURRENT_CHUNK_FORMAT.version)
       expect(envelope.version).toBe(1)
 
       // Step 2: decode the payload against a schema for the OLD version.
-      const oldValue = yield* Schema.decodeUnknown(ChunkSaveV1Schema)(envelope.payload)
+      const oldValue = yield* Schema.decodeUnknownEffect(ChunkSaveV1Schema)(envelope.payload)
 
       // Step 3: transform to the current domain shape.
       const migrated = migrateChunkV1toV2(oldValue)
@@ -175,7 +189,6 @@ describe('migrating a save written by an earlier build', () => {
       const wideDraft = yield* encodeSave(CURRENT_CHUNK_FORMAT, widePayload)
       const wideRestored = yield* decodeSave(CURRENT_CHUNK_FORMAT, wideDraft)
       expect(wideRestored.blocks).toContain(300)
-      expect(() => Schema.decodeUnknownSync(ChunkSaveV1Schema)({ ...oldValue, blocks: new Uint8Array([300]) })).toThrow()
     }),
   )
 
@@ -184,16 +197,68 @@ describe('migrating a save written by an earlier build', () => {
       // Guards the fixture itself: if this ever fails, `oldFixtureEnvelope`
       // has drifted from being a legitimate v1 payload and the migration
       // test above would be exercising something else.
-      const envelope = yield* Schema.decodeUnknown(SaveEnvelopeSchema)(oldFixtureEnvelope)
-      const oldValue = yield* Schema.decodeUnknown(ChunkSaveV1Schema)(envelope.payload)
+      const envelope = yield* Schema.decodeUnknownEffect(SaveEnvelopeSchema)(oldFixtureEnvelope)
+      const oldValue = yield* Schema.decodeUnknownEffect(ChunkSaveV1Schema)(envelope.payload)
       expect(oldValue).toStrictEqual({
         worldId: 'overworld-alpha',
         blocks: new Uint8Array([0, 1, 2, 255, 7, 0]),
         inventory: ['diamond_pickaxe', null, null, 'torch'],
       })
 
+      const invalidBytes = yield* Effect.result(
+        Schema.decodeUnknownEffect(ChunkSaveV1Schema)({
+          ...oldFixtureWirePayload,
+          blocks: [0, 256],
+        }),
+      )
+      expect(invalidBytes._tag).toBe('Failure')
+
       const validated = yield* validateSaveEnvelope(oldFixtureEnvelope)
       expect(validated.integrity.checksum).toBe(oldFixtureEnvelope.integrity.checksum)
+    }),
+  )
+
+  effect('validates a persisted legacy v3 envelope before handing its payload to restore', () =>
+    Effect.gen(function* () {
+      const decoded = yield* Schema.decodeUnknownEffect(SaveEnvelopeSchema)(legacyV3Envelope)
+      expect(decoded.format).toBe(LEGACY_V3_FORMAT.name)
+      expect(decoded.version).toBe(3)
+
+      const validated = yield* validateSaveEnvelope(decoded)
+      expect(validated.integrity).toStrictEqual(legacyV3Envelope.integrity)
+      expect(yield* decodeSave(LEGACY_V3_FORMAT, validated)).toStrictEqual(legacyV3Payload)
+    }),
+  )
+
+  effect('rejects invalid integrity and envelope versions other than legacy v3', () =>
+    Effect.gen(function* () {
+      const corrupted = {
+        ...legacyV3Envelope,
+        integrity: {
+          ...legacyV3Envelope.integrity,
+          checksum: legacyV3Envelope.integrity.checksum === '00000000' ? '00000001' : '00000000',
+        },
+      }
+      const integrityError = yield* Effect.flip(validateSaveEnvelope(corrupted))
+      expect(integrityError._tag).toBe('SaveDecodeError')
+      expect(integrityError.reason).toContain('checksum')
+
+      for (const version of [1, 2, 4]) {
+        const unsupported = Result.getOrThrow(
+          sealSaveEnvelope(saveEnvelope(LEGACY_V3_FORMAT.name, version, legacyV3Payload)),
+        )
+        const versionError = yield* Effect.flip(decodeSave(LEGACY_V3_FORMAT, unsupported))
+        expect(versionError._tag).toBe('SaveDecodeError')
+        expect(versionError.version).toBe(version)
+        expect(versionError.reason).toContain(version > 3 ? 'newer build' : 'only the current format version is accepted')
+      }
+
+      const wrongFormat = Result.getOrThrow(
+        sealSaveEnvelope(saveEnvelope('mc-save/test/migration/other-format', 3, legacyV3Payload)),
+      )
+      const formatError = yield* Effect.flip(decodeSave(LEGACY_V3_FORMAT, wrongFormat))
+      expect(formatError._tag).toBe('SaveDecodeError')
+      expect(formatError.reason).toContain('belongs to format')
     }),
   )
 })

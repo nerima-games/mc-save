@@ -1,11 +1,16 @@
 import { describe, expect } from 'vitest'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import { effect } from './support/effect-test.js'
-import { defineFormat } from '../src/domain/format.js'
+import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import { loadFrom } from '../src/domain/persistence.js'
 import { saveBatch, saveBatchEntry } from '../src/domain/batch-save.js'
 import { InMemoryStorageLayer, SaveKey, StoragePort, failingStorageLayer } from '../src/domain/storage-port.js'
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const World = defineFormat({
   name: 'mc-save/test/batch-world',
   version: 1,
@@ -15,7 +20,7 @@ const World = defineFormat({
 const Settings = defineFormat({
   name: 'mc-save/test/batch-settings',
   version: 1,
-  schema: Schema.Struct({ difficulty: Schema.Literal('peaceful', 'normal', 'hard') }),
+  schema: Schema.Struct({ difficulty: Schema.Literals(['peaceful', 'normal', 'hard']) }),
 })
 
 const WORLD_KEY = SaveKey('world/overworld')

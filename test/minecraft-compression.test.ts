@@ -1,9 +1,10 @@
+import { Effect } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   MINECRAFT_COMPRESSION_MAX_BYTES,
   MinecraftCompressionError,
-  compressMinecraft,
-  decompressMinecraft,
+  compressMinecraft as compressMinecraftEffect,
+  decompressMinecraft as decompressMinecraftEffect,
 } from '../src/domain/minecraft-compression.js'
 
 // `ArrayBufferLike` (not `ArrayBuffer`) so `Uint8Array.prototype.buffer` — typed `ArrayBufferLike`,
@@ -22,6 +23,11 @@ type FakeStreamValue =
 // `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
 // complaint. Used to hand a type-invalid input to a strictly-typed function, so the test proves the
 // function's own runtime check — not the type checker — rejects it.
+const compressMinecraft = (...args: Parameters<typeof compressMinecraftEffect>) =>
+  Effect.runPromise(compressMinecraftEffect(...args))
+const decompressMinecraft = (...args: Parameters<typeof decompressMinecraftEffect>) =>
+  Effect.runPromise(decompressMinecraftEffect(...args))
+
 const widen = <T,>(value: unknown): T => {
   const bag: Record<string, any> = {}
   bag['value'] = value
@@ -30,7 +36,7 @@ const widen = <T,>(value: unknown): T => {
 
 type FakeStreamReader = {
   readonly read: () => Promise<{ readonly done: boolean; readonly value?: FakeStreamValue }>
-  readonly releaseLock: () => void
+  readonly releaseLock?: () => void
 }
 
 class FakeCompressionStream {
@@ -189,4 +195,142 @@ describe('Minecraft compression API', () => {
     })
     await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
   })
+
+  it('contains unreadable options, input snapshots, stream reads, and optional reader cleanup', async () => {
+    const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable options') } })
+    await expectCompressionError(compressMinecraft(new Uint8Array([1]), 'none', unreadableOptions))
+    await expectCompressionError(decompressMinecraft(new Uint8Array([1]), 'none', unreadableOptions))
+
+    const uncopiableInput = new Uint8Array([1])
+    Object.defineProperty(uncopiableInput, 'slice', {
+      value: () => {
+        throw new Error('copy failed')
+      },
+    })
+    await expectCompressionError(compressMinecraft(uncopiableInput, 'none'))
+    await expectCompressionError(decompressMinecraft(uncopiableInput, 'none'))
+
+    class ReadFailureCompressionStream extends FakeCompressionStream {
+      constructor(format: 'gzip' | 'deflate') {
+        super(format)
+        this.readable.getReader = () => ({
+          read: async () => {
+            throw new Error('reader failed')
+          },
+          releaseLock: () => undefined,
+        })
+      }
+    }
+    vi.stubGlobal('CompressionStream', ReadFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+
+    class NonErrorReadFailureCompressionStream extends FakeCompressionStream {
+      constructor(format: 'gzip' | 'deflate') {
+        super(format)
+        this.readable.getReader = () => ({
+          read: async () => {
+            throw nonErrorFailure()
+          },
+          releaseLock: () => undefined,
+        })
+      }
+    }
+    vi.stubGlobal('CompressionStream', NonErrorReadFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+
+    class WriterFailureCompressionStream extends FakeCompressionStream {
+      constructor(format: 'gzip' | 'deflate') {
+        super(format)
+        this.writable.getWriter = () => ({
+          write: async () => {
+            throw nonErrorFailure()
+          },
+          close: async () => undefined,
+        })
+      }
+    }
+    vi.stubGlobal('CompressionStream', WriterFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+
+    class ReaderWithoutReleaseLock extends FakeCompressionStream {
+      constructor(format: 'gzip' | 'deflate') {
+        super(format)
+        this.readable.getReader = () => ({ read: async () => ({ done: true }) })
+      }
+    }
+    vi.stubGlobal('CompressionStream', ReaderWithoutReleaseLock)
+    expect(await compressMinecraft(new Uint8Array([9]), 'gzip')).toStrictEqual(new Uint8Array())
+  })
+
+
+  it('maps native chunk copying, constructor, assembly, and close failures', async () => {
+    class ChunkCopyFailureCompressionStream extends FakeCompressionStream {
+      constructor(format: 'gzip' | 'deflate') {
+        super(format)
+        this.readable.getReader = () => {
+          let read = false
+          return {
+            read: async () => {
+              if (read) return { done: true }
+              read = true
+              return {
+                done: false,
+                value: {
+                  get buffer(): ArrayBufferLike { throw new Error('chunk buffer failed') },
+                  byteOffset: 0,
+                  byteLength: 1,
+                },
+            }
+            },
+            releaseLock: () => undefined,
+          }
+        }
+      }
+    }
+    vi.stubGlobal('CompressionStream', ChunkCopyFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+
+    class ConstructorFailureCompressionStream {
+      constructor(_format: 'gzip' | 'deflate') {
+        throw new Error('constructor failed')
+      }
+    }
+    vi.stubGlobal('CompressionStream', ConstructorFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+
+    class NonErrorConstructorFailureCompressionStream {
+      constructor(_format: 'gzip' | 'deflate') {
+        throw nonErrorFailure()
+      }
+    }
+    vi.stubGlobal('CompressionStream', NonErrorConstructorFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+
+    let released = false
+    class CloseFailureCompressionStream extends FakeCompressionStream {
+      constructor(format: 'gzip' | 'deflate') {
+        super(format)
+        this.readable.getReader = () => ({ read: async () => ({ done: true }), releaseLock: () => { released = true } })
+        this.writable.getWriter = () => ({
+          write: async () => undefined,
+          close: async () => { throw nonErrorFailure() },
+        })
+      }
+    }
+    vi.stubGlobal('CompressionStream', CloseFailureCompressionStream)
+    await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+    expect(released).toBe(true)
+
+    FakeCompressionStream.outputSequences = [[new Uint8Array([1])]]
+    vi.stubGlobal('CompressionStream', FakeCompressionStream)
+    const setSpy = vi.spyOn(Uint8Array.prototype, 'set').mockImplementation(() => {
+      throw new Error('stream assembly failed')
+    })
+    try {
+      await expectCompressionError(compressMinecraft(new Uint8Array([9]), 'gzip'))
+    } finally {
+      setSpy.mockRestore()
+    }
+  })
+
 })

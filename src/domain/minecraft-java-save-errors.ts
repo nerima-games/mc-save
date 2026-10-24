@@ -1,4 +1,4 @@
-import { Data } from 'effect'
+import { Data, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
 
 export type MinecraftJavaSaveOperation = 'encode' | 'decode' | 'validate'
@@ -28,12 +28,10 @@ export const minecraftJavaSaveError = (
 ): MinecraftJavaSaveError =>
   new MinecraftJavaSaveError({ operation, reason, ...(path === undefined ? {} : { path }) })
 
-export const throwMinecraftJavaSaveError = (
-  operation: MinecraftJavaSaveOperation,
-  reason: string,
-  path?: string,
-): never => {
-  throw minecraftJavaSaveError(operation, reason, path)
+export const errorReason = (error: unknown): string => {
+  const result = Result.try({
+    try: () => (error instanceof Error ? error.message : String(error)),
+    catch: () => 'operation failed',
+  })
+  return Result.isSuccess(result) ? result.success : 'operation failed'
 }
-
-export const errorReason = (error: unknown): string => (error instanceof Error ? error.message : String(error))

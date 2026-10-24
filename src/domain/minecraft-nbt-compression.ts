@@ -1,11 +1,16 @@
+import { Effect } from 'effect'
+import type { NbtFormatError } from './minecraft-nbt-types.js'
 import type { NbtCodecOptions, NbtDocument } from './minecraft-nbt.js'
+import { nbtError } from './minecraft-nbt-codec-options.js'
 import { decodeNbt, encodeNbt } from './minecraft-nbt.js'
 import {
   compressMinecraft,
   decompressMinecraft,
   type MinecraftCompression,
+  type MinecraftCompressionError,
   type MinecraftCompressionOptions,
 } from './minecraft-compression.js'
+import type { MinecraftLz4Error } from './minecraft-lz4-format.js'
 
 export type MinecraftCompressedNbtOptions = {
   readonly maxCompressedBytes?: number
@@ -14,29 +19,43 @@ export type MinecraftCompressedNbtOptions = {
 }
 
 const compressionOptions = (
-  options: MinecraftCompressedNbtOptions | undefined,
+  values: { readonly maxCompressedBytes: number | undefined; readonly maxDecompressedBytes: number | undefined },
   operation: 'encode' | 'decode',
 ): MinecraftCompressionOptions =>
   operation === 'encode'
     ? {
-        ...(options?.maxDecompressedBytes === undefined ? {} : { maxInputBytes: options.maxDecompressedBytes }),
-        ...(options?.maxCompressedBytes === undefined ? {} : { maxOutputBytes: options.maxCompressedBytes }),
+        ...(values.maxDecompressedBytes === undefined ? {} : { maxInputBytes: values.maxDecompressedBytes }),
+        ...(values.maxCompressedBytes === undefined ? {} : { maxOutputBytes: values.maxCompressedBytes }),
       }
     : {
-        ...(options?.maxCompressedBytes === undefined ? {} : { maxInputBytes: options.maxCompressedBytes }),
-        ...(options?.maxDecompressedBytes === undefined ? {} : { maxOutputBytes: options.maxDecompressedBytes }),
+        ...(values.maxCompressedBytes === undefined ? {} : { maxInputBytes: values.maxCompressedBytes }),
+        ...(values.maxDecompressedBytes === undefined ? {} : { maxOutputBytes: values.maxDecompressedBytes }),
       }
 
-export const encodeCompressedNbt = async (
+export const encodeCompressedNbt = (
   document: NbtDocument,
   compression: MinecraftCompression,
   options?: MinecraftCompressedNbtOptions,
-): Promise<Uint8Array> =>
-  compressMinecraft(encodeNbt(document, options?.nbt), compression, compressionOptions(options, 'encode'))
+): Effect.Effect<Uint8Array, NbtFormatError | MinecraftCompressionError | MinecraftLz4Error> =>
+  Effect.gen(function* () {
+    const values = yield* Effect.try({
+      try: () => ({ maxCompressedBytes: options?.maxCompressedBytes, maxDecompressedBytes: options?.maxDecompressedBytes, nbt: options?.nbt }),
+      catch: () => nbtError('NBT compression options must be readable'),
+    })
+    const encoded = yield* Effect.fromResult(encodeNbt(document, values.nbt))
+    return yield* compressMinecraft(encoded, compression, compressionOptions(values, 'encode'))
+  })
 
-export const decodeCompressedNbt = async (
+export const decodeCompressedNbt = (
   bytes: Uint8Array,
   compression: MinecraftCompression,
   options?: MinecraftCompressedNbtOptions,
-): Promise<NbtDocument> =>
-  decodeNbt(await decompressMinecraft(bytes, compression, compressionOptions(options, 'decode')), options?.nbt)
+): Effect.Effect<NbtDocument, NbtFormatError | MinecraftCompressionError | MinecraftLz4Error> =>
+  Effect.gen(function* () {
+    const values = yield* Effect.try({
+      try: () => ({ maxCompressedBytes: options?.maxCompressedBytes, maxDecompressedBytes: options?.maxDecompressedBytes, nbt: options?.nbt }),
+      catch: () => nbtError('NBT compression options must be readable'),
+    })
+    const decompressed = yield* decompressMinecraft(bytes, compression, compressionOptions(values, 'decode'))
+    return yield* Effect.fromResult(decodeNbt(decompressed, values.nbt))
+  })

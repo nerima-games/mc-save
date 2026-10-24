@@ -1,14 +1,19 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Layer, Option, Schema } from 'effect'
+import { Effect, Layer, Option, Result, Schema } from 'effect'
 import { StorageError } from '../src/domain/errors.js'
 import type { SaveEnvelope } from '../src/domain/envelope.js'
-import { defineFormat } from '../src/domain/format.js'
+import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import { durablePreviousKey } from '../src/domain/durable-key.js'
 import { listFrom, loadFrom } from '../src/domain/persistence.js'
 import { makeInMemoryStorage, SaveKey, StoragePort, type StorageService } from '../src/domain/storage-port.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const World = defineFormat({
   name: 'mc-save/test/world-listing',
   version: 1,
@@ -129,8 +134,35 @@ describe('loadFrom', () => {
       expect(result._tag).toBe('SaveDecodeError')
       if (result._tag === 'SaveDecodeError') {
         expect(result.version).toBe(0)
-        expect(result.reason).toBe(`the stored value at "${BROKEN}" is not a well-formed save envelope`)
+        expect(result.reason).toBe('the stored value at "' + BROKEN + '" is not a well-formed save envelope')
       }
     }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
   )
+
+  effect('maps an unreadable stored envelope getter to SaveDecodeError', () => {
+    const getterFailure = new Error('stored envelope could not be read')
+    const unreadable = new Proxy(sealedTestEnvelope(World.name, 1, { name: 'value' }), {
+      get: (target, property, receiver) => {
+        if (property === 'format') throw getterFailure
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    const service: StorageService = {
+      keys: Effect.succeed([BROKEN]),
+      get: () => Effect.succeed(Option.some(unreadable)),
+      put: () => Effect.void,
+      remove: () => Effect.void,
+      commitBatch: () => Effect.void,
+      readBatch: (keys) => Effect.all(keys.map((key) => service.get(key))),
+    }
+
+    return Effect.gen(function* () {
+      const error = yield* Effect.flip(loadFrom(World, BROKEN))
+      expect(error._tag).toBe('SaveDecodeError')
+      if (error._tag === 'SaveDecodeError') {
+        expect(error.reason).toBe('the stored value at "' + BROKEN + '" could not be read as a save envelope')
+        expect(error.cause).toBeInstanceOf(Error)
+      }
+    }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))
+  })
 })

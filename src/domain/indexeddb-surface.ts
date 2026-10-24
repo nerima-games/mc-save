@@ -82,8 +82,8 @@
  * readable. It was rejected because `docs/public-api.md` §8 states the rule
  * this repository is built on:
  *
- *   > mc-save ではスキーマ移行は `defineFormat` の連鎖が担い、
- *   > IndexedDB の `upgrade` はストア構造の変更だけに限定する（責務を混ぜない）。
+ *   > Schema migrations belong to the `defineFormat` chain in mc-save,
+ *   > while IndexedDB `upgrade` is limited to store structure changes.
  *
  * Making the event unreadable turns "do not branch the upgrade on the old
  * version" from a convention someone must remember into something the type
@@ -101,7 +101,7 @@
  * `ConstraintError`, `AbortError`, `VersionError` — and the reference
  * implementation identified quota the same way
  * (`storage-error-mapping.ts`, recorded in `docs/public-api.md` §8:
- * "`QuotaExceededError` は `DOMException.name` で判定"). Both members are
+ * "`QuotaExceededError` is identified by `DOMException.name`"). Both members are
  * REQUIRED rather than optional: `DOMException` really does declare both, and a
  * type whose members are all optional is a "weak type" that TypeScript refuses
  * to accept an unrelated source for.
@@ -265,7 +265,5 @@ export type IdbDatabase = {
  */
 export type IdbFactory = {
   readonly open: (name: string, version?: number) => IdbOpenRequest
-  readonly databases?: () => Promise<
-    ReadonlyArray<{ readonly name?: string; readonly version?: number }>
-  >
+  readonly databases?: () => Promise<ReadonlyArray<{ readonly name?: string; readonly version?: number }>>
 }

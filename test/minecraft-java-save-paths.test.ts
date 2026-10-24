@@ -1,5 +1,9 @@
+import { Result } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { parseMinecraftJavaSavePath } from '../src/domain/minecraft-java-save-paths.js'
+import { parseMinecraftJavaSavePath as parseMinecraftJavaSavePathResult } from '../src/domain/minecraft-java-save-paths.js'
+
+const parseMinecraftJavaSavePath = (...args: Parameters<typeof parseMinecraftJavaSavePathResult>) =>
+  Result.getOrThrow(parseMinecraftJavaSavePathResult(...args))
 
 describe('Minecraft Java save path parsing', () => {
   it('recognizes the fixed top-level file names', () => {

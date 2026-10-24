@@ -57,8 +57,8 @@ export type StorageService = {
 
 // Same shape as mc-kernel's `ClockPort`: the tag constructor is bound to a name
 // because `--isolatedDeclarations` refuses an expression in an `extends` clause.
-const StoragePortBase: Context.TagClass<StoragePort, '@nerima-games/mc-save/StoragePort', StorageService> =
-  Context.Tag('@nerima-games/mc-save/StoragePort')<StoragePort, StorageService>()
+const StoragePortBase: Context.ServiceClass<StoragePort, '@nerima-games/mc-save/StoragePort', StorageService> =
+  Context.Service<StoragePort, StorageService>()('@nerima-games/mc-save/StoragePort')
 
 export class StoragePort extends StoragePortBase {}
 
@@ -140,28 +140,24 @@ export const makeInMemoryStorage: Effect.Effect<StorageService> = Effect.gen(fun
 
     commitBatch: (mutations) =>
       Effect.gen(function* () {
+        const prepared = yield* Effect.forEach(mutations, (mutation) =>
+          mutation._tag === 'Put'
+            ? cloneEnvelope('in-memory.commitBatch', mutation.key, mutation.envelope).pipe(
+                Effect.map((envelope): StorageMutation => ({ ...mutation, envelope })),
+              )
+            : Effect.succeed(mutation),
+        )
         const outcome = yield* Ref.modify(
           store,
           (current): readonly [CommitOutcome, ReadonlyMap<string, SaveEnvelope>] => {
             const next = new Map(current)
-            for (const mutation of mutations) {
+            for (const mutation of prepared) {
               const existing = next.get(mutation.key)
               if (mutation.expected !== undefined && !matchesExpected(existing, mutation.expected)) {
                 return [{ _tag: 'failure', error: conflictError(mutation.key) }, current]
               }
-
               if (mutation._tag === 'Put') {
-                try {
-                  next.set(mutation.key, cloneStructured(mutation.envelope))
-                } catch (cause) {
-                  return [
-                    {
-                      _tag: 'failure',
-                      error: new StorageError({ operation: 'in-memory.commitBatch', key: mutation.key, cause }),
-                    },
-                    current,
-                  ]
-                }
+                next.set(mutation.key, mutation.envelope)
               } else {
                 next.delete(mutation.key)
               }

@@ -1,7 +1,7 @@
 import { describe, expect } from 'vitest'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import { effect } from './support/effect-test.js'
-import { defineFormat } from '../src/domain/format.js'
+import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import {
   INSERTION_INDEX_NAME,
   indexedDbStorageLayer,
@@ -13,6 +13,11 @@ import { SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { makeFakeIndexedDb } from './fake-indexeddb.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const DATABASE = 'mc-save/test/worlds'
 const A = SaveKey('alpha')
 const B = SaveKey('beta')
@@ -116,8 +121,9 @@ describe('onupgradeneeded and a database written by an older version', () => {
 
       yield* saveTo(AtVersionThree, A, { n: 1 }).pipe(Effect.provide(layerFor(factory)))
 
-      const listed = (yield* Effect.promise(() => factory.databases?.() ?? Promise.resolve([]))) ?? []
-      expect(listed).toStrictEqual([{ name: DATABASE, version: STORE_LAYOUT_VERSION }])
+      expect(factory.databaseNames()).toContain(DATABASE)
+      expect(factory.storeNamesOf(DATABASE)).toStrictEqual([SAVE_STORE_NAME])
+      expect(factory.indexNamesOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([INSERTION_INDEX_NAME])
       const expectedEnvelope = sealedTestEnvelope('mc-save/test/idb-versioned', 3, { n: 1 })
       expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([
         { key: 'alpha', seq: 0, envelope: expectedEnvelope },

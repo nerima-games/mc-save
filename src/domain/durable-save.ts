@@ -1,5 +1,5 @@
 /* eslint-disable no-bitwise -- UTF-8 encoding and FNV-1a are byte-level algorithms. */
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema, Semaphore } from 'effect'
 import { isFromFuture, type SaveEnvelope, SaveEnvelopeSchema } from './envelope.js'
 import { SaveDecodeError, StorageError } from './errors.js'
 import { decodeSave, encodeSave, type SaveFormat } from './format.js'
@@ -15,7 +15,7 @@ import {
 export { DEFAULT_MAX_SAVE_BYTES, sealSaveEnvelope, validateSaveEnvelope } from './integrity.js'
 
 interface SaveLock {
-  readonly semaphore: Effect.Semaphore
+  readonly semaphore: Semaphore.Semaphore
   /** The per-storage table this lock lives in, so release never has to look it up again. */
   readonly owner: Map<string, SaveLock>
   users: number
@@ -34,7 +34,7 @@ const acquireLock = (storage: object, key: SaveKey): SaveLock => {
     existing.users += 1
     return existing
   }
-  const created: SaveLock = { semaphore: Effect.runSync(Effect.makeSemaphore(1)), owner: locks, users: 1 }
+  const created: SaveLock = { semaphore: Semaphore.makeUnsafe(1), owner: locks, users: 1 }
   locks.set(key, created)
   return created
 }
@@ -51,7 +51,7 @@ const readStoredEnvelope = <A, I>(
   stored: unknown,
   maxBytes: number,
 ): Effect.Effect<SaveEnvelope, SaveDecodeError> =>
-  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
+  Schema.decodeUnknownEffect(SaveEnvelopeSchema)(stored).pipe(
     Effect.mapError(
       (cause) =>
         new SaveDecodeError({
@@ -165,18 +165,18 @@ export const loadDurably = <A, I>(
       if (Option.isNone(previous)) return Option.none<A>()
       return Option.some(yield* decodeStored(format, previous.value, maxBytes))
     }
-    const latestEnvelope = yield* Effect.either(readStoredEnvelope(format, latest.value, maxBytes))
-    if (latestEnvelope._tag === 'Left') {
+    const latestEnvelope = yield* Effect.result(readStoredEnvelope(format, latest.value, maxBytes))
+    if (Result.isFailure(latestEnvelope)) {
       return Option.isSome(previous)
         ? yield* decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
-        : yield* Effect.fail(latestEnvelope.left)
+        : yield* Effect.fail(latestEnvelope.failure)
     }
 
-    return yield* decodeSave(format, latestEnvelope.right).pipe(
+    return yield* decodeSave(format, latestEnvelope.success).pipe(
       Effect.map(Option.some),
       Effect.catchTags({
         SaveDecodeError: (latestError) =>
-          isFutureSaveDecodeError(format, latestEnvelope.right, latestError)
+          isFutureSaveDecodeError(format, latestEnvelope.success, latestError)
             ? Effect.fail(latestError)
             : Option.isSome(previous)
               ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))

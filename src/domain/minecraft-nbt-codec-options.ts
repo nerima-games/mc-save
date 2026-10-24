@@ -1,3 +1,4 @@
+import { Result } from 'effect'
 import { NbtFormatError } from './minecraft-nbt-types.js'
 
 export type NbtCodecOptions = {
@@ -29,18 +30,34 @@ const resolveLimit = (
   value: number | undefined,
   minimum: number,
   maximum?: number,
-): number => {
+): Result.Result<number, NbtFormatError> => {
   const resolved = value ?? DEFAULT_NBT_CODEC_OPTIONS[name]
   if (!Number.isSafeInteger(resolved) || resolved < minimum || (maximum !== undefined && resolved > maximum)) {
     const upper = maximum === undefined ? '' : ` and at most ${String(maximum)}`
-    throw nbtError(`${name} must be a safe integer of at least ${String(minimum)}${upper}`)
+    return Result.fail(
+      nbtError(`${name} must be a safe integer of at least ${String(minimum)}${upper}`),
+    )
   }
-  return resolved
+  return Result.succeed(resolved)
 }
 
-export const resolveNbtCodecOptions = (options: NbtCodecOptions | undefined): ResolvedNbtCodecOptions => ({
-  maxBytes: resolveLimit('maxBytes', options?.maxBytes, 1),
-  maxDepth: resolveLimit('maxDepth', options?.maxDepth, 1),
-  maxElements: resolveLimit('maxElements', options?.maxElements, 0),
-  maxStringBytes: resolveLimit('maxStringBytes', options?.maxStringBytes, 0, 0xffff),
-})
+export const resolveNbtCodecOptions = (
+  options: NbtCodecOptions | undefined,
+): Result.Result<ResolvedNbtCodecOptions, NbtFormatError> =>
+  Result.gen(function* () {
+    const values = yield* Result.try({
+      try: () => ({
+        maxBytes: options?.maxBytes,
+        maxDepth: options?.maxDepth,
+        maxElements: options?.maxElements,
+        maxStringBytes: options?.maxStringBytes,
+      }),
+      catch: () => nbtError('NBT codec options must be readable'),
+    })
+    return {
+      maxBytes: yield* resolveLimit('maxBytes', values.maxBytes, 1),
+      maxDepth: yield* resolveLimit('maxDepth', values.maxDepth, 1),
+      maxElements: yield* resolveLimit('maxElements', values.maxElements, 0),
+      maxStringBytes: yield* resolveLimit('maxStringBytes', values.maxStringBytes, 0, 0xffff),
+    }
+  })

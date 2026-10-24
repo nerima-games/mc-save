@@ -1,21 +1,34 @@
-import { ChunkAxis } from '@nerima-games/mc-kernel'
+import { ChunkAxis } from '@nerima-games/mc-kernel/domain/coordinates'
+import { Effect, Result } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   ANVIL_CHUNK_COUNT,
-  anvilRegion,
+  anvilRegion as anvilRegionResult,
   type AnvilChunkRecord,
   type AnvilRegion,
-  decodeMinecraftJavaSave,
-  encodeMinecraftJavaSave,
+  decodeMinecraftJavaSave as decodeMinecraftJavaSaveEffect,
+  encodeMinecraftJavaSave as encodeMinecraftJavaSaveEffect,
   MinecraftJavaSaveError,
-  nbtCompound,
-  nbtDocument,
-  nbtInt,
-  nbtLong,
-  nbtString,
+  nbtCompound as nbtCompoundResult,
+  nbtDocument as nbtDocumentResult,
+  nbtInt as nbtIntResult,
+  nbtLong as nbtLongResult,
+  nbtString as nbtStringResult,
   type MinecraftJavaSave,
   type MinecraftJavaSaveFile,
 } from '../src/index.js'
+
+const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+const anvilRegion = (...args: Parameters<typeof anvilRegionResult>) => unwrapResult(anvilRegionResult(...args))
+const nbtCompound = (...args: Parameters<typeof nbtCompoundResult>) => unwrapResult(nbtCompoundResult(...args))
+const nbtDocument = (...args: Parameters<typeof nbtDocumentResult>) => unwrapResult(nbtDocumentResult(...args))
+const nbtInt = (...args: Parameters<typeof nbtIntResult>) => unwrapResult(nbtIntResult(...args))
+const nbtLong = (...args: Parameters<typeof nbtLongResult>) => unwrapResult(nbtLongResult(...args))
+const nbtString = (...args: Parameters<typeof nbtStringResult>) => unwrapResult(nbtStringResult(...args))
+const encodeMinecraftJavaSave = (...args: Parameters<typeof encodeMinecraftJavaSaveEffect>) =>
+  Effect.runPromise(encodeMinecraftJavaSaveEffect(...args))
+const decodeMinecraftJavaSave = (...args: Parameters<typeof decodeMinecraftJavaSaveEffect>) =>
+  Effect.runPromise(decodeMinecraftJavaSaveEffect(...args))
 
 const PLAYER_ID = '01234567-89ab-cdef-0123-456789abcdef'
 
@@ -245,29 +258,29 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     await expect(encodeMinecraftJavaSave(minimal)).resolves.toHaveLength(1)
     // @ts-expect-error -- deliberately non-object options to verify runtime rejection
     await expect(encodeMinecraftJavaSave(source, null)).rejects.toThrow('options must be an object')
-    await expectInvalidSave(Object.create({}), 'save must be an object')
+    await expectInvalidSave(Object.create({}), 'snapshot-safe')
 
     const proxy = new Proxy({}, { getPrototypeOf: () => { throw new Error('hostile proxy') } })
-    await expectInvalidSave(proxy, 'save must be an object')
+    await expectInvalidSave(proxy, 'save could not be snapshotted')
 
-    await expectInvalidSave({ ...source, playerData: new Array(1) }, 'playerData must be an array')
+    await expectInvalidSave({ ...source, playerData: new Array(1) }, 'snapshot-safe')
     const customArray = [...source.playerData]
     Object.setPrototypeOf(customArray, {})
-    await expectInvalidSave({ ...source, playerData: customArray }, 'playerData must be an array')
+    await expectInvalidSave({ ...source, playerData: customArray }, 'snapshot-safe')
 
     const nonEnumerableArray = [...source.playerData]
     Object.defineProperty(nonEnumerableArray, '0', { enumerable: false })
-    await expectInvalidSave({ ...source, playerData: nonEnumerableArray }, 'playerData must be an array')
+    await expectInvalidSave({ ...source, playerData: nonEnumerableArray }, 'snapshot-safe')
 
     const extraKeyArray = Object.assign([...source.playerData], { extra: true })
-    await expectInvalidSave({ ...source, playerData: extraKeyArray }, 'playerData must be an array')
+    await expectInvalidSave({ ...source, playerData: extraKeyArray }, 'snapshot-safe')
     await expectInvalidSave({ ...source, playerData: 1 }, 'playerData must be an array')
     await expectInvalidSave({ ...source, playerData: [{ playerId: '../escape', document: source.level }] }, 'playerId')
 
     const derivedBytes = new (class extends Uint8Array {})([1])
-    await expectInvalidSave({ ...source, icon: derivedBytes }, 'icon must be a Uint8Array')
+    await expectInvalidSave({ ...source, icon: derivedBytes }, 'snapshot-safe')
     const extraKeyBytes = Object.assign(new Uint8Array([1]), { extra: true })
-    await expectInvalidSave({ ...source, icon: extraKeyBytes }, 'icon must be a Uint8Array')
+    await expectInvalidSave({ ...source, icon: extraKeyBytes }, 'snapshot-safe')
     await expectInvalidSave({ ...source, sessionLock: 2n ** 63n }, 'sessionLock')
 
     await expectInvalidSave(
@@ -340,7 +353,7 @@ describe('Minecraft Java 26.1 world save boundary', () => {
         ...source,
         regions: [{ ...firstRegion, region: { chunks: invalidChunkRegion.chunks, timestamps: sparseTimestamps } }],
       },
-      'regions 0 is invalid',
+      'snapshot-safe',
     )
   })
 

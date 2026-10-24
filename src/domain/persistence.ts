@@ -7,7 +7,7 @@
  * `StoragePort`, lets a new kind of saved thing be added without touching the
  * adapter code.
  */
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import { SaveEnvelopeSchema } from './envelope.js'
 import { SaveDecodeError, StorageError } from './errors.js'
 import { decodeSave, type SaveFormat } from './format.js'
@@ -78,15 +78,27 @@ export const loadFrom = <A, I>(
       return Option.none<A>()
     }
 
-    const envelope = yield* Schema.decodeUnknown(SaveEnvelopeSchema)(stored.value).pipe(
-      Effect.mapError(
-        (cause) =>
-          new SaveDecodeError({
-            format: format.name,
-            version: 0,
-            reason: `the stored value at "${key}" is not a well-formed save envelope`,
-            cause,
-          }),
+    const envelope = yield* Effect.try({
+      try: () => Schema.decodeUnknownResult(SaveEnvelopeSchema)(stored.value),
+      catch: (cause) =>
+        new SaveDecodeError({
+          format: format.name,
+          version: 0,
+          reason: `the stored value at "${key}" could not be read as a save envelope`,
+          cause,
+        }),
+    }).pipe(
+      Effect.flatMap((decoded) =>
+        Result.isFailure(decoded)
+          ? Effect.fail(
+              new SaveDecodeError({
+                format: format.name,
+                version: 0,
+                reason: `the stored value at "${key}" is not a well-formed save envelope`,
+                cause: decoded.failure,
+              }),
+            )
+          : Effect.succeed(decoded.success),
       ),
     )
 

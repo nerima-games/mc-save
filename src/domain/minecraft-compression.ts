@@ -1,4 +1,4 @@
-import { Data } from 'effect'
+import { Data, Effect, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
 import { decodeLz4BlockStream, encodeLz4BlockStream } from './minecraft-lz4.js'
 
@@ -52,13 +52,13 @@ type StreamReadResult = {
 }
 
 type StreamReader = {
-  read: () => Promise<StreamReadResult>
+  read: () => PromiseLike<StreamReadResult>
   releaseLock?: () => void
 }
 
 type StreamWriter = {
-  write: (chunk: Uint8Array) => Promise<void>
-  close: () => Promise<void>
+  write: (chunk: Uint8Array) => PromiseLike<void>
+  close: () => PromiseLike<void>
 }
 
 type StreamTransform = {
@@ -99,133 +99,176 @@ const compressionError = (
 const isCompression = (value: unknown): value is MinecraftCompression =>
   value === 'gzip' || value === 'zlib' || value === 'none' || value === 'lz4'
 
-function assertCompression(value: unknown, operation: MinecraftCompressionError['operation']): asserts value is MinecraftCompression {
-  if (!isCompression(value)) throw compressionError(operation, 'none', `unknown compression ${String(value)}`)
+function assertCompression(value: unknown, operation: MinecraftCompressionError['operation']): Result.Result<MinecraftCompression, MinecraftCompressionError> {
+  return isCompression(value)
+    ? Result.succeed(value)
+    : Result.fail(compressionError(operation, 'none', `unknown compression ${String(value)}`))
 }
 
-const resolveLimit = (value: number | undefined, name: string, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): number => {
+const resolveLimit = (value: number | undefined, name: string, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<number, MinecraftCompressionError> => {
   const resolved = value ?? MINECRAFT_COMPRESSION_MAX_BYTES
-  if (!Number.isSafeInteger(resolved) || resolved < 0) {
-    throw compressionError(operation, compression, `${name} must be a non-negative safe integer`)
-  }
-  return resolved
+  return Number.isSafeInteger(resolved) && resolved >= 0
+    ? Result.succeed(resolved)
+    : Result.fail(compressionError(operation, compression, `${name} must be a non-negative safe integer`))
 }
 
-const assertInput = (input: Uint8Array, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): void => {
-  if (!(input instanceof Uint8Array)) throw compressionError(operation, compression, 'input must be a Uint8Array')
-}
+const assertInput = (input: Uint8Array, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<void, MinecraftCompressionError> =>
+  input instanceof Uint8Array
+    ? Result.succeed(undefined)
+    : Result.fail(compressionError(operation, compression, 'input must be a Uint8Array'))
 
-const assertInputLimit = (input: Uint8Array, limit: number, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): void => {
-  if (input.byteLength > limit) {
-    throw compressionError(operation, compression, `input exceeds maxInputBytes ${String(limit)}`)
-  }
-}
+const assertInputLimit = (input: Uint8Array, limit: number, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<void, MinecraftCompressionError> =>
+  input.byteLength > limit
+    ? Result.fail(compressionError(operation, compression, `input exceeds maxInputBytes ${String(limit)}`))
+    : Result.succeed(undefined)
 
-const assertOutputLimit = (output: Uint8Array, limit: number, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Uint8Array => {
-  if (output.byteLength > limit) {
-    throw compressionError(operation, compression, `output exceeds maxOutputBytes ${String(limit)}`)
-  }
-  return output
-}
+const assertOutputLimit = (output: Uint8Array, limit: number, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<Uint8Array, MinecraftCompressionError> =>
+  output.byteLength > limit
+    ? Result.fail(compressionError(operation, compression, `output exceeds maxOutputBytes ${String(limit)}`))
+    : Result.succeed(output)
 
-const streamValueToBytes = (value: StreamValue): Uint8Array => {
-  if (value instanceof Uint8Array) return value.slice()
-  if (value instanceof ArrayBuffer) return new Uint8Array(value).slice()
-  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
-}
+const streamValueToBytes = (value: StreamValue, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<Uint8Array, MinecraftCompressionError> =>
+  Result.try({
+    try: () => {
+      if (value instanceof Uint8Array) return value.slice()
+      if (value instanceof ArrayBuffer) return new Uint8Array(value).slice()
+      return new Uint8Array(value.buffer, value.byteOffset, value.byteLength).slice()
+    },
+    catch: () => compressionError(operation, compression, 'stream chunk could not be copied'),
+  })
 
-const collectStreamOutput = async (
+const collectStreamOutput = (
   reader: StreamReader,
   maxOutputBytes: number,
   compression: MinecraftCompression,
   operation: MinecraftCompressionError['operation'],
-): Promise<Uint8Array> => {
-  const chunks: Uint8Array[] = []
-  let total = 0
-  while (true) {
-    // oxlint-disable-next-line no-await-in-loop -- stream readers must be consumed in order.
-    const result = await reader.read()
-    if (result.done) break
-    if (result.value === undefined) throw compressionError(operation, compression, 'stream returned no chunk')
-    const chunk = streamValueToBytes(result.value)
-    if (chunk.byteLength > maxOutputBytes - total) {
-      throw compressionError(operation, compression, `output exceeds maxOutputBytes ${String(maxOutputBytes)}`)
+): Effect.Effect<Uint8Array, MinecraftCompressionError> =>
+  Effect.gen(function* () {
+    const chunks: Uint8Array[] = []
+    let total = 0
+    while (true) {
+      const result = yield* Effect.tryPromise({
+        try: () => reader.read(),
+        catch: (error) => compressionError(operation, compression, error instanceof Error ? error.message : String(error)),
+      })
+      if (result.done) break
+      if (result.value === undefined) return yield* Effect.fail(compressionError(operation, compression, 'stream returned no chunk'))
+      const chunk = yield* Effect.fromResult(streamValueToBytes(result.value, compression, operation))
+      if (chunk.byteLength > maxOutputBytes - total) {
+        return yield* Effect.fail(compressionError(operation, compression, `output exceeds maxOutputBytes ${String(maxOutputBytes)}`))
+      }
+      chunks.push(chunk)
+      total += chunk.byteLength
     }
-    chunks.push(chunk)
-    total += chunk.byteLength
-  }
-  const output = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    output.set(chunk, offset)
-    offset += chunk.byteLength
-  }
-  return output
-}
+    return yield* Effect.try({
+      try: () => {
+        const output = new Uint8Array(total)
+        let offset = 0
+        for (const chunk of chunks) {
+          output.set(chunk, offset)
+          offset += chunk.byteLength
+        }
+        return output
+      },
+      catch: () => compressionError(operation, compression, 'stream output could not be assembled'),
+    })
+  })
 
 const nativeFormat = (compression: MinecraftCompression): NativeCompressionFormat =>
   compression === 'zlib' ? 'deflate' : 'gzip'
 
-const runNativeTransform = async (
+const runNativeTransform = (
   input: Uint8Array,
   compression: MinecraftCompression,
   operation: MinecraftCompressionError['operation'],
   maxOutputBytes: number,
-): Promise<Uint8Array> => {
-  const Constructor = resolveStreamConstructor(operation === 'encode' ? 'CompressionStream' : 'DecompressionStream')
-  if (Constructor === undefined) {
-    throw compressionError(operation, compression, 'the Web Compression API is unavailable')
-  }
+): Effect.Effect<Uint8Array, MinecraftCompressionError> =>
+  Effect.gen(function* () {
+    const Constructor = resolveStreamConstructor(operation === 'encode' ? 'CompressionStream' : 'DecompressionStream')
+    if (Constructor === undefined) return yield* Effect.fail(compressionError(operation, compression, 'the Web Compression API is unavailable'))
 
-  let reader: StreamReader | undefined
-  try {
-    const transform = new Constructor(nativeFormat(compression))
-    const writer = transform.writable.getWriter()
-    reader = transform.readable.getReader()
-    await writer.write(input)
-    await writer.close()
-    return await collectStreamOutput(reader, maxOutputBytes, compression, operation)
-  } catch (error) {
-    if (error instanceof MinecraftCompressionError) throw error
-    const reason = error instanceof Error ? error.message : String(error)
-    throw compressionError(operation, compression, reason)
-  } finally {
-    reader?.releaseLock?.()
-  }
-}
+    const { reader, writer } = yield* Effect.try({
+      try: () => {
+        const transform = new Constructor(nativeFormat(compression))
+        return { reader: transform.readable.getReader(), writer: transform.writable.getWriter() }
+      },
+      catch: (error) => compressionError(operation, compression, error instanceof Error ? error.message : String(error)),
+    })
+    const releaseLock = reader.releaseLock
+    const readEffect: StreamReader = { read: () => reader.read() }
+    const work = Effect.gen(function* () {
+      yield* Effect.tryPromise({
+        try: () => writer.write(input),
+        catch: (error) =>
+          compressionError(operation, compression, error instanceof Error ? error.message : String(error)),
+      })
+      yield* Effect.tryPromise({
+        try: () => writer.close(),
+        catch: (error) =>
+          compressionError(operation, compression, error instanceof Error ? error.message : String(error)),
+      })
+      return yield* collectStreamOutput(readEffect, maxOutputBytes, compression, operation)
+    })
+    return yield*
+      Effect.ensuring(
+        work,
+        Effect.sync(() => {
+          if (typeof releaseLock === 'function') releaseLock.call(reader)
+        }),
+      )
+  })
 
-export const compressMinecraft = async (
+export const compressMinecraft = (
   input: Uint8Array,
   compression: MinecraftCompression,
   options?: MinecraftCompressionOptions,
-): Promise<Uint8Array> => {
-  const maxInputBytes = resolveLimit(options?.maxInputBytes, 'maxInputBytes', compression, 'encode')
-  const maxOutputBytes = resolveLimit(options?.maxOutputBytes, 'maxOutputBytes', compression, 'encode')
-  assertCompression(compression, 'encode')
-  assertInput(input, compression, 'encode')
-  assertInputLimit(input, maxInputBytes, compression, 'encode')
+): Effect.Effect<Uint8Array, MinecraftCompressionError | import('./minecraft-lz4-format.js').MinecraftLz4Error> =>
+  Effect.gen(function* () {
+    const values = yield* Effect.try({
+      try: () => ({ compression, maxInputBytes: options?.maxInputBytes, maxOutputBytes: options?.maxOutputBytes }),
+      catch: () => compressionError('encode', 'none', 'compression options could not be read'),
+    })
+    const resolvedCompression = yield* Effect.fromResult(assertCompression(values.compression, 'encode'))
+    const maxInputBytes = yield* Effect.fromResult(resolveLimit(values.maxInputBytes, 'maxInputBytes', resolvedCompression, 'encode'))
+    const maxOutputBytes = yield* Effect.fromResult(resolveLimit(values.maxOutputBytes, 'maxOutputBytes', resolvedCompression, 'encode'))
+    yield* Effect.fromResult(assertInput(input, resolvedCompression, 'encode'))
+    yield* Effect.fromResult(assertInputLimit(input, maxInputBytes, resolvedCompression, 'encode'))
+    const snapshot = yield* Effect.try({
+      try: () => input.slice(),
+      catch: () => compressionError('encode', resolvedCompression, 'input could not be copied'),
+    })
 
-  if (compression === 'none') return assertOutputLimit(input.slice(), maxOutputBytes, compression, 'encode')
-  if (compression === 'lz4') {
-    return assertOutputLimit(encodeLz4BlockStream(input, { maxBytes: maxInputBytes }), maxOutputBytes, compression, 'encode')
-  }
-  return runNativeTransform(input, compression, 'encode', maxOutputBytes)
-}
+    if (resolvedCompression === 'none') return yield* Effect.fromResult(assertOutputLimit(snapshot, maxOutputBytes, resolvedCompression, 'encode'))
+    if (resolvedCompression === 'lz4') {
+      const output = yield* Effect.fromResult(encodeLz4BlockStream(snapshot, { maxBytes: maxInputBytes }))
+      return yield* Effect.fromResult(assertOutputLimit(output, maxOutputBytes, resolvedCompression, 'encode'))
+    }
+    return yield* runNativeTransform(snapshot, resolvedCompression, 'encode', maxOutputBytes)
+  })
 
-export const decompressMinecraft = async (
+export const decompressMinecraft = (
   input: Uint8Array,
   compression: MinecraftCompression,
   options?: MinecraftCompressionOptions,
-): Promise<Uint8Array> => {
-  const maxInputBytes = resolveLimit(options?.maxInputBytes, 'maxInputBytes', compression, 'decode')
-  const maxOutputBytes = resolveLimit(options?.maxOutputBytes, 'maxOutputBytes', compression, 'decode')
-  assertCompression(compression, 'decode')
-  assertInput(input, compression, 'decode')
-  assertInputLimit(input, maxInputBytes, compression, 'decode')
+): Effect.Effect<Uint8Array, MinecraftCompressionError | import('./minecraft-lz4-format.js').MinecraftLz4Error> =>
+  Effect.gen(function* () {
+    const values = yield* Effect.try({
+      try: () => ({ compression, maxInputBytes: options?.maxInputBytes, maxOutputBytes: options?.maxOutputBytes }),
+      catch: () => compressionError('decode', 'none', 'compression options could not be read'),
+    })
+    const resolvedCompression = yield* Effect.fromResult(assertCompression(values.compression, 'decode'))
+    const maxInputBytes = yield* Effect.fromResult(resolveLimit(values.maxInputBytes, 'maxInputBytes', resolvedCompression, 'decode'))
+    const maxOutputBytes = yield* Effect.fromResult(resolveLimit(values.maxOutputBytes, 'maxOutputBytes', resolvedCompression, 'decode'))
+    yield* Effect.fromResult(assertInput(input, resolvedCompression, 'decode'))
+    yield* Effect.fromResult(assertInputLimit(input, maxInputBytes, resolvedCompression, 'decode'))
+    const snapshot = yield* Effect.try({
+      try: () => input.slice(),
+      catch: () => compressionError('decode', resolvedCompression, 'input could not be copied'),
+    })
 
-  if (compression === 'none') return assertOutputLimit(input.slice(), maxOutputBytes, compression, 'decode')
-  if (compression === 'lz4') {
-    return decodeLz4BlockStream(input, { maxBytes: maxOutputBytes })
-  }
-  return runNativeTransform(input, compression, 'decode', maxOutputBytes)
-}
+    if (resolvedCompression === 'none') return yield* Effect.fromResult(assertOutputLimit(snapshot, maxOutputBytes, resolvedCompression, 'decode'))
+    if (resolvedCompression === 'lz4') {
+      return yield* Effect.fromResult(decodeLz4BlockStream(snapshot, { maxBytes: maxOutputBytes }))
+    }
+    return yield* runNativeTransform(snapshot, resolvedCompression, 'decode', maxOutputBytes)
+  })

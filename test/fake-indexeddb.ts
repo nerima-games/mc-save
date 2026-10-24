@@ -223,6 +223,7 @@ export type FakeIndexedDb = IdbFactory & {
   /** Hold `name` open at `version`, so the next open of a higher version blocks. */
   readonly holdOpenAt: (name: string, version: number) => void
   /** Every database name that exists, for the row #9 port. */
+  readonly databases: () => Promise<ReadonlyArray<{ readonly name: string; readonly version: number }>>
   readonly databaseNames: () => ReadonlyArray<string>
   /** The store names of `name`, or undefined if there is no such database. */
   readonly storeNamesOf: (name: string) => ReadonlyArray<string> | undefined
@@ -550,9 +551,12 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         [...store.records.values()]
           .filter((record) => indexKeyOf(record.value, keyPath) !== undefined)
           .sort((left, right) => {
-            const a = indexKeyOf(left.value, keyPath) ?? 0
-            const b = indexKeyOf(right.value, keyPath) ?? 0
-            return a - b
+            const a = indexKeyOf(left.value, keyPath)
+            const b = indexKeyOf(right.value, keyPath)
+            if (a === undefined || b === undefined) return 0
+            if (typeof a === 'number') return typeof b === 'number' ? a - b : -1
+            if (typeof b === 'number') return 1
+            return a < b ? -1 : a > b ? 1 : 0
           })
 
       return {
@@ -776,9 +780,10 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     return request
   }
 
-  const indexKeyOf = (value: unknown, keyPath: string): number | undefined => {
+  const indexKeyOf = (value: unknown, keyPath: string): number | string | undefined => {
     const holder: unknown = isPlainRecord(value) ? value[keyPath] : undefined
-    return typeof holder === 'number' ? holder : undefined
+    if (typeof holder === 'string') return holder
+    return typeof holder === 'number' && Number.isFinite(holder) ? holder : undefined
   }
 
   const seedStore = (
