@@ -113,7 +113,9 @@ const assertDurableBatch = (
       }),
     )
   }
-  if (!Option.isOption(latest as unknown) || !Option.isOption(previous as unknown)) {
+  const latestValue: unknown = latest
+  const previousValue: unknown = previous
+  if (!Option.isOption(latestValue) || !Option.isOption(previousValue)) {
     return Effect.fail(
       new StorageError({
         operation: 'durable.readBatch',
