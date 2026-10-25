@@ -1,4 +1,4 @@
-import { describe, expect } from 'vitest'
+import { describe, expect, vi } from 'vitest'
 import { effect } from './support/effect-test.js'
 import { Effect, Result, Schema } from 'effect'
 import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
@@ -365,24 +365,17 @@ describe('canonical integrity inputs', () => {
 
   effect('returns a Result failure when the UTF-8 view operation throws', () =>
     Effect.sync(() => {
-      const originalSubarray = Object.getOwnPropertyDescriptor(Uint8Array.prototype, 'subarray')
-
-      Object.defineProperty(Uint8Array.prototype, 'subarray', {
-        configurable: true,
-        writable: true,
-        value: () => {
+      const NativeUint8Array = globalThis.Uint8Array
+      vi.stubGlobal('Uint8Array', class extends NativeUint8Array {
+        override subarray(): never {
           throw new Error('UTF-8 view could not be created')
-        },
+        }
       })
       try {
         const result = utf8Bytes(CanonicalJson('{"value":1}'))
         expect(Result.isFailure(result) && result.failure).toBe('canonical JSON could not be encoded as UTF-8')
       } finally {
-        if (originalSubarray === undefined) {
-          Reflect.deleteProperty(Uint8Array.prototype, 'subarray')
-        } else {
-          Object.defineProperty(Uint8Array.prototype, 'subarray', originalSubarray)
-        }
+        vi.unstubAllGlobals()
       }
     }),
   )

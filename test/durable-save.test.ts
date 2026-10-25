@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { effect } from './support/effect-test.js'
 import { Effect, Option, Result, Schema } from 'effect'
 import { SaveChecksum, SaveFormatVersion, SaveMaxBytes } from '../src/domain/brand-types.js'
@@ -514,22 +514,22 @@ effect('fails when storage returns an incomplete durable checkpoint batch', () =
           },
         }
 
-        const loaded = yield* Effect.result(
+        const malformedRead = yield* Effect.result(
           loadDurably(State, key).pipe(Effect.provideService(StoragePort, malformedOptionStorage)),
         )
-        expect(loaded._tag).toBe('Failure')
-        if (loaded._tag === 'Failure') {
-          expect(loaded.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
+        expect(malformedRead._tag).toBe('Failure')
+        if (malformedRead._tag === 'Failure') {
+          expect(malformedRead.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
         }
 
-        const saved = yield* Effect.result(
+        const malformedSave = yield* Effect.result(
           saveDurably(State, key, { score: 1, label: 'must not overwrite malformed checkpoints' }).pipe(
             Effect.provideService(StoragePort, malformedOptionStorage),
           ),
         )
-        expect(saved._tag).toBe('Failure')
-        if (saved._tag === 'Failure') {
-          expect(saved.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
+        expect(malformedSave._tag).toBe('Failure')
+        if (malformedSave._tag === 'Failure') {
+          expect(malformedSave.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
         }
         expect(commitCount).toBe(0)
       }
@@ -1056,14 +1056,11 @@ describe('save integrity', () => {
     Effect.gen(function* () {
       const draft = saveEnvelope(State.name, 1, { score: 1, label: 'view failure' })
       const valid = sealEnvelopeForTest(draft)
-      const subarrayDescriptor = Object.getOwnPropertyDescriptor(Uint8Array.prototype, 'subarray')
-
-      Object.defineProperty(Uint8Array.prototype, 'subarray', {
-        configurable: true,
-        writable: true,
-        value: () => {
+      const NativeUint8Array = globalThis.Uint8Array
+      vi.stubGlobal('Uint8Array', class extends NativeUint8Array {
+        override subarray(): never {
           throw new Error('UTF-8 view could not be created')
-        },
+        }
       })
       try {
         const sealed = sealSaveEnvelopeResult(draft)
@@ -1075,21 +1072,15 @@ describe('save integrity', () => {
           expect(validated.failure.reason).toBe('save could not be encoded as UTF-8')
         }
       } finally {
-        if (subarrayDescriptor === undefined) {
-          Reflect.deleteProperty(Uint8Array.prototype, 'subarray')
-        } else {
-          Object.defineProperty(Uint8Array.prototype, 'subarray', subarrayDescriptor)
-        }
+        vi.unstubAllGlobals()
       }
 
-      const iteratorDescriptor = Object.getOwnPropertyDescriptor(Uint8Array.prototype, Symbol.iterator)
       const checksumFailure = new Error('byte iterator failed')
-      Object.defineProperty(Uint8Array.prototype, Symbol.iterator, {
-        configurable: true,
-        writable: true,
-        value: () => {
+      const NativeUint8ArrayWithSubarray = globalThis.Uint8Array
+      vi.stubGlobal('Uint8Array', class extends NativeUint8ArrayWithSubarray {
+        override [Symbol.iterator](): never {
           throw checksumFailure
-        },
+        }
       })
       try {
         const sealed = sealSaveEnvelopeResult(draft)
@@ -1101,11 +1092,7 @@ describe('save integrity', () => {
           expect(validated.failure.reason).toBe('save checksum could not be computed')
         }
       } finally {
-        if (iteratorDescriptor === undefined) {
-          Reflect.deleteProperty(Uint8Array.prototype, Symbol.iterator)
-        } else {
-          Object.defineProperty(Uint8Array.prototype, Symbol.iterator, iteratorDescriptor)
-        }
+        vi.unstubAllGlobals()
       }
     }),
   )
