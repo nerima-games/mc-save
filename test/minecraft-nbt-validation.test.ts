@@ -138,4 +138,47 @@ describe('Minecraft NBT document validation, low-level boundary', () => {
       vi.resetModules()
     }
   })
+
+  it('rejects proxy-backed document, tag, and child-array shapes without leaking trap failures', () => {
+    const unreadableDocument = new Proxy(
+      { name: '', root: { type: 'compound', entries: [] } },
+      { ownKeys: () => { throw new Error('document keys failed') } },
+    )
+    expect(isMinecraftNbtDocument(unreadableDocument)).toBe(false)
+
+    const unreadableEntries: unknown[] = new Proxy([], {
+      ownKeys: () => { throw new Error('array keys failed') },
+    })
+    expect(isMinecraftNbtDocument(doc({ type: 'compound', entries: unreadableEntries }))).toBe(false)
+
+    const unreadableTag = new Proxy({ type: 'compound', entries: [] }, {
+      get: (target, key, receiver) => {
+        if (key === 'type') throw new Error('tag type failed')
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    expect(isMinecraftNbtDocument(doc(unreadableTag))).toBe(false)
+
+    const unreadablePrototype = new Proxy({ name: '', root: { type: 'compound', entries: [] } }, {
+      getPrototypeOf: () => { throw new Error('prototype failed') },
+    })
+    expect(isMinecraftNbtDocument(unreadablePrototype)).toBe(false)
+
+    let prototypeReads = 0
+    const unreadableRecordPrototype = new Proxy({ name: '', root: { type: 'compound', entries: [] } }, {
+      getPrototypeOf: () => {
+        prototypeReads += 1
+        if (prototypeReads === 1) return Object.prototype
+        throw new Error('record prototype failed')
+      },
+    })
+    expect(isMinecraftNbtDocument(unreadableRecordPrototype)).toBe(false)
+    expect(prototypeReads).toBe(2)
+
+    const unreadableBytes = new Proxy(new Uint8Array([1]), {
+      ownKeys: () => { throw new Error('byte keys failed') },
+    })
+    expect(isMinecraftNbtDocument(wrap({ type: 'byteArray', value: unreadableBytes }))).toBe(false)
+  })
+
 })

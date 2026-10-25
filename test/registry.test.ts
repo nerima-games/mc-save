@@ -1,8 +1,9 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Either, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
 import { DuplicateFormatError } from '../src/domain/errors.js'
-import { defineFormat } from '../src/domain/format.js'
+import { defineFormat as defineFormatResult } from '../src/domain/format.js'
+import { SaveFormatName } from '../src/domain/brand-types.js'
 import {
   describeRegistry,
   emptyRegistry,
@@ -13,11 +14,13 @@ import {
 } from '../src/domain/registry.js'
 
 const formatNamed = (name: string, version = 1): RegisteredSaveFormat =>
-  defineFormat({
-    name,
+  Result.getOrThrow(defineFormatResult({
+    name: Result.getOrThrow(SaveFormatName.result(name)),
     version,
     schema: Schema.Unknown,
-  })
+  }))
+
+const formatName = (name: string) => Result.getOrThrow(SaveFormatName.result(name))
 
 describe('registerFormat', () => {
   effect('adds a format to an empty registry, findable by name afterwards', () =>
@@ -25,9 +28,9 @@ describe('registerFormat', () => {
       const alpha = formatNamed('mc-save/test/alpha')
       const result = registerFormat(emptyRegistry, alpha)
 
-      expect(Either.isRight(result)).toBe(true)
-      if (Either.isRight(result)) {
-        expect(lookupFormat(result.right, 'mc-save/test/alpha')).toStrictEqual(Option.some(alpha))
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isSuccess(result)) {
+        expect(lookupFormat(result.success, formatName('mc-save/test/alpha'))).toStrictEqual(Option.some(alpha))
       }
     }),
   )
@@ -37,11 +40,11 @@ describe('registerFormat', () => {
       const first = formatNamed('mc-save/test/dup')
       const second = formatNamed('mc-save/test/dup', 2)
       const registry = registerFormat(emptyRegistry, first)
-      if (Either.isLeft(registry)) throw new Error('setup: first registration unexpectedly failed')
+      if (Result.isFailure(registry)) throw new Error('setup: first registration unexpectedly failed')
 
-      const result = registerFormat(registry.right, second)
+      const result = registerFormat(registry.success, second)
 
-      expect(result).toStrictEqual(Either.left(new DuplicateFormatError({ format: 'mc-save/test/dup' })))
+      expect(result).toStrictEqual(Result.fail(new DuplicateFormatError({ format: 'mc-save/test/dup' })))
     }),
   )
 
@@ -53,7 +56,7 @@ describe('registerFormat', () => {
       const alpha = formatNamed('mc-save/test/alpha')
       const result = registerFormat(emptyRegistry, alpha)
 
-      expect(Either.isRight(result)).toBe(true)
+      expect(Result.isSuccess(result)).toBe(true)
       expect(emptyRegistry.size).toBe(0)
     }),
   )
@@ -67,15 +70,15 @@ describe('registerFormats', () => {
 
       const result = registerFormats(emptyRegistry, [alpha, beta])
 
-      expect(Either.isRight(result)).toBe(true)
-      if (Either.isRight(result)) {
-        expect(lookupFormat(result.right, 'mc-save/test/alpha')).toStrictEqual(Option.some(alpha))
-        expect(lookupFormat(result.right, 'mc-save/test/beta')).toStrictEqual(Option.some(beta))
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isSuccess(result)) {
+        expect(lookupFormat(result.success, formatName('mc-save/test/alpha'))).toStrictEqual(Option.some(alpha))
+        expect(lookupFormat(result.success, formatName('mc-save/test/beta'))).toStrictEqual(Option.some(beta))
       }
     }),
   )
 
-  effect('stops at the first duplicate, via Either.flatMap short-circuiting the reduce', () =>
+  effect('stops at the first duplicate, via Result.flatMap short-circuiting the reduce', () =>
     Effect.sync(() => {
       const alpha = formatNamed('mc-save/test/alpha')
       const alphaAgain = formatNamed('mc-save/test/alpha', 2)
@@ -85,7 +88,7 @@ describe('registerFormats', () => {
 
       // Not just "some Left": the specific duplicate, and never gamma, which
       // is only distinguishable from a fully-successful run by naming it.
-      expect(result).toStrictEqual(Either.left(new DuplicateFormatError({ format: 'mc-save/test/alpha' })))
+      expect(result).toStrictEqual(Result.fail(new DuplicateFormatError({ format: 'mc-save/test/alpha' })))
     }),
   )
 })
@@ -95,15 +98,15 @@ describe('lookupFormat', () => {
     Effect.sync(() => {
       const alpha = formatNamed('mc-save/test/alpha')
       const registry = registerFormat(emptyRegistry, alpha)
-      if (Either.isLeft(registry)) throw new Error('setup: registration unexpectedly failed')
+      if (Result.isFailure(registry)) throw new Error('setup: registration unexpectedly failed')
 
-      expect(lookupFormat(registry.right, 'mc-save/test/alpha')).toStrictEqual(Option.some(alpha))
+      expect(lookupFormat(registry.success, formatName('mc-save/test/alpha'))).toStrictEqual(Option.some(alpha))
     }),
   )
 
   effect('reports an unregistered name as none', () =>
     Effect.sync(() => {
-      expect(lookupFormat(emptyRegistry, 'mc-save/test/never-registered')).toStrictEqual(Option.none())
+      expect(lookupFormat(emptyRegistry, formatName('mc-save/test/never-registered'))).toStrictEqual(Option.none())
     }),
   )
 })
@@ -124,9 +127,9 @@ describe('describeRegistry', () => {
       const mike = formatNamed('mc-save/test/mike', 2)
 
       const registry = registerFormats(emptyRegistry, [zulu, alpha, mike])
-      if (Either.isLeft(registry)) throw new Error('setup: registration unexpectedly failed')
+      if (Result.isFailure(registry)) throw new Error('setup: registration unexpectedly failed')
 
-      expect(describeRegistry(registry.right)).toStrictEqual([
+      expect(describeRegistry(registry.success)).toStrictEqual([
         { name: 'mc-save/test/alpha', version: 1 },
         { name: 'mc-save/test/mike', version: 2 },
         { name: 'mc-save/test/zulu', version: 3 },
@@ -143,12 +146,12 @@ describe('describeRegistry', () => {
       // opaque type, so `describeRegistry` still has to behave sensibly if a
       // caller builds one another way (e.g. composing two registries' entries
       // under fresh keys), and that is exactly what this constructs.
-      const tiedName = 'mc-save/test/tied'
+      const tiedName = formatName('mc-save/test/tied')
       const first = formatNamed(tiedName, 1)
       const second = formatNamed(tiedName, 1)
-      const tied = new Map([
-        ['slot-a', first],
-        ['slot-b', second],
+      const tied = new Map<SaveFormatName, RegisteredSaveFormat>([
+        [formatName('mc-save/test/slot-a'), first],
+        [formatName('mc-save/test/slot-b'), second],
       ])
 
       const described = describeRegistry(tied)

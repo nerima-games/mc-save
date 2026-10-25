@@ -1,47 +1,40 @@
-# アーキテクチャ
+# Architecture
 
-## レイヤー
+## Layers
 
-mc-save は、ゲームの状態を知らない保存基盤です。
+mc-save provides persistence infrastructure without knowing the game's state model.
 
-| レイヤー | 主なモジュール | 責務 |
+| Layer | Main modules | Responsibility |
 | --- | --- | --- |
-| format | `format*.ts`、`format-definition.ts` | schema、名前、現行 version、encode/decode |
-| integrity | `envelope.ts`、`integrity*.ts` | canonical bytes、checksum、サイズ、sealed 値 |
-| persistence | `persistence.ts`、`save-preparation.ts`、`batch-save.ts` | codec と Port の接続、単件・一括操作 |
-| adapter | `storage-port.ts`、`indexeddb-*.ts`、`durable-save.ts` | 媒体、atomic commit、durable record、retry |
-| Minecraft codec | `minecraft-*.ts`、`anvil-region.ts` | Java wire format と container の再利用可能な実装 |
+| Format | `format*.ts`, `format-definition.ts` | Schema, name, current version, encode, and decode |
+| Integrity | `envelope.ts`, `integrity*.ts` | Canonical bytes, checksum, size checks, and sealed values |
+| Persistence | `persistence.ts`, `save-preparation.ts`, `batch-save.ts`, `durable-save.ts` | Connect codecs to the port; single, batch, and durable operations |
+| Application | `revisioned-save.ts`, `write-queue.ts` | Generic revision publication and sequential write mechanics |
+| Adapter | `storage-port.ts`, `indexeddb-*.ts`, `storage-retry.ts` | Storage service, adapters, and retries |
+| Save slices | `save-slices.ts` | Bundle codecs, migration paths, and restore preflight |
+| Minecraft codecs | `minecraft-*.ts`, `anvil-region.ts` | Reusable Java wire and container implementations |
 
-## 依存方向
+## Dependency direction
 
-~~~mermaid
+```mermaid
 graph TD
   kernel["mc-kernel"]
-  format["format / integrity"]
-  persistence["persistence / batch / durable"]
-  adapter["StoragePort / IndexedDB"]
-  minecraft["Minecraft wire / container"]
-  consumer["ゲーム側 consumer"]
+  effect["effect"]
+  save["mc-save"]
+  consumer["game consumer"]
 
-  format --> kernel
-  persistence --> format
-  persistence --> adapter
-  minecraft --> kernel
-  consumer --> format
-  consumer --> persistence
-  consumer --> minecraft
-~~~
+  save --> kernel
+  save --> effect
+  consumer --> save
+```
 
-mc-save の直接 runtime dependency は `effect` と `@nerima-games/mc-kernel` です。
-mc-kernel から `WorldId`、`ChunkCoord`、`ChunkAxis`、`CHUNK_SIZE_XZ` を再利用し、
-識別子検証と座標計算を重複実装しません。依存境界は `.oxlintrc.json` でも検査します。
+The arrows show package dependencies: mc-save imports `effect` and `@nerima-games/mc-kernel`, while consumer applications import and call mc-save. Consumers pass their schemas and values to mc-save at runtime; mc-save never imports a consumer package. It reuses the kernel's `WorldId`, coordinate brands and constants, and save-slice contracts. The `.oxlintrc.json` rules check dependency boundaries.
 
-consumer が `mc-worldgen` や `mc-sim` の domain schema を mc-save に持ち込むことはありません。
-逆方向の import が必要になった場合は、保存層ではなく責務分割を見直します。
+Consumer domain schemas stay in consumer packages. If mc-save needs to import a consumer, revisit the ownership boundary instead of adding the reverse dependency.
 
-## 保存データフロー
+## Save data flow
 
-~~~text
+```text
 typed value
   -> Schema encode
   -> draft envelope
@@ -49,23 +42,16 @@ typed value
   -> sealed envelope
   -> StoragePort
   -> IndexedDB or another adapter
-~~~
+```
 
-読み込みは逆方向ですが、媒体から戻った値をまず runtime schema と integrity で検証します。
-TypeScript の型注釈だけを信頼しないことが重要です。
+Reads follow the reverse path, but first validate the value returned by the storage medium against runtime schemas and integrity metadata. TypeScript annotations alone do not validate persisted data.
 
-## IndexedDB の境界
+## IndexedDB boundary
 
-IndexedDB の database/store/index 名、layout version、record 変換、transaction error mapping は
-`indexeddb-layout.ts`、`indexeddb-records.ts`、`indexeddb-runtime.ts` に分離しています。
-`indexeddb-surface.ts` は必要な DOM API の型だけを構造的に表現し、Node 側の型環境へ DOM 全体を
-持ち込みません。Node の fake IndexedDB と Chromium の実 IndexedDB は同じ Port 契約を検証します。
+Database, store, and index names, layout version, record conversion, and transaction error mapping are separated across `indexeddb-layout.ts`, `indexeddb-records.ts`, and `indexeddb-runtime.ts`. `indexeddb-surface.ts` describes only the DOM API shape the adapter needs, keeping DOM types out of the Node type environment. Fake IndexedDB in Node and real IndexedDB in Chromium exercise the same port contract.
 
-IndexedDB の内部 layout version と save format version は独立しています。layout upgrade は
-adapter の実装変更であり、旧版 save payload を現行 schema へ変換する migration ではありません。
+The IndexedDB layout version is independent of save format versions. A layout upgrade changes the adapter's storage representation; it does not migrate an application's payload schema.
 
-## Minecraft の境界
+## Minecraft boundary
 
-NBT は tag の wire codec、Anvil は region header・chunk record・sector packing・compression の
-container codec です。どの tag を level data や chunk payload として保存するかは consumer が
-決めます。標準 path helper は公式 Java の directory/resource 規則に対応するための純粋関数です。
+NBT is a tag wire codec. Anvil handles region headers, chunk records, sector packing, and compression. Consumers decide which tags make up level or chunk data. Standard path helpers are pure functions for Minecraft Java directory and resource conventions.

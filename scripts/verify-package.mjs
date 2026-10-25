@@ -51,7 +51,7 @@ const verifyArchiveContents = async (archivePath) => {
 const verifyRuntimeImport = async (consumerDirectory, packageName) => {
   const packageLiteral = JSON.stringify(packageName)
   const runtimeProbe = `
-import { Effect, Option, Schedule, Schema } from 'effect'
+import { Effect, Option, Result, Schedule, Schema } from 'effect'
 import * as packageModule from ${packageLiteral}
 
 const functionExports = ['defineFormat', 'encodeSave', 'decodeSave', 'saveTo', 'loadFrom', 'withStorageRetry']
@@ -64,20 +64,21 @@ if (typeof packageModule.makeInMemoryStorage !== 'object' || packageModule.makeI
   throw new Error('missing runtime export: makeInMemoryStorage')
 }
 
-const format = packageModule.defineFormat({
+const format = Result.getOrThrow(packageModule.defineFormat({
   name: 'package-verify',
   version: 1,
   schema: Schema.Struct({ value: Schema.String }),
-})
+}))
 const envelope = await Effect.runPromise(packageModule.encodeSave(format, { value: 'ok' }))
-const decoded = await Effect.runPromise(packageModule.decodeSave(format, envelope))
+const sealed = Result.getOrThrow(packageModule.sealSaveEnvelope(envelope))
+const decoded = await Effect.runPromise(packageModule.decodeSave(format, sealed))
 if (decoded.value !== 'ok') {
   throw new Error('root import did not decode an encoded value')
 }
 
 const storage = await Effect.runPromise(packageModule.makeInMemoryStorage)
 const key = packageModule.SaveKey('package-verify')
-await Effect.runPromise(storage.put(key, envelope))
+await Effect.runPromise(storage.put(key, sealed))
 const stored = await Effect.runPromise(storage.get(key))
 if (!Option.isSome(stored) || stored.value.payload.value !== 'ok') {
   throw new Error('root import did not expose a working storage adapter')
@@ -99,14 +100,14 @@ if (!Option.isSome(retryStored) || retryStored.value.payload.value !== 'ok') {
 const verifyTypeImport = async (consumerDirectory, packageName) => {
   const packageLiteral = JSON.stringify(packageName)
   const typeProbe = `
-import { Schedule, Schema } from 'effect'
+import { Result, Schedule, Schema } from 'effect'
 import { defineFormat, type SaveFormat, type StorageRetryPolicy } from ${packageLiteral}
 
-const format: SaveFormat<string, string> = defineFormat({
+const format: SaveFormat<string, string> = Result.getOrThrow(defineFormat({
   name: 'package-type-verify',
   version: 1,
   schema: Schema.String,
-})
+}))
 void format
 const retryPolicy: StorageRetryPolicy = { schedule: Schedule.recurs(1), shouldRetry: () => true }
 void retryPolicy

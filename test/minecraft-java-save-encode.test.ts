@@ -1,14 +1,15 @@
-import { ChunkAxis } from '@nerima-games/mc-kernel'
+import { ChunkAxis } from '@nerima-games/mc-kernel/domain/coordinates'
+import { Effect, Result } from 'effect'
 import { describe, expect, it, vi } from 'vitest'
-import { encodeMinecraftJavaSave } from '../src/domain/minecraft-java-save-encode.js'
+import { encodeMinecraftJavaSave as encodeMinecraftJavaSaveEffect } from '../src/domain/minecraft-java-save-encode.js'
+import { parseMinecraftPathSegment } from '../src/domain/minecraft-paths.js'
 import {
   ANVIL_CHUNK_COUNT,
-  anvilRegion,
+  anvilRegion as anvilRegionResult,
   MinecraftJavaSaveError,
-  nbtCompound,
-  nbtDocument,
-  nbtInt,
-  type AnvilChunkRecord,
+  nbtCompound as nbtCompoundResult,
+  nbtDocument as nbtDocumentResult,
+  nbtInt as nbtIntResult,
   type MinecraftJavaSave,
 } from '../src/index.js'
 
@@ -18,6 +19,15 @@ import {
 // (reproduced in isolation; confirmed to be a parser defect, not a real
 // no-type-assertion violation).
 type MinecraftSaveFilesModule = typeof import('../src/domain/minecraft-save-files.js')
+
+const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+const anvilRegion = (...args: Parameters<typeof anvilRegionResult>) => unwrapResult(anvilRegionResult(...args))
+const nbtCompound = (...args: Parameters<typeof nbtCompoundResult>) => unwrapResult(nbtCompoundResult(...args))
+const nbtDocument = (...args: Parameters<typeof nbtDocumentResult>) => unwrapResult(nbtDocumentResult(...args))
+const nbtInt = (...args: Parameters<typeof nbtIntResult>) => unwrapResult(nbtIntResult(...args))
+const pathSegment = (...args: Parameters<typeof parseMinecraftPathSegment>) => unwrapResult(parseMinecraftPathSegment(...args))
+const encodeMinecraftJavaSave = (...args: Parameters<typeof encodeMinecraftJavaSaveEffect>) =>
+  Effect.runPromise(encodeMinecraftJavaSaveEffect(...args))
 
 const level = nbtDocument('Level', nbtCompound([['DataVersion', nbtInt(1)]]))
 
@@ -47,7 +57,7 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
   it('wraps a non-MinecraftJavaSaveError raised by the JSON encoder', async () => {
     const source: MinecraftJavaSave = {
       ...baseSave(),
-      playerStats: [{ playerId: 'player-one', value: { score: 1 } }],
+      playerStats: [{ playerId: pathSegment('player-one'), value: { score: 1 } }],
     }
     const stringifySpy = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
       throw new Error('stringify boundary failure')
@@ -61,7 +71,7 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
   })
 
   it('wraps a non-MinecraftJavaSaveError raised by the region encoder', async () => {
-    const chunks = Array.from({ length: ANVIL_CHUNK_COUNT }, (): AnvilChunkRecord | null => null)
+    const chunks: unknown[] = Array.from({ length: ANVIL_CHUNK_COUNT }, () => null)
     chunks[0] = { localX: 0, localZ: 0, timestamp: 1, compression: 'none', payload: new Uint8Array([1, 2, 3]) }
     const source: MinecraftJavaSave = {
       ...baseSave(),
@@ -87,15 +97,15 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
       const actual = await importOriginal<MinecraftSaveFilesModule>()
       return {
         ...actual,
-        encodeMinecraftSessionLock: () => {
-          throw new TypeError('forced session.lock encode failure')
-        },
+        encodeMinecraftSessionLock: () => Result.fail(new TypeError('forced session.lock encode failure')),
       }
     })
     try {
-      const { encodeMinecraftJavaSave: encodeWithMockedSessionLock } = await import(
+      const { encodeMinecraftJavaSave: encodeWithMockedSessionLockEffect } = await import(
         '../src/domain/minecraft-java-save-encode.js'
       )
+      const encodeWithMockedSessionLock = (save: MinecraftJavaSave) =>
+        Effect.runPromise(encodeWithMockedSessionLockEffect(save))
       // vi.resetModules() gives every module (including sibling ones like minecraft-java-save-errors.js) a
       // fresh instance, so the statically-imported MinecraftJavaSaveError class above is a different class
       // reference than the one this freshly re-imported encode module actually throws. Re-import it too.
@@ -109,5 +119,20 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
       vi.doUnmock('../src/domain/minecraft-save-files.js')
       vi.resetModules()
     }
+  })
+
+  it('maps player IDs rejected by single-segment paths at the encode boundary', async () => {
+    await expect(
+      encodeMinecraftJavaSave({
+        ...baseSave(),
+        playerData: [{ playerId: 'player/name', document: level }],
+      }),
+    ).rejects.toMatchObject({ operation: 'encode' })
+    await expect(
+      encodeMinecraftJavaSave({
+        ...baseSave(),
+        playerStats: [{ playerId: 'player/name', value: { score: 1 } }],
+      }),
+    ).rejects.toMatchObject({ operation: 'encode' })
   })
 })

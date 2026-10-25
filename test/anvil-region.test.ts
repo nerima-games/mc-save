@@ -1,5 +1,6 @@
 /* oxlint-disable no-bitwise -- test fixtures construct exact three-byte headers. */
 
+import { Option, Result } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   ANVIL_CHUNK_COUNT,
@@ -12,17 +13,32 @@ import {
   ANVIL_SECTOR_BYTES,
   type AnvilCompression,
   type AnvilChunkRecord,
+  type AnvilRegion,
   AnvilRegionError,
-  anvilCompressionFromId,
-  anvilCompressionId,
-  anvilRegion,
-  decodeAnvilRegion,
-  encodeAnvilRegion,
+  anvilCompressionFromId as anvilCompressionFromIdOption,
+  anvilCompressionId as anvilCompressionIdResult,
+  anvilRegion as anvilRegionResult,
+  decodeAnvilRegion as decodeAnvilRegionResult,
+  encodeAnvilRegion as encodeAnvilRegionResult,
 } from '../src/domain/anvil-region.js'
+
+const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+
+const anvilCompressionId = (compression: AnvilCompression) => unwrapResult(anvilCompressionIdResult(compression))
+const anvilCompressionFromId = (id: number) => {
+  const result = anvilCompressionFromIdOption(id)
+  return Option.isSome(result) ? result.value : undefined
+}
+const anvilRegion = (...args: Parameters<typeof anvilRegionResult>) => unwrapResult(anvilRegionResult(...args))
+const decodeAnvilRegion = (...args: Parameters<typeof decodeAnvilRegionResult>) =>
+  unwrapResult(decodeAnvilRegionResult(...args))
+const encodeAnvilRegion = (...args: Parameters<typeof encodeAnvilRegionResult>) =>
+  unwrapResult(encodeAnvilRegionResult(...args))
 
 const emptySlots = (): Array<null> => new Array(ANVIL_CHUNK_COUNT).fill(null)
 
-const timestamps = (value = 0): number[] => new Array(ANVIL_CHUNK_COUNT).fill(value)
+const timestamps = (value = 0): AnvilRegion['timestamps'] =>
+  unwrapResult(anvilRegionResult(emptySlots(), new Array(ANVIL_CHUNK_COUNT).fill(value))).timestamps
 
 const slotsWith = (index: number, chunk: unknown): Array<AnvilChunkRecord | null> => {
   const slots: Array<AnvilChunkRecord | null> = emptySlots()
@@ -122,6 +138,8 @@ describe('Minecraft Anvil region codec', () => {
     expect(anvilCompressionId('none')).toBe(ANVIL_COMPRESSION_IDS.none)
     expect(anvilCompressionId('lz4')).toBe(ANVIL_COMPRESSION_IDS.lz4)
     expect(anvilCompressionId('custom')).toBe(ANVIL_COMPRESSION_IDS.custom)
+    // @ts-expect-error -- invalid compression is checked at runtime
+    expect(Result.isFailure(anvilCompressionIdResult('invalid'))).toBe(true)
     expect(anvilCompressionFromId(ANVIL_COMPRESSION_IDS.gzip)).toBe('gzip')
     expect(anvilCompressionFromId(ANVIL_COMPRESSION_IDS.zlib)).toBe('zlib')
     expect(anvilCompressionFromId(ANVIL_COMPRESSION_IDS.none)).toBe('none')
@@ -174,14 +192,13 @@ describe('Minecraft Anvil region codec', () => {
   })
 
   it('validates region factories and encoded-region input', () => {
+    expect(Result.isFailure(anvilRegionResult(null))).toBe(true)
     const valid = chunkAt(0)
 
     expect(() => {
-      // @ts-expect-error -- deliberately not a valid chunks argument
       anvilRegion(null)
     }).toThrowError(AnvilRegionError)
     expect(() => {
-      // @ts-expect-error -- deliberately not a valid timestamps argument
       anvilRegion(emptySlots(), null)
     }).toThrowError(AnvilRegionError)
     expect(() => anvilRegion(new Array(1).fill(null))).toThrowError(AnvilRegionError)
@@ -197,7 +214,11 @@ describe('Minecraft Anvil region codec', () => {
     expectAnvilError(() => anvilRegion(slotsWith(0, { ...valid, payload: [1] }), timestamps()))
     expectAnvilError(() => anvilRegion(slotsWith(0, { ...valid, external: 'yes' }), timestamps()))
     expectAnvilError(() => anvilRegion(slotsWith(1, valid), timestamps()))
-    expectAnvilError(() => anvilRegion(slotsWith(0, { ...valid, payload: new Uint8Array(255 * ANVIL_SECTOR_BYTES - 4) }), timestamps()))
+    const oversized = anvilRegion(
+      slotsWith(0, { ...valid, payload: new Uint8Array(255 * ANVIL_SECTOR_BYTES - 4) }),
+      timestamps(),
+    )
+    expectAnvilError(() => encodeAnvilRegion(oversized))
 
     expectAnvilError(() => {
       // @ts-expect-error -- deliberately not a valid AnvilRegion argument
@@ -211,10 +232,13 @@ describe('Minecraft Anvil region codec', () => {
     // (empty/oversized arrays and slotsWith's declared return type all
     // type-check), so no directive is needed — encodeAnvilRegion rejects them
     // only at runtime, on length and per-chunk invariants a type cannot express.
-    expectAnvilError(() => encodeAnvilRegion({ chunks: emptySlots(), timestamps: [] }))
+    expectAnvilError(() => encodeAnvilRegion({ chunks: emptySlots(), timestamps: timestamps().slice(0, 0) }))
     expectAnvilError(() => encodeAnvilRegion({ chunks: new Array(1).fill(null), timestamps: timestamps() }))
     expectAnvilError(() =>
-      encodeAnvilRegion({ chunks: emptySlots(), timestamps: new Array(ANVIL_CHUNK_COUNT).fill(undefined) }),
+      encodeAnvilRegion({
+        chunks: emptySlots(),
+        timestamps: Object.defineProperty([...timestamps()], 0, { value: undefined }),
+      }),
     )
     expectAnvilError(() => encodeAnvilRegion({ chunks: slotsWith(0, 1), timestamps: timestamps() }))
     expectAnvilError(() =>
@@ -227,7 +251,14 @@ describe('Minecraft Anvil region codec', () => {
     )
     expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), { maxBytes: ANVIL_HEADER_BYTES - 1 }))
     expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), { maxBytes: ANVIL_MAX_REGION_BYTES + 1 }))
+    expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), { maxBytes: null }))
     expectAnvilError(() => encodeAnvilRegion(anvilRegion(slotsWith(0, valid), timestamps()), { maxBytes: ANVIL_HEADER_BYTES }))
+
+    const mutatedRegion = anvilRegion(slotsWith(0, valid), timestamps())
+    const firstChunk = mutatedRegion.chunks[0]
+    if (firstChunk === null || firstChunk === undefined) throw new Error('expected chunk zero in test fixture')
+    Object.assign(firstChunk, { localX: 1 })
+    expectAnvilError(() => encodeAnvilRegion(mutatedRegion))
   })
 
   it('rejects invalid binary region boundaries and allocations', () => {
@@ -240,6 +271,7 @@ describe('Minecraft Anvil region codec', () => {
     expectAnvilError(() => decodeAnvilRegion(new Uint8Array(3 * ANVIL_SECTOR_BYTES), { maxBytes: ANVIL_HEADER_BYTES }))
     expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), { maxBytes: ANVIL_HEADER_BYTES - 1 }))
     expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), { maxBytes: ANVIL_MAX_REGION_BYTES + 1 }))
+    expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), { maxBytes: null }))
     // A typed array backed by a SharedArrayBuffer passes every size/shape check above
     // (it is still `instanceof Uint8Array`) but its `.buffer` is not an `ArrayBuffer`,
     // which `DataView`'s constructor requires.
@@ -300,4 +332,65 @@ describe('Minecraft Anvil region codec', () => {
       payload: new Uint8Array([7, 8, 9]),
     })
   })
+
+  it('maps unreadable region snapshots, options, and detached views to codec errors', () => {
+    const unreadableSlots = new Proxy(emptySlots(), {
+      get: (target, key, receiver) => {
+        if (key === '0') throw new Error('unreadable slot')
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    expectAnvilError(() => anvilRegion(unreadableSlots))
+    expectAnvilError(() => anvilRegion(new Array(ANVIL_CHUNK_COUNT)))
+
+    const unreadableChunk = new Proxy(chunkAt(0), {
+      get: (target, key, receiver) => {
+        if (key === 'localX') throw new Error('unreadable coordinate')
+        return Reflect.get(target, key, receiver)
+      },
+    })
+    expectAnvilError(() => anvilRegion(slotsWith(0, unreadableChunk)))
+
+    const uncopiablePayload = new Uint8Array([1])
+    Object.defineProperty(uncopiablePayload, 'slice', {
+      value: () => {
+        throw new Error('copy failed')
+      },
+    })
+    expectAnvilError(() => anvilRegion(slotsWith(0, { ...chunkAt(0), payload: uncopiablePayload })))
+
+    const unreadableRegion: AnvilRegion = new Proxy(
+      { chunks: emptySlots(), timestamps: timestamps() },
+      { get: () => { throw new Error('unreadable region') } },
+    )
+    expectAnvilError(() => encodeAnvilRegion(unreadableRegion))
+
+    const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable options') } })
+    expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), unreadableOptions))
+    expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), unreadableOptions))
+    expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), null))
+    expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), null))
+
+    const detachedBuffer = new ArrayBuffer(ANVIL_HEADER_BYTES)
+    const detachedView = new Uint8Array(detachedBuffer)
+    structuredClone(detachedBuffer, { transfer: [detachedBuffer] })
+    Object.defineProperties(detachedView, {
+      buffer: { value: detachedBuffer },
+      byteOffset: { value: 0 },
+      byteLength: { value: ANVIL_HEADER_BYTES },
+    })
+    expectAnvilError(() => decodeAnvilRegion(detachedView))
+
+    const unreadableView = new Uint8Array(ANVIL_HEADER_BYTES)
+    Object.defineProperty(unreadableView, 'buffer', { get: () => { throw new Error('unreadable buffer') } })
+    expectAnvilError(() => decodeAnvilRegion(unreadableView))
+
+    const outOfBoundsView = new Uint8Array(1)
+    Object.defineProperties(outOfBoundsView, {
+      byteLength: { value: ANVIL_HEADER_BYTES },
+      byteOffset: { value: 0 },
+    })
+    expectAnvilError(() => decodeAnvilRegion(outOfBoundsView))
+  })
+
 })

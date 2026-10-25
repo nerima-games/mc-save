@@ -37,12 +37,15 @@
  */
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Option, Schema } from 'effect'
-import { defineFormat, encodeSave } from '../src/domain/format.js'
+import { Effect, Option, Result, Schema } from 'effect'
+import { defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
 import { loadFrom, saveTo } from '../src/domain/persistence.js'
 import { InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { fixedUint8Array } from '../src/domain/binary.js'
+import { SaveByteLength } from '../src/domain/brand-types.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
+
+const byteLength = (value: number) => Result.getOrThrow(SaveByteLength.result(value))
 
 /**
  * A chunk, as mc-worldgen would define it.
@@ -54,17 +57,22 @@ import { sealedTestEnvelope } from './support/save-envelope.js'
  * that has an optional field and never proves it survives a round trip has not
  * tested the mechanism the whole save system rested on.
  *
- * `fixedUint8Array` retains the WIRE shape of `Schema.Uint8Array` while making
- * the dimension invariant executable. A save file that can only be read by a
+ * `fixedUint8Array` preserves the numeric-array wire shape while making the
+ * dimension invariant executable. A save file that can only be read by a
  * JavaScript runtime is the reference's mistake, not a constraint.
  */
 const ChunkSchema = Schema.Struct({
-  blocks: fixedUint8Array(4),
-  fluid: Schema.optional(fixedUint8Array(4)),
+  blocks: fixedUint8Array(byteLength(4)),
+  fluid: Schema.optional(fixedUint8Array(byteLength(4))),
 })
 
 type Chunk = Schema.Schema.Type<typeof ChunkSchema>
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const ChunkFormat = defineFormat({
   name: 'mc-save/test/chunk',
   version: 1,
@@ -101,16 +109,16 @@ describe('a chunk across the storage medium', () => {
 
       yield* storage.put(CHUNK_KEY, sealedTestEnvelope(ChunkFormat.name, ChunkFormat.version, { blocks: [1, 2, 3] }))
 
-      const loaded = yield* Effect.either(loadFrom(ChunkFormat, CHUNK_KEY))
+      const loaded = yield* Effect.result(loadFrom(ChunkFormat, CHUNK_KEY))
 
-      expect(loaded).toMatchObject({
-        _tag: 'Left',
-        left: {
+      expect(Result.isFailure(loaded)).toBe(true)
+      if (Result.isFailure(loaded)) {
+        expect(loaded.failure).toMatchObject({
           _tag: 'SaveDecodeError',
           format: ChunkFormat.name,
           version: ChunkFormat.version,
-        },
-      })
+        })
+      }
     }).pipe(Effect.provide(storageLayer)),
   )
 
@@ -205,9 +213,48 @@ describe('a chunk across the storage medium', () => {
 describe('fixedUint8Array', () => {
   effect('rejects invalid lengths before a format can ship', () =>
     Effect.sync(() => {
-      expect(() => fixedUint8Array(-1)).toThrow(RangeError)
-      expect(() => fixedUint8Array(1.5)).toThrow(RangeError)
-      expect(() => fixedUint8Array(Number.POSITIVE_INFINITY)).toThrow(RangeError)
+      expect(Result.isFailure(SaveByteLength.result(-1))).toBe(true)
+      expect(Result.isFailure(SaveByteLength.result(1.5))).toBe(true)
+      expect(Result.isFailure(SaveByteLength.result(Number.POSITIVE_INFINITY))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(byteLength(1)))([256]))).toBe(true)
+    }),
+  )
+
+  effect('keeps invalid wire arrays and unreadable byte snapshots as schema failures', () =>
+    Effect.sync(() => {
+      const schema = fixedUint8Array(byteLength(2))
+
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(null))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)([1]))).toBe(true)
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(null))).toBe(true)
+
+      const unreadableWireArray = new Proxy([1, 2], {
+        get: (target, key, receiver) => {
+          if (key === '0') throw new Error('wire byte is unreadable')
+          return Reflect.get(target, key, receiver)
+        },
+      })
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(unreadableWireArray))).toBe(true)
+
+      const wrongLengthBytes = new Uint8Array([1])
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(wrongLengthBytes))).toBe(true)
+
+      const unreadableBytes = new Uint8Array([1, 2])
+      Object.defineProperty(unreadableBytes, Symbol.iterator, {
+        get: () => {
+          throw new Error('byte iterator is unreadable')
+        },
+      })
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(unreadableBytes))).toBe(true)
+
+      const invalidIteratorBytes = new Uint8Array([1, 2])
+      Object.defineProperty(invalidIteratorBytes, Symbol.iterator, {
+        value: function* () {
+          yield 256
+          yield 2
+        },
+      })
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(invalidIteratorBytes))).toBe(true)
     }),
   )
 })

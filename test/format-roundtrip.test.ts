@@ -1,8 +1,11 @@
-import { describe, expect } from 'vitest'
+import { describe, expect, vi } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, ParseResult, Schema } from 'effect'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
+import { Effect, Result, Schema } from 'effect'
 import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
-import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
+import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
+import { CanonicalJson } from '../src/domain/brand-types.js'
+import { checksumOf, utf8Bytes } from '../src/domain/integrity-canonical.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
 /**
@@ -10,10 +13,17 @@ import { sealedTestEnvelope } from './support/save-envelope.js'
  * round-trip test can actually fail. A format where `A` and `I` coincide would
  * pass `decode(encode(x)) === x` even if both were the identity.
  */
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const PlayerStateSchema = Schema.Struct({
   worldId: Schema.String,
-  health: Schema.Number.pipe(Schema.between(0, 20)),
-  lastPlayed: Schema.DateFromNumber,
+  health: Schema.Number.check(
+    Schema.makeFilter<number>((value) => value >= 0 && value <= 20 ? undefined : 'health must be between 0 and 20'),
+  ),
+  lastPlayed: Schema.DateFromMillis,
 })
 
 const PlayerState = defineFormat({
@@ -151,14 +161,9 @@ describe('encodeSave / decodeSave', () => {
    * whose field encoder can itself fail — as opposed to a struct that simply
    * rejects a wrong-shaped `unknown` on decode — is the only way to reach it.
    */
-  const NonNegativeOnEncode = Schema.transformOrFail(Schema.Number, Schema.Number, {
-    strict: true,
-    decode: (n) => ParseResult.succeed(n),
-    encode: (n, _options, ast) =>
-      n < 0
-        ? ParseResult.fail(new ParseResult.Type(ast, n, 'score must not be negative'))
-        : ParseResult.succeed(n),
-  })
+  const NonNegativeOnEncode = Schema.Number.check(
+    Schema.makeFilter<number>((value) => value < 0 ? 'score must not be negative' : undefined),
+  )
 
   const ScoreOnly = defineFormat({
     name: 'mc-save/test/score-only',
@@ -205,7 +210,7 @@ describe('encodeSave / decodeSave', () => {
       )
       const result = yield* Effect.flip(encodeSave(UnknownFormat, throwingPayload))
 
-      expect(result.reason).toBe('the encoded value is not storage-compatible')
+      expect(result.reason).toContain('save contains an unsupported value')
     }),
   )
 })
@@ -228,7 +233,7 @@ describe('format definition', () => {
           payload: null,
           integrity: { algorithm: 'fnv1a32', byteLength: 0, checksum: '00000000' },
         }),
-      ).toThrow('Save envelope version must be a safe integer')
+      ).toThrow('Save envelope version must be a positive safe integer')
 
       expect(() =>
         Schema.decodeUnknownSync(SaveEnvelopeSchema)({
@@ -241,7 +246,7 @@ describe('format definition', () => {
             checksum: '00000000',
           },
         }),
-      ).toThrow('Save integrity byte length must be a safe integer')
+      ).toThrow('Save integrity byte length must be a non-negative safe integer')
 
       expect(() =>
         Schema.decodeUnknownSync(SaveEnvelopeSchema)({
@@ -266,35 +271,128 @@ describe('format definition', () => {
     }),
   )
 
-  effect('throws at definition time for a blank format name', () =>
+  effect('returns a typed failure at definition time for a blank format name', () =>
     Effect.sync(() => {
-      expect(() => defineFormat({ name: '  ', version: 1, schema: Schema.String })).toThrow(
-        /name must be a non-blank string/u,
-      )
+      const result = defineFormatResult({ name: '  ', version: 1, schema: Schema.String })
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) expect(result.failure).toContain('name must be a non-blank string')
     }),
   )
 
-  effect('throws at definition time for a version below the first supported version', () =>
+  effect('returns a typed failure at definition time for a version below the first supported version', () =>
     Effect.sync(() => {
-      expect(() =>
-        defineFormat({
-          name: 'mc-save/test/invalid-version',
-          version: 0,
-          schema: Schema.String,
-        }),
-      ).toThrow(/version must be a safe integer >= 1/u)
+      const result = defineFormatResult({
+        name: 'mc-save/test/invalid-version',
+        version: 0,
+        schema: Schema.String,
+      })
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure.some((problem) => problem.includes('version must be a safe integer >= 1'))).toBe(true)
+      }
     }),
   )
 
   effect('returns only the current format contract', () =>
     Effect.sync(() => {
-      const format = defineFormat({
+      const result = defineFormatResult({
         name: 'mc-save/test/current',
         version: 1,
         schema: Schema.Unknown,
       })
 
-      expect(Object.keys(format).sort()).toStrictEqual(['name', 'schema', 'version'])
+      expect(Result.isSuccess(result)).toBe(true)
+      if (Result.isSuccess(result)) {
+        expect(Object.keys(result.success).sort()).toStrictEqual(['name', 'schema', 'version'])
+      }
+    }),
+  )
+
+  effect('rejects unsafe versions and invalid runtime field types with Result failures', () =>
+    Effect.sync(() => {
+      const unsafeVersion = defineFormatResult({
+        name: 'mc-save/test/unsafe-version',
+        version: Number.MAX_SAFE_INTEGER + 1,
+        schema: Schema.String,
+      })
+      expect(Result.isFailure(unsafeVersion)).toBe(true)
+      if (Result.isFailure(unsafeVersion)) {
+        expect(unsafeVersion.failure.some((problem) => problem.includes('version must be a safe integer >= 1'))).toBe(true)
+      }
+
+      const invalidFields = new Proxy(
+        { name: 'mc-save/test/invalid-fields', version: 1, schema: Schema.String },
+        {
+          get: (target, property, receiver) =>
+            property === 'name' ? 42 : property === 'version' ? '1' : Reflect.get(target, property, receiver),
+        },
+      )
+      const invalidTypes = defineFormatResult(invalidFields)
+      expect(Result.isFailure(invalidTypes)).toBe(true)
+      if (Result.isFailure(invalidTypes)) {
+        expect(invalidTypes.failure).toContain('format name and version have invalid types')
+      }
+    }),
+  )
+
+  effect('returns a typed failure when a definition getter cannot be read', () =>
+    Effect.sync(() => {
+      const definition = {
+        get name(): string {
+          throw new Error('name getter failed')
+        },
+        version: 1,
+        schema: Schema.String,
+      }
+      const result = defineFormatResult(definition)
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toStrictEqual(['format definition fields could not be read'])
+      }
+    }),
+  )
+})
+
+describe('canonical integrity inputs', () => {
+  effect('returns Result failures for values that do not satisfy their brands', () =>
+    Effect.sync(() => {
+      const canonicalError = applyUntrustedArgument(utf8Bytes, undefined, [null])
+      const byteBufferError = applyUntrustedArgument(checksumOf, undefined, [null])
+
+      expect(Result.isFailure(canonicalError) && canonicalError.failure).toBe('canonical JSON must be a string')
+      expect(Result.isFailure(byteBufferError) && byteBufferError.failure).toBe('checksum input must be a Uint8Array')
+    }),
+  )
+
+  effect('returns a Result failure when the UTF-8 view operation throws', () =>
+    Effect.sync(() => {
+      const NativeUint8Array = globalThis.Uint8Array
+      vi.stubGlobal('Uint8Array', class extends NativeUint8Array {
+        override subarray(): never {
+          throw new Error('UTF-8 view could not be created')
+        }
+      })
+      try {
+        const result = utf8Bytes(CanonicalJson('{"value":1}'))
+        expect(Result.isFailure(result) && result.failure).toBe('canonical JSON could not be encoded as UTF-8')
+      } finally {
+        vi.unstubAllGlobals()
+      }
+    }),
+  )
+
+  effect('returns a Result failure when a branded byte buffer cannot be read', () =>
+    Effect.sync(() => {
+      const unreadableBytes = new Proxy(new Uint8Array([1]), {
+        get(target, property, receiver) {
+          if (property === Symbol.iterator) throw new Error('unreadable bytes')
+          return Reflect.get(target, property, receiver)
+        },
+      })
+
+      const result = applyUntrustedArgument(checksumOf, undefined, [unreadableBytes])
+
+      expect(Result.isFailure(result) && result.failure).toBe('checksum bytes could not be read')
     }),
   )
 })

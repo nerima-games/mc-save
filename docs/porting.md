@@ -1,45 +1,46 @@
-# 移植と責務の境界
+# Porting and ownership boundaries
 
-## 移植した層
+## Reusable layers in mc-save
 
-この repository は、ゲーム固有の domain を丸ごと取り込むのではなく、複数 consumer が共有できる
-保存の境界を管理します。
+mc-save owns reusable save and wire format behavior without taking on a consumer's game domain:
 
-- `src/domain/format*.ts`: schema と strict format codec
-- `src/domain/envelope.ts`、`integrity*.ts`: envelope、canonical bytes、checksum
-- `src/domain/persistence.ts`、`batch-save.ts`、`durable-save.ts`: Effect persistence
-- `src/domain/storage-port.ts`、`indexeddb-*.ts`: adapter Port と IndexedDB
-- `src/domain/minecraft-*.ts`、`anvil-region.ts`、`minecraft-region-files.ts`: Java wire/container
-- `src/domain/minecraft-paths.ts`: save directory path と coordinate mapping
+- `src/domain/format*.ts`: schema-based formats and strict current-version decoding
+- `src/domain/envelope.ts` and `src/domain/integrity*.ts`: envelopes, canonical bytes, checksums, and size validation
+- `src/domain/persistence.ts`, `src/domain/batch-save.ts`, and `src/domain/durable-save.ts`: Effect persistence operations
+- `src/domain/storage-port.ts` and `src/domain/indexeddb-*.ts`: storage port and IndexedDB adapter
+- `src/application/revisioned-save.ts`: generic revision writes, rollback, and cleanup
+- `src/application/write-queue.ts`: generic sequential write mechanics
+- `src/domain/save-slices.ts`: save-slice bundle codecs, migration paths, and restore preflight
+- `src/domain/minecraft-*.ts`, `src/domain/anvil-region.ts`, and `src/domain/minecraft-region-files.ts`: Java wire and container codecs
+- `src/domain/minecraft-paths.ts`: save paths and coordinate mapping
 
-これらの層は値の意味を知らず、検証可能な bytes・container・storage transaction を提供します。
+These layers provide validated values, bytes, containers, and storage operations. They do not assign game meaning to the data.
 
-## 移植しない層
+## Layers that stay with consumers
 
-次は consumer の責務です。
+Consumers retain:
 
-- player、chunk、world metadata の意味論 schema
-- tick、autosave、session lifecycle
-- rendering、UI、入力、ゲームルール
-- domain object の cache と event orchestration
-- 旧版 payload を新 schema に変換する product-specific policy
+- Player, chunk, and world metadata schemas and semantic validation
+- Tick and autosave policy
+- Settings state, settings defaults, and settings callbacks
+- Typed session wrappers and save-slice registration composition; confirm the owning package in the downstream plan
+- Private world session lifecycle, browser host wiring, and host registration
+- Rendering, UI, input, and game rules
+- Product-specific decisions for converting legacy payloads into current domain state
 
-この分離により、mc-save は保存方式の重複を減らしながら、consumer の domain model を固定しません。
+The save-slice restore preflight decodes and migrates every registered slice before calling any restore callback. It does not open or publish a world session. mc-host-web owns those lifecycle steps.
 
-## `mc-kernel` の再利用
+## Reusing `mc-kernel`
 
-保存 key と Minecraft path の座標処理は `@nerima-games/mc-kernel` の `WorldId`、`ChunkCoord`、
-`ChunkAxis`、`CHUNK_SIZE_XZ`、`chunkCoord` を直接利用します。mc-save 内に同等の座標型や
-chunk サイズ定数を複製しないことが依存境界です。
+Save keys and Minecraft path calculations use `WorldId`, `ChunkCoord`, `ChunkAxis`, `CHUNK_SIZE_XZ`, and `chunkCoord` from `@nerima-games/mc-kernel`. Save-slice code uses the kernel's `SaveSliceId`, `SaveVersion`, `SaveMigration`, `defineSaveMigration`, and `SaveSliceRegistration` contracts. mc-save does not copy these brands or contracts into local definitions.
 
-## 実装を利用する入口
+## Consumer integration sequence
 
-consumer は次の順に API を選びます。
+1. Define the payload schema and current format with `defineFormat`.
+2. Validate the storage key with `SaveKey` or `saveKeyForWorld`.
+3. Use `saveTo` and `loadFrom`, adding `saveBatch`, durable persistence, or the revisioned-save operation where the storage contract requires them.
+4. Provide `InMemoryStorageLayer` or `indexedDbStorageLayer` for the runtime.
+5. For save-slice bundles, mc-sim supplies slice state and mc-save encodes and preflights the bundle. Confirm which downstream package composes the registration list before that integration begins.
+6. Use NBT, compression, Anvil, and path codecs directly only when a consumer must handle Java save files.
 
-1. `defineFormat` で payload schema を定義する
-2. `saveKeyForWorld` または `SaveKey` で key を作る
-3. `saveTo` / `loadFrom`、必要なら `saveBatch` / `saveDurably` を使う
-4. 実行環境で `InMemoryStorageLayer` または `indexedDbStorageLayer` を提供する
-5. Java file を扱う場合だけ NBT・compression・Anvil codec を直接使う
-
-意味論 schema を mc-save に追加したり、内部 helper を consumer から import したりしません。
+Keep semantic schemas, defaults, session lifecycle, and host behavior in their consumer packages. Do not import internal helpers or create a second save envelope, storage port, or coordinate brand.

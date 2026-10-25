@@ -1,16 +1,25 @@
+import { Effect, Result } from 'effect'
 import { describe, expect, it } from 'vitest'
 import {
   NbtFormatError,
-  nbtByte,
-  nbtCompound,
-  nbtDocument,
-  nbtString,
+  nbtByte as nbtByteResult,
+  nbtCompound as nbtCompoundResult,
+  nbtDocument as nbtDocumentResult,
+  nbtString as nbtStringResult,
 } from '../src/domain/minecraft-nbt.js'
 import {
   MinecraftCompressionError,
   type MinecraftCompression,
 } from '../src/domain/minecraft-compression.js'
-import { decodeCompressedNbt, encodeCompressedNbt } from '../src/domain/minecraft-nbt-compression.js'
+import { decodeCompressedNbt as decodeCompressedNbtEffect, encodeCompressedNbt as encodeCompressedNbtEffect } from '../src/domain/minecraft-nbt-compression.js'
+
+const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+const nbtByte = (...args: Parameters<typeof nbtByteResult>) => unwrapResult(nbtByteResult(...args))
+const nbtCompound = (...args: Parameters<typeof nbtCompoundResult>) => unwrapResult(nbtCompoundResult(...args))
+const nbtDocument = (...args: Parameters<typeof nbtDocumentResult>) => unwrapResult(nbtDocumentResult(...args))
+const nbtString = (...args: Parameters<typeof nbtStringResult>) => unwrapResult(nbtStringResult(...args))
+const decodeCompressedNbt = (...args: Parameters<typeof decodeCompressedNbtEffect>) => Effect.runPromise(decodeCompressedNbtEffect(...args))
+const encodeCompressedNbt = (...args: Parameters<typeof encodeCompressedNbtEffect>) => Effect.runPromise(encodeCompressedNbtEffect(...args))
 
 const original = nbtDocument(
   'root\0é漢😀',
@@ -72,6 +81,15 @@ describe('Minecraft compressed NBT codec', () => {
     await expectNbtError(decodeCompressedNbt(new Uint8Array([NBT_COMPOUND_ID]), 'none'))
     await expectNbtError(encodeCompressedNbt(widen(null), 'none'))
   })
+
+  it('maps unreadable compression options to NBT boundary errors', async () => {
+    const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable compressed NBT options') } })
+    await expectNbtError(encodeCompressedNbt(original, 'none', unreadableOptions))
+    await expectNbtError(decodeCompressedNbt(new Uint8Array([10, 0, 0]), 'none', unreadableOptions))
+    await expectNbtError(encodeCompressedNbt(original, 'none', widen(null)))
+    await expectNbtError(decodeCompressedNbt(new Uint8Array([10, 0, 0]), 'none', widen(null)))
+  })
+
 })
 
 const NBT_COMPOUND_ID = 10

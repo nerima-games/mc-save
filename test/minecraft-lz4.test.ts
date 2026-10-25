@@ -1,7 +1,20 @@
 /* oxlint-disable no-bitwise -- test fixtures construct exact Minecraft LZ4 block fields. */
 
+import { Result } from 'effect'
 import { describe, expect, it } from 'vitest'
-import { decodeLz4BlockStream, encodeLz4BlockStream, MinecraftLz4Error } from '../src/domain/minecraft-lz4.js'
+import { decodeLz4BlockStream as decodeLz4BlockStreamResult, encodeLz4BlockStream as encodeLz4BlockStreamResult, MinecraftLz4Error } from '../src/domain/minecraft-lz4.js'
+import {
+  ByteWriter,
+  lz4Error,
+  readUint32LittleEndian as readUint32LittleEndianResult,
+  writeLength,
+  xxHash32 as xxHash32Result,
+} from '../src/domain/minecraft-lz4-format.js'
+
+const decodeLz4BlockStream = (...args: Parameters<typeof decodeLz4BlockStreamResult>) =>
+  Result.getOrThrow(decodeLz4BlockStreamResult(...args))
+const encodeLz4BlockStream = (...args: Parameters<typeof encodeLz4BlockStreamResult>) =>
+  Result.getOrThrow(encodeLz4BlockStreamResult(...args))
 
 const MAGIC = Uint8Array.from([0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b])
 const DEFAULT_LEVEL = 6
@@ -164,6 +177,42 @@ const widen = <T,>(value: unknown): T => {
 }
 
 describe('Minecraft LZ4 block stream codec', () => {
+  it('rejects invalid byte and word writes through the public writer methods', () => {
+    const writer = new ByteWriter()
+    expect(Result.isFailure(writer.writeByte(widen(null)))).toBe(true)
+    expect(Result.isFailure(writer.writeByte(-1))).toBe(true)
+    expect(Result.isFailure(writer.writeByte(256))).toBe(true)
+    expect(Result.isFailure(writer.writeUint32LittleEndian(widen(null)))).toBe(true)
+    expect(Result.isFailure(writer.writeUint32LittleEndian(-1))).toBe(true)
+    expect(Result.isFailure(writer.writeUint32LittleEndian(Number.NaN))).toBe(true)
+    expect(writer.toUint8Array()).toStrictEqual(new Uint8Array())
+
+    expect(Result.isSuccess(writer.writeByte(0x12))).toBe(true)
+    expect(Result.isSuccess(writer.writeUint32LittleEndian(0x01020304))).toBe(true)
+    expect(writer.toUint8Array()).toStrictEqual(Uint8Array.from([0x12, 0x04, 0x03, 0x02, 0x01]))
+  })
+
+  it('keeps invalid hash inputs and length fields in the Result failure channel', () => {
+    expect(Result.isFailure(readUint32LittleEndianResult(widen(null), 0))).toBe(true)
+    expect(Result.isFailure(readUint32LittleEndianResult(new Uint8Array([1]), -1))).toBe(true)
+    expect(Result.isFailure(xxHash32Result(widen(null), DEFAULT_SEED))).toBe(true)
+    expect(Result.isFailure(xxHash32Result(new Uint8Array(), -1))).toBe(true)
+
+    const writer = new ByteWriter()
+    expect(Result.isFailure(writeLength(writer, widen(null)))).toBe(true)
+    expect(Result.isFailure(writeLength(writer, -1))).toBe(true)
+    expect(Result.isSuccess(writeLength(writer, 270))).toBe(true)
+    expect(writer.toUint8Array()).toStrictEqual(Uint8Array.from([255, 15]))
+
+    const exactExtensionWriter = new ByteWriter()
+    expect(Result.isSuccess(writeLength(exactExtensionWriter, 510))).toBe(true)
+    expect(exactExtensionWriter.toUint8Array()).toStrictEqual(Uint8Array.from([255, 255, 0]))
+
+    expect(lz4Error('decode', 'bad offset', null).message).toBe(
+      'Minecraft LZ4 decode failed: bad offset (invalid error offset)',
+    )
+  })
+
   it('round-trips empty, literal, repetitive, trailing, and multi-block data', () => {
     const trailingLiterals = Uint8Array.from([
       ...new Uint8Array(32).fill(7),
@@ -200,10 +249,10 @@ describe('Minecraft LZ4 block stream codec', () => {
   })
 
   it('formats errors with and without byte offsets', () => {
-    expect(new MinecraftLz4Error({ operation: 'encode', reason: 'bad input' }).message).toBe(
+    expect(lz4Error('encode', 'bad input').message).toBe(
       'Minecraft LZ4 encode failed: bad input',
     )
-    expect(new MinecraftLz4Error({ operation: 'decode', reason: 'bad block', offset: 12 }).message).toBe(
+    expect(lz4Error('decode', 'bad block', 12).message).toBe(
       'Minecraft LZ4 decode failed at byte offset 12: bad block',
     )
   })
@@ -244,7 +293,11 @@ describe('Minecraft LZ4 block stream codec', () => {
     expectLz4Error(() => decodeLz4BlockStream(overproducingBlock, { maxBytes: 1 }))
     expect(decodeLz4BlockStream(makeBlockStream([]), { maxBytes: 0 })).toStrictEqual(new Uint8Array())
     expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), { maxBytes: -1 }))
+    expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), { maxBytes: null }))
     expectLz4Error(() => decodeLz4BlockStream(new Uint8Array(), { maxBytes: Number.NaN }))
+    expectLz4Error(() => decodeLz4BlockStream(new Uint8Array(), { maxBytes: null }))
+    expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), widen(null)))
+    expectLz4Error(() => decodeLz4BlockStream(makeBlockStream([]), widen(null)))
     expectLz4Error(() => encodeLz4BlockStream(widen(null)))
     expectLz4Error(() => decodeLz4BlockStream(widen(null)))
   })
@@ -292,4 +345,112 @@ describe('Minecraft LZ4 block stream codec', () => {
     const badBlockChecksum = makeBlockStream([{ encoded: input, decoded: input, checksum: xxHash32(input) ^ 1 }])
     expectLz4Error(() => decodeLz4BlockStream(badBlockChecksum))
   })
+
+  it('maps missing indexed bytes from copied LZ4 snapshots to codec errors', () => {
+    const unreadableSnapshot = (
+      bytes: Uint8Array,
+      missingIndex: number,
+      blockStart?: number,
+    ): Uint8Array => {
+      const unreadable = (value: Uint8Array): Uint8Array =>
+        new Proxy(value, {
+          get(target, property) {
+            if (property === 'byteLength') return target.byteLength
+            if (property === String(missingIndex)) return undefined
+            return Reflect.get(target, property, target)
+          },
+        })
+      const snapshot = new Proxy(bytes.slice(), {
+        get(target, property) {
+          if (property === 'byteLength') return target.byteLength
+          if (property === 'slice') {
+            return (start?: number, end?: number) => {
+              const block = target.slice(start, end)
+              return start === blockStart ? unreadable(block) : block
+            }
+          }
+          if (blockStart === undefined && property === String(missingIndex)) return undefined
+          return Reflect.get(target, property, target)
+        },
+      })
+      const input = bytes.slice()
+      Object.defineProperty(input, 'slice', { value: () => snapshot })
+      return input
+    }
+
+    const emptyStream = makeBlockStream([])
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(emptyStream, 8)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(emptyStream, 17)))
+
+    const compressedStream = (encoded: number[]): Uint8Array =>
+      makeBlockStream([
+        {
+          encoded: Uint8Array.from(encoded),
+          decoded: Uint8Array.from([0x2a]),
+          method: LZ4_METHOD,
+        },
+      ])
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0, 0, 0]), 0, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0xf0, 0]), 1, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0x10, 0x2a]), 1, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0, 0, 0]), 1, 21)))
+    expectLz4Error(() => decodeLz4BlockStream(unreadableSnapshot(compressedStream([0, 0, 0]), 2, 21)))
+
+    const proxySnapshot = (bytes: Uint8Array, invalidIndex: number): Uint8Array =>
+      new Proxy(bytes, {
+        get(target, property) {
+          if (property === 'byteLength') return target.byteLength
+          if (property === 'slice') {
+            return (start?: number, end?: number) => {
+              const copy = target.slice(start, end)
+              const localIndex = invalidIndex - (start ?? 0)
+              return localIndex < 0 || localIndex >= copy.byteLength ? copy : proxySnapshot(copy, localIndex)
+            }
+          }
+          if (property === Symbol.iterator) {
+            return function* () {
+              for (let index = 0; index < target.byteLength; index += 1) {
+                yield index === invalidIndex ? 300 : target[index]
+              }
+            }
+          }
+          return Reflect.get(target, property, target)
+        },
+      })
+    const invalidByteInput = JAVA_LZ4_RAW_FIXTURE.slice()
+    const copy = invalidByteInput.slice.bind(invalidByteInput)
+    Object.defineProperty(invalidByteInput, 'slice', { value: () => proxySnapshot(copy(), 21) })
+    expectLz4Error(() => decodeLz4BlockStream(invalidByteInput))
+  })
+
+  it('maps unreadable limits and LZ4 input-copy failures to codec errors', () => {
+    const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable options') } })
+    expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), unreadableOptions))
+    expectLz4Error(() => decodeLz4BlockStream(new Uint8Array(), unreadableOptions))
+
+    const uncopiableInput = new Uint8Array([1])
+    Object.defineProperty(uncopiableInput, 'slice', {
+      value: () => {
+        throw new Error('input copy failed')
+      },
+    })
+    expectLz4Error(() => decodeLz4BlockStream(uncopiableInput))
+
+    const encoded = encodeLz4BlockStream(new Uint8Array([1]))
+    const originalSlice = Uint8Array.prototype.slice
+    const uncopiableBlock = new Uint8Array(encoded)
+    Object.defineProperty(uncopiableBlock, 'slice', {
+      value: () => {
+        const snapshot = originalSlice.call(uncopiableBlock)
+        Object.defineProperty(snapshot, 'slice', {
+          value: () => {
+            throw new Error('block copy failed')
+          },
+        })
+        return snapshot
+      },
+    })
+    expectLz4Error(() => decodeLz4BlockStream(uncopiableBlock))
+  })
+
 })

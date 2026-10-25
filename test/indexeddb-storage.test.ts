@@ -6,8 +6,8 @@
  */
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Exit, Option, Schema, Scope } from 'effect'
-import { defineFormat } from '../src/domain/format.js'
+import { Effect, Exit, Option, Result, Schema, Scope } from 'effect'
+import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import type { SaveEnvelope } from '../src/domain/envelope.js'
 import {
   INSERTION_INDEX_NAME,
@@ -17,22 +17,33 @@ import {
   SAVE_STORE_NAME,
   STORE_LAYOUT_VERSION,
 } from '../src/domain/indexeddb-storage.js'
-import type {
-  IdbDatabase,
-  IdbFactory,
-  IdbObjectStore,
-  IdbOpenRequest,
-  IdbStringList,
-  IdbTransaction,
+import {
+  makeIdbDatabaseName,
+  makeIdbVersion,
+  type IdbDatabase,
+  type IdbDomException,
+  type IdbFactory,
+  type IdbObjectStore,
+  type IdbOpenRequest,
+  type IdbRequest,
+  type IdbStringList,
+  type IdbTransaction,
 } from '../src/domain/indexeddb-surface.js'
 import { openDatabase, runTransaction } from '../src/domain/indexeddb-runtime.js'
+import { readEnvelope, readKeys, readSequence } from '../src/domain/indexeddb-records.js'
 import { loadFrom, saveTo } from '../src/domain/persistence.js'
 import { SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { domException, makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR } from './fake-indexeddb.js'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { storagePortContract } from './storage-port-contract.js'
 import { sealedTestEnvelope, unsealedTestEnvelope } from './support/save-envelope.js'
 
-const DATABASE = 'mc-save/test/worlds'
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
+const DATABASE = makeIdbDatabaseName('mc-save/test/worlds')
 const A = SaveKey('alpha')
 const B = SaveKey('beta')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/idb', 1, payload)
@@ -205,6 +216,28 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('a failure whose `name` getter throws is NOT reported as quota either', () =>
+    Effect.gen(function* () {
+      const nameFailure = new Error('failure name could not be read')
+      const malformedCause = Object.defineProperty({}, 'name', {
+        get: () => {
+          throw nameFailure
+        },
+      })
+      const factory = makeFakeIndexedDb()
+      factory.corruptNextWriteWithMalformedCause(malformedCause)
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.put(A, envelope({})))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(isQuotaExceeded(error)).toBe(false)
+      expect(error.operation).toBe('indexeddb.put')
+    }),
+  )
+
   effect('a transaction that aborts fails the write AND leaves the store untouched', () =>
     Effect.gen(function* () {
       // A browser may abort a transaction of its own accord, with `error` null.
@@ -327,6 +360,105 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('commitBatch and readBatch reject null and malformed runtime arrays', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const malformedInputs: ReadonlyArray<unknown> = [null, [null], new Array<unknown>(1), [undefined]]
+
+      const result = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({ original: true }))
+
+        for (const input of malformedInputs) {
+          const commitError = yield* Effect.flip(applyUntrustedArgument(storage.commitBatch, storage, [input]))
+          expect([commitError._tag, commitError.operation]).toStrictEqual([
+            'StorageError',
+            'indexeddb.commitBatch',
+          ])
+          const readError = yield* Effect.flip(applyUntrustedArgument(storage.readBatch, storage, [input]))
+          expect([readError._tag, readError.operation]).toStrictEqual([
+            'StorageError',
+            'indexeddb.readBatch',
+          ])
+        }
+
+        return factory.recordsOf(DATABASE, SAVE_STORE_NAME)
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(result).toStrictEqual([
+        { key: 'alpha', seq: 0, envelope: envelope({ original: true }) },
+      ])
+    }),
+  )
+
+  effect('rejects hostile array shapes instead of reading them as an empty batch', () =>
+    Effect.gen(function* () {
+      let accessorRead = false
+      const symbolOnly = new Array<unknown>(1)
+      Object.defineProperty(symbolOnly, Symbol('extra'), { value: 'not an index', enumerable: true })
+      const negativeIndex = new Array<unknown>(1)
+      Object.defineProperty(negativeIndex, '-1', { value: 'not an index', enumerable: true })
+      const accessorEntry = new Array<unknown>(1)
+      Object.defineProperty(accessorEntry, '0', {
+        get: () => {
+          accessorRead = true
+          return 'not a data entry'
+        },
+        enumerable: true,
+      })
+      const invalidLength = new Proxy([], {
+        getOwnPropertyDescriptor: (target, property) => {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, property)
+          if (property === 'length' && descriptor !== undefined) {
+            return { ...descriptor, value: Number.NaN }
+          }
+          return descriptor
+        },
+      })
+      const unreadableShape = new Proxy([], {
+        ownKeys: () => {
+          throw new Error('batch keys could not be read')
+        },
+      })
+      const malformedInputs: ReadonlyArray<unknown> = [
+        symbolOnly,
+        negativeIndex,
+        accessorEntry,
+        invalidLength,
+        unreadableShape,
+      ]
+
+      const factory = makeFakeIndexedDb()
+      yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        for (const input of malformedInputs) {
+          const commitError = yield* Effect.flip(applyUntrustedArgument(storage.commitBatch, storage, [input]))
+          expect(commitError).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.commitBatch' })
+          const readError = yield* Effect.flip(applyUntrustedArgument(storage.readBatch, storage, [input]))
+          expect(readError).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.readBatch' })
+        }
+        expect(yield* storage.keys).toStrictEqual([])
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(accessorRead).toBe(false)
+    }),
+  )
+
+  effect('rejects a blank SaveKey in readBatch instead of returning Option.none', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      const result = yield* Effect.result(
+        applyUntrustedArgument(storage.readBatch, storage, [['']]),
+      )
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.readBatch' })
+      }
+      expect(yield* storage.keys).toStrictEqual([])
+    }).pipe(Effect.provide(freshLayer())),
+  )
+
   effect('commitBatch reports a browser abort and rolls the whole checkpoint back', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
@@ -366,6 +498,66 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.open')
+    }),
+  )
+
+  effect('rejects an invalid database name before opening the factory', () =>
+    Effect.gen(function* () {
+      let openCalls = 0
+      const error = yield* Effect.flip(
+        applyUntrustedArgument(openDatabase, undefined, [{
+          databaseName: '',
+          factory: {
+            open: () => {
+              openCalls += 1
+              throw new Error('factory must not receive an invalid database name')
+            },
+          },
+        }]),
+      )
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(openCalls).toBe(0)
+    }),
+  )
+
+  effect('maps a throwing database-name getter to StorageError before opening the factory', () =>
+    Effect.gen(function* () {
+      const getterFailure = new Error('database name is unavailable')
+      let openCalls = 0
+      const options = Object.defineProperty({
+        factory: {
+          open: () => {
+            openCalls += 1
+            throw new Error('factory must not be opened when the name getter fails')
+          },
+        },
+      }, 'databaseName', {
+        get: () => {
+          throw getterFailure
+        },
+      })
+      const error = yield* Effect.flip(applyUntrustedArgument(openDatabase, undefined, [options]))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(getterFailure)
+      expect(openCalls).toBe(0)
+    }),
+  )
+
+  effect('rejects an unbranded key before starting an IndexedDB operation', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const error = yield* Effect.flip(applyUntrustedArgument(storage.get, storage, [null]))
+        return { error, keys: yield* storage.keys }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(outcome.error).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.transaction' })
+      expect(outcome.keys).toStrictEqual([])
     }),
   )
 
@@ -413,7 +605,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
                 close: () => undefined,
                 onversionchange: null,
               }
-              let failure: { readonly name: string; readonly message: string } | null = null
+              let failure: IdbDomException | null = null
               const request: IdbOpenRequest = {
                 result: database,
                 get error() {
@@ -450,7 +642,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     Effect.gen(function* () {
       const openWithAbort = (abort: () => void) =>
         openDatabase({
-          databaseName: `${DATABASE}/upgrade-failure`,
+          databaseName: makeIdbDatabaseName(`${DATABASE}/upgrade-failure`),
           factory: {
             open: () => {
               const names: IdbStringList = {
@@ -526,11 +718,11 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       // simulated here, the way a second tab running a newer release would.
       const factory = makeFakeIndexedDb()
       const scope = yield* Scope.make()
-      const first = yield* makeIndexedDbStorage({ factory, databaseName: DATABASE }).pipe(Scope.extend(scope))
+      const first = yield* makeIndexedDbStorage({ factory, databaseName: DATABASE }).pipe(Effect.provideService(Scope.Scope, scope))
       yield* first.put(A, envelope({ n: 1 }))
 
-      const outcome = yield* Effect.async<'success' | 'blocked' | 'error'>((resume) => {
-        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION + 1)
+      const outcome = yield* Effect.callback<'success' | 'blocked' | 'error'>((resume) => {
+        const request = factory.open(DATABASE, makeIdbVersion(STORE_LAYOUT_VERSION + 1))
         request.onupgradeneeded = () => undefined
         request.onsuccess = () => {
           resume(Effect.succeed('success'))
@@ -562,7 +754,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       // so the SAME request reports twice: `blocked`, then `success`.
       const factory = makeFakeIndexedDb()
 
-      const first = yield* Effect.async<IdbDatabase>((resume) => {
+      const first = yield* Effect.callback<IdbDatabase>((resume) => {
         const request = factory.open(DATABASE, STORE_LAYOUT_VERSION)
         request.onupgradeneeded = () => undefined
         request.onsuccess = () => {
@@ -571,8 +763,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       })
 
       const reports: Array<'blocked' | 'success'> = []
-      const second = yield* Effect.async<'success'>((resume) => {
-        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION + 1)
+      const second = yield* Effect.callback<'success'>((resume) => {
+        const request = factory.open(DATABASE, makeIdbVersion(STORE_LAYOUT_VERSION + 1))
         request.onupgradeneeded = () => undefined
         request.onblocked = () => {
           reports.push('blocked')
@@ -606,8 +798,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       // with no `onversionchange` handler, so the adapter's own open — always
       // for `STORE_LAYOUT_VERSION` — is genuinely blocked rather than won
       // outright.
-      const blocker = yield* Effect.async<IdbDatabase>((resume) => {
-        const request = factory.open(DATABASE, 0)
+      const blocker = yield* Effect.callback<IdbDatabase>((resume) => {
+        const request = factory.open(DATABASE, makeIdbVersion(1))
         request.onupgradeneeded = () => undefined
         request.onsuccess = () => {
           resume(Effect.succeed(request.result))
@@ -699,7 +891,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  effect('a malformed record makes compare-and-set fail as a conflict', () =>
+  effect('a malformed record makes compare-and-set fail with the decode cause', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
@@ -720,8 +912,9 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       }).pipe(Effect.provide(layerFor(factory)))
 
       expect(error._tag).toBe('StorageError')
-      expect(error.operation).toBe('indexeddb.commitBatch:conflict')
+      expect(error.operation).toBe('indexeddb.commitBatch')
       expect(error.key).toBe('alpha')
+      expect(error.cause).toMatchObject({ _tag: 'SaveDecodeError' })
       expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toHaveLength(1)
     }),
   )
@@ -883,10 +1076,9 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     Effect.gen(function* () {
       // Nothing reachable through `put`/`seed` can make the index answer
       // anything but a well-formed array of string keys — see
-      // `corruptNextIndexKeys`'s own doc comment. This is `readKeys`'s first
-      // throw (`domain/indexeddb-storage.ts`), caught by `runTransaction`'s
-      // `guard` and surfaced as a `StorageError` rather than an uncaught
-      // exception or a hang.
+      // `corruptNextIndexKeys`'s own doc comment. `readKeys` returns a typed
+      // validation failure, and `runTransaction` aborts before reporting the
+      // resulting `StorageError`.
       const factory = makeFakeIndexedDb()
 
       const error = yield* Effect.gen(function* () {
@@ -898,16 +1090,13 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.keys')
-      expect(error.cause).toBeInstanceOf(TypeError)
-      if (!(error.cause instanceof TypeError)) throw new Error('unreachable: assertion above already failed')
-      expect(error.cause.message).toContain(INSERTION_INDEX_NAME)
+      expect(error.cause).toBe(`${INSERTION_INDEX_NAME} did not return a list of keys`)
     }),
   )
 
   effect('a malformed index answer (a non-string entry) fails keys as a StorageError', () =>
     Effect.gen(function* () {
-      // `readKeys`'s second throw: the outer value is an array, but not every
-      // entry is a string.
+      // `readKeys` rejects arrays with entries that are not strings.
       const factory = makeFakeIndexedDb()
 
       const error = yield* Effect.gen(function* () {
@@ -919,9 +1108,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.keys')
-      expect(error.cause).toBeInstanceOf(TypeError)
-      if (!(error.cause instanceof TypeError)) throw new Error('unreachable: assertion above already failed')
-      expect(error.cause.message).toContain(SAVE_STORE_NAME)
+      expect(error.cause).toBe(`${SAVE_STORE_NAME} returned a non-string key`)
     }),
   )
 
@@ -946,9 +1133,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.keys')
-      expect(error.cause).toBeInstanceOf(TypeError)
-      if (!(error.cause instanceof TypeError)) throw new Error('unreachable: assertion above already failed')
-      expect(error.cause.message).toContain(INSERTION_INDEX_NAME)
+      expect(error.cause).toBe(`${INSERTION_INDEX_NAME} did not return a list of keys`)
     }),
   )
 
@@ -972,6 +1157,993 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.commitBatch')
       expect(isQuotaExceeded(error)).toBe(false)
+    }),
+  )
+
+  effect('rejects malformed stored sequence records before replacing them', () =>
+    Effect.gen(function* () {
+      const malformedValues: ReadonlyArray<unknown> = [
+        [],
+        { key: 'alpha' },
+        { key: 'alpha', seq: 'zero' },
+        { key: 'alpha', seq: -1 },
+      ]
+
+      for (const value of malformedValues) {
+        const factory = makeFakeIndexedDb()
+        factory.seedAt(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [{ key: 'alpha', value }])
+
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          return yield* Effect.flip(storage.put(A, envelope({ n: 2 })))
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error._tag).toBe('StorageError')
+        expect(error.operation).toBe('indexeddb.sequence')
+        expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([value])
+      }
+    }),
+  )
+
+  effect('parses unknown IndexedDB records through typed failures', () =>
+    Effect.sync(() => {
+      expect(Result.isFailure(readSequence([]))).toBe(true)
+      expect(Result.isFailure(readSequence({}))).toBe(true)
+      expect(readSequence(undefined)).toStrictEqual(Result.succeed(undefined))
+      expect(readSequence({ seq: 0 })).toStrictEqual(Result.succeed(0))
+
+      const recordFailure = new Error('record fields failed')
+      const unreadableRecord = Object.defineProperty({}, 'key', {
+        enumerable: true,
+        get: () => { throw recordFailure },
+      })
+      const record = readEnvelope(unreadableRecord)
+      expect(Result.isFailure(record)).toBe(true)
+      if (Result.isFailure(record)) {
+        expect(record.failure._tag).toBe('SaveDecodeError')
+        expect(record.failure.cause).toBe(recordFailure)
+      }
+      expect(Result.isFailure(readEnvelope(null))).toBe(true)
+      expect(Result.isFailure(readEnvelope({ key: '', envelope: envelope({ n: 1 }) }))).toBe(true)
+      expect(Result.isFailure(readEnvelope({ key: 'alpha', envelope: { format: 'bad' } }))).toBe(true)
+      const sealed = envelope({ n: 1 })
+      const malformedChecksum = {
+        ...sealed,
+        integrity: { ...sealed.integrity, checksum: 'bad' },
+      }
+      expect(Result.isFailure(readEnvelope({ key: 'alpha', envelope: malformedChecksum }))).toBe(true)
+
+      const decodeFailure = new Error('envelope fields failed')
+      const unreadableEnvelope = new Proxy(envelope({ n: 1 }), {
+        get: (target, property, receiver) => {
+          if (property === 'format') throw decodeFailure
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const envelopeResult = readEnvelope({ key: 'alpha', envelope: unreadableEnvelope })
+      expect(Result.isFailure(envelopeResult)).toBe(true)
+      if (Result.isFailure(envelopeResult)) {
+        expect(envelopeResult.failure._tag).toBe('SaveDecodeError')
+        expect(envelopeResult.failure.reason).toBe('stored save envelope could not be read')
+        expect(envelopeResult.failure.cause).toBeInstanceOf(Error)
+      }
+
+      expect(Result.isFailure(readKeys(['']))).toBe(true)
+    }),
+  )
+
+  effect('rejects sequence allocation beyond the safe integer range', () =>
+    Effect.gen(function* () {
+      for (const operation of ['put', 'commitBatch'] as const) {
+        const factory = makeFakeIndexedDb()
+        const existing = { key: 'alpha', seq: Number.MAX_SAFE_INTEGER, envelope: envelope({ n: 1 }) }
+        factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [existing])
+
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          const write = operation === 'put'
+            ? storage.put(B, envelope({ n: 2 }))
+            : storage.commitBatch([{ _tag: 'Put', key: B, envelope: envelope({ n: 2 }) }])
+          return yield* Effect.flip(write)
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.sequence' })
+        expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([existing])
+      }
+    }),
+  )
+
+  effect('rejects malformed indexed sequences in cursor and existing-record paths', () =>
+    Effect.gen(function* () {
+      for (const operation of ['put', 'commitBatch'] as const) {
+        const factory = makeFakeIndexedDb()
+        factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+          { key: 'alpha', seq: 'zero', envelope: envelope({ n: 1 }) },
+        ])
+
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          const write = operation === 'put'
+            ? storage.put(B, envelope({ n: 2 }))
+            : storage.commitBatch([{ _tag: 'Put', key: B, envelope: envelope({ n: 2 }) }])
+          return yield* Effect.flip(write)
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error._tag).toBe('StorageError')
+        expect(error.operation).toBe('indexeddb.sequence')
+        expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([
+          { key: 'alpha', seq: 'zero', envelope: envelope({ n: 1 }) },
+        ])
+      }
+
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', envelope: envelope({ n: 1 }) },
+      ])
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(
+          storage.commitBatch([{ _tag: 'Put', key: A, envelope: envelope({ n: 2 }) }]),
+        )
+      }).pipe(Effect.provide(layerFor(factory)))
+      expect(error.operation).toBe('indexeddb.sequence')
+    }),
+  )
+
+  effect('fails closed when the insertion cursor is malformed or unreadable', () =>
+    Effect.gen(function* () {
+      const cursorFailure = new Error('cursor key could not be read')
+      const unreadableCursor = Object.defineProperty({}, 'key', {
+        get: () => {
+          throw cursorFailure
+        },
+      })
+
+      for (const cursor of [42, unreadableCursor]) {
+        const factory = makeFakeIndexedDb()
+        factory.corruptNextCursor(cursor)
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          return yield* Effect.flip(storage.put(A, envelope({ value: true })))
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.sequence' })
+        if (cursor === unreadableCursor) expect(error.cause).toBe(cursorFailure)
+        expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([])
+      }
+    }),
+  )
+
+  effect('maps thrown save envelope decoding to StorageError', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const decodeFailure = new Error('envelope could not be decoded')
+      const unreadableEnvelope = new Proxy(envelope({ value: true }), {
+        get: (target, property, receiver) => {
+          if (property === 'format') throw decodeFailure
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const result = yield* Effect.result(applyUntrustedArgument(storage.put, storage, [A, unreadableEnvelope]))
+        return { result, records: factory.recordsOf(DATABASE, SAVE_STORE_NAME) }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(Result.isFailure(outcome.result)).toBe(true)
+      if (Result.isFailure(outcome.result)) {
+        expect(outcome.result.failure).toMatchObject({
+          _tag: 'StorageError',
+          operation: 'indexeddb.put',
+          key: A,
+        })
+        const cause = outcome.result.failure.cause
+        expect(cause).toBeInstanceOf(Error)
+        if (cause instanceof Error) {
+          expect(cause.message).toBe('Result adapter can only return schema issues')
+        }
+      }
+      expect(outcome.records).toStrictEqual([])
+    }),
+  )
+
+  effect('returns none for missing records and detects expected-value conflicts', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      expect(yield* storage.get(A)).toStrictEqual(Option.none())
+
+      const conflict = yield* Effect.flip(storage.commitBatch([
+        { _tag: 'Put', key: A, envelope: envelope({ n: 2 }), expected: Option.some(envelope({ n: 1 })) },
+      ]))
+      expect(conflict.operation).toBe('indexeddb.commitBatch:conflict')
+      expect(conflict.key).toBe('alpha')
+    }).pipe(Effect.provide(freshLayer())),
+  )
+
+  effect('a failed compare-and-remove leaves the current record intact', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({ current: true }))
+        const error = yield* Effect.flip(storage.commitBatch([
+          { _tag: 'Remove', key: A, expected: Option.some(envelope({ stale: true })) },
+        ]))
+        return { error, stored: yield* storage.get(A) }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(outcome.error).toMatchObject({
+        _tag: 'StorageError',
+        operation: 'indexeddb.commitBatch:conflict',
+        key: A,
+      })
+      expect(outcome.stored).toStrictEqual(Option.some(envelope({ current: true })))
+    }),
+  )
+
+  effect('a compare-and-put preserves envelope decoding failures', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', seq: 0, envelope: { format: 'invalid', version: 0 } },
+      ])
+
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const error = yield* Effect.flip(storage.commitBatch([
+          { _tag: 'Put', key: A, envelope: envelope({ replacement: true }), expected: Option.some(envelope({ stale: true })) },
+        ]))
+        return { error, records: factory.recordsOf(DATABASE, SAVE_STORE_NAME) }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(outcome.error).toMatchObject({
+        _tag: 'StorageError',
+        operation: 'indexeddb.commitBatch',
+        key: A,
+        cause: { _tag: 'SaveDecodeError' },
+      })
+      expect(outcome.records).toStrictEqual([
+        { key: 'alpha', seq: 0, envelope: { format: 'invalid', version: 0 } },
+      ])
+    }),
+  )
+
+  effect('rejects malformed mutations without corrupting records', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const nullExpected = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: A, envelope: envelope({ replacement: true }), expected: null },
+        ]]))
+        const undefinedExpected = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: A, envelope: envelope({ replacement: true }), expected: undefined },
+        ]]))
+        const invalidEnvelope = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: A, envelope: null },
+        ]]))
+        const invalidPut = yield* Effect.result(applyUntrustedArgument(storage.put, storage, [A, null]))
+        const afterNullExpected = yield* Effect.result(storage.get(A))
+        const afterInvalidPut = yield* Effect.result(storage.get(A))
+
+        yield* storage.put(A, envelope({ original: true }))
+        const unknownTag = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Rename', key: A },
+        ]]))
+        const malformedEntry = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[42]]))
+        const blankKey = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: '', envelope: envelope({ replacement: true }) },
+        ]]))
+        const tagFailure = new Error('mutation tag could not be read')
+        const unreadableTag = Object.defineProperty({}, '_tag', {
+          get: () => {
+            throw tagFailure
+          },
+        })
+        const unreadableMutation = yield* Effect.result(
+          applyUntrustedArgument(storage.commitBatch, storage, [[unreadableTag]]),
+        )
+        const afterUnknownTag = yield* Effect.result(storage.get(A))
+        const afterMalformed = yield* Effect.result(storage.get(A))
+        return {
+          nullExpected,
+          undefinedExpected,
+          invalidEnvelope,
+          invalidPut,
+          afterNullExpected,
+          afterInvalidPut,
+          unknownTag,
+          malformedEntry,
+          blankKey,
+          unreadableMutation,
+          tagFailure,
+          afterUnknownTag,
+          afterMalformed,
+        }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      for (const result of [
+        outcome.nullExpected,
+        outcome.undefinedExpected,
+        outcome.invalidEnvelope,
+        outcome.unknownTag,
+        outcome.malformedEntry,
+        outcome.blankKey,
+        outcome.unreadableMutation,
+      ]) {
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.commitBatch' })
+        }
+      }
+      if (Result.isFailure(outcome.invalidPut)) {
+        expect(outcome.invalidPut.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.put' })
+      }
+      if (Result.isFailure(outcome.invalidEnvelope)) {
+        expect(outcome.invalidEnvelope.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.commitBatch' })
+      }
+      if (Result.isFailure(outcome.unreadableMutation)) {
+        expect(outcome.unreadableMutation.failure.cause).toBe(outcome.tagFailure)
+      }
+      expect(outcome.afterNullExpected).toStrictEqual(Result.succeed(Option.none()))
+      expect(outcome.afterInvalidPut).toStrictEqual(Result.succeed(Option.none()))
+      expect(outcome.afterUnknownTag).toStrictEqual(Result.succeed(Option.some(envelope({ original: true }))))
+      expect(outcome.afterMalformed).toStrictEqual(Result.succeed(Option.some(envelope({ original: true }))))
+    }),
+  )
+
+  effect('uses each mutation field snapshot once when committing a batch', () =>
+    Effect.gen(function* () {
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        let tagReads = 0
+        const mutation = {
+          get _tag(): 'Put' {
+            tagReads += 1
+            if (tagReads > 1) throw new Error('mutation tag was read more than once')
+            return 'Put'
+          },
+          key: A,
+          envelope: envelope({ snapshot: true }),
+        }
+        const result = yield* Effect.result(storage.commitBatch([mutation]))
+        return { result, tagReads, stored: yield* storage.get(A) }
+      }).pipe(Effect.provide(freshLayer()))
+
+      expect(outcome.result).toStrictEqual(Result.succeed(undefined))
+      expect(outcome.tagReads).toBe(1)
+      expect(outcome.stored).toStrictEqual(Option.some(envelope({ snapshot: true })))
+    }),
+  )
+
+  effect('rejects malformed envelope records and unreadable record properties', () =>
+    Effect.gen(function* () {
+      const unreadable = Object.defineProperty({}, 'key', {
+        enumerable: true,
+        get: () => {
+          throw new Error('record key getter failed')
+        },
+      })
+      const values: ReadonlyArray<unknown> = [
+        null,
+        { key: 42, seq: 0, envelope: envelope({ n: 1 }) },
+        { key: '', seq: 0, envelope: envelope({ n: 1 }) },
+        { key: 'alpha', seq: 0 },
+        unreadable,
+      ]
+
+      for (const value of values) {
+        const factory = makeFakeIndexedDb()
+        factory.seedAt(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [{ key: 'alpha', value }])
+
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          return yield* Effect.flip(storage.get(A))
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error._tag).toBe('StorageError')
+        expect(error.operation).toBe('indexeddb.get')
+      }
+    }),
+  )
+
+  effect('rejects invalid and unreadable keys from the insertion index', () =>
+    Effect.gen(function* () {
+      const invalidLength = new Proxy([], {
+        get: (target, property, receiver) =>
+          property === 'length' ? -1 : Reflect.get(target, property, receiver),
+      })
+      const unreadableLength = new Proxy([], {
+        get: (target, property, receiver) => {
+          if (property === 'length') throw new Error('index length getter failed')
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const unreadableEntry = new Proxy(['alpha'], {
+        get: (target, property, receiver) => {
+          if (property === '0') throw new Error('index entry getter failed')
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const answers: ReadonlyArray<unknown> = ['', invalidLength, unreadableLength, unreadableEntry]
+
+      for (const answer of answers) {
+        const factory = makeFakeIndexedDb()
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          yield* storage.put(A, envelope({ n: 1 }))
+          factory.corruptNextIndexKeys(answer)
+          return yield* Effect.flip(storage.keys)
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error._tag).toBe('StorageError')
+        expect(error.operation).toBe('indexeddb.keys')
+      }
+    }),
+  )
+
+  effect('closes a late open success after the blocked error settles', () =>
+    Effect.gen(function* () {
+      let closes = 0
+      const names: IdbStringList = { length: 0, contains: () => false, item: () => null }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => { throw new Error('not expected to create a store') },
+        transaction: () => { throw new Error('not expected to start a transaction') },
+        close: () => {
+          closes += 1
+          throw new Error('late database close failed')
+        },
+        onversionchange: null,
+      }
+      const request: IdbOpenRequest = {
+        result: database,
+        error: null,
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+      }
+      const error = yield* Effect.flip(openDatabase({
+        databaseName: DATABASE,
+        factory: {
+          open: () => {
+            queueMicrotask(() => fire(request.onblocked))
+            queueMicrotask(() => fire(request.onsuccess))
+            return request
+          },
+        },
+      }))
+
+      expect(error.operation).toBe('indexeddb.open:blocked')
+      yield* Effect.sleep('0 millis')
+      expect(closes).toBe(1)
+    }),
+  )
+
+  effect('ignores close failure from a live database version-change callback', () =>
+    Effect.gen(function* () {
+      const names: IdbStringList = { length: 0, contains: () => false, item: () => null }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => { throw new Error('not expected to create a store') },
+        transaction: () => { throw new Error('not expected to start a transaction') },
+        close: () => { throw new Error('close failed during version change') },
+        onversionchange: null,
+      }
+      const request: IdbOpenRequest = {
+        result: database,
+        error: null,
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+      }
+      queueMicrotask(() => fire(request.onsuccess))
+
+      expect(yield* openDatabase({ databaseName: DATABASE, factory: { open: () => request } })).toBe(database)
+      fire(database.onversionchange)
+    }),
+  )
+
+  effect('maps a version-change handler setter failure and closes the database', () =>
+    Effect.gen(function* () {
+      const assignmentFailure = new Error('version-change handler could not be installed')
+      let closes = 0
+      const names: IdbStringList = { length: 0, contains: () => false, item: () => null }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => { throw new Error('not expected to create a store') },
+        transaction: () => { throw new Error('not expected to start a transaction') },
+        close: () => {
+          closes += 1
+          throw new Error('database close failed after handler registration failed')
+        },
+        get onversionchange() { return null },
+        set onversionchange(_handler: ((event: never) => void) | null) { throw assignmentFailure },
+      }
+      const request: IdbOpenRequest = {
+        result: database,
+        error: null,
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+      }
+
+      const error = yield* Effect.flip(openDatabase({
+        databaseName: DATABASE,
+        factory: {
+          open: () => {
+            queueMicrotask(() => fire(request.onsuccess))
+            return request
+          },
+        },
+      }))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(assignmentFailure)
+      expect(closes).toBe(1)
+    }),
+  )
+
+  effect('maps a request result getter failure to a typed open error', () =>
+    Effect.gen(function* () {
+      const resultFailure = new Error('request result could not be read')
+      const request: IdbOpenRequest = {
+        get result(): IdbDatabase {
+          throw resultFailure
+        },
+        error: null,
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+      }
+      queueMicrotask(() => fire(request.onsuccess))
+
+      const error = yield* Effect.flip(
+        openDatabase({
+          databaseName: DATABASE,
+          factory: { open: () => request },
+        }),
+      )
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(resultFailure)
+    }),
+  )
+
+  effect('maps an open-request error getter failure to the typed storage error', () =>
+    Effect.gen(function* () {
+      const errorFailure = new Error('open request error could not be read')
+      const names: IdbStringList = {
+        length: 0,
+        contains: () => false,
+        item: () => null,
+      }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => {
+          throw new Error('not expected to create a store')
+        },
+        transaction: () => {
+          throw new Error('not expected to start a transaction')
+        },
+        close: () => undefined,
+        onversionchange: null,
+      }
+      const request: IdbOpenRequest = {
+        result: database,
+        get error(): IdbDomException | null {
+          throw errorFailure
+        },
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+      }
+      queueMicrotask(() => fire(request.onerror))
+
+      const error = yield* Effect.flip(
+        openDatabase({
+          databaseName: DATABASE,
+          factory: { open: () => request },
+        }),
+      )
+
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(errorFailure)
+    }),
+  )
+
+  effect('closes a database when registering its version-change handler fails', () =>
+    Effect.gen(function* () {
+      const registrationFailure = new Error('version-change handler cannot be installed')
+      let closed = false
+      const names: IdbStringList = {
+        length: 0,
+        contains: () => false,
+        item: () => null,
+      }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => {
+          throw new Error('not expected to create a store')
+        },
+        transaction: () => {
+          throw new Error('not expected to start a transaction')
+        },
+        close: () => {
+          closed = true
+        },
+        get onversionchange() {
+          return null
+        },
+        set onversionchange(_handler) {
+          throw registrationFailure
+        },
+      }
+      const request: IdbOpenRequest = {
+        result: database,
+        error: null,
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        onblocked: null,
+      }
+      queueMicrotask(() => fire(request.onsuccess))
+
+      const error = yield* Effect.flip(
+        openDatabase({
+          databaseName: DATABASE,
+          factory: { open: () => request },
+        }),
+      )
+
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(registrationFailure)
+      expect(closed).toBe(true)
+    }),
+  )
+
+  effect('fails when registering an open-request handler throws', () =>
+    Effect.gen(function* () {
+      const registrationFailure = new Error('blocked handler cannot be installed')
+      const names: IdbStringList = {
+        length: 0,
+        contains: () => false,
+        item: () => null,
+      }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => {
+          throw new Error('not expected to create a store')
+        },
+        transaction: () => {
+          throw new Error('not expected to start a transaction')
+        },
+        close: () => undefined,
+        onversionchange: null,
+      }
+      const request = {
+        result: database,
+        error: null,
+        transaction: null,
+        onsuccess: null,
+        onerror: null,
+        onupgradeneeded: null,
+        get onblocked() {
+          return null
+        },
+        set onblocked(_handler: IdbOpenRequest['onblocked']) {
+          throw registrationFailure
+        },
+      } satisfies IdbOpenRequest
+
+      const error = yield* Effect.flip(
+        openDatabase({
+          databaseName: DATABASE,
+          factory: { open: () => request },
+        }),
+      )
+
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(registrationFailure)
+    }),
+  )
+
+  effect('maps synchronous transaction setup failures and missing results to storage errors', () =>
+    Effect.gen(function* () {
+      const store: IdbObjectStore = {
+        indexNames: { length: 0, contains: () => false, item: () => null },
+        get: () => {
+          throw new Error('unused')
+        },
+        put: () => {
+          throw new Error('unused')
+        },
+        delete: () => {
+          throw new Error('unused')
+        },
+        index: () => {
+          throw new Error('unused')
+        },
+        createIndex: () => {
+          throw new Error('unused')
+        },
+      }
+
+      let callbackTransaction: IdbTransaction
+      callbackTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(callbackTransaction.onabort)),
+        error: null,
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const callbackDatabase: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: { length: 0, contains: () => false, item: () => null },
+        createObjectStore: () => store,
+        transaction: () => callbackTransaction,
+        close: () => undefined,
+        onversionchange: null,
+      }
+      const callbackFailure = new Error('transaction start failed')
+      const callbackError = yield* Effect.flip(
+        runTransaction(callbackDatabase, 'readwrite', 'indexeddb.test', SaveKey('alpha'), () => {
+          throw callbackFailure
+        }),
+      )
+      expect(callbackError.operation).toBe('indexeddb.test')
+      expect(callbackError.cause).toBe(callbackFailure)
+
+      let incompleteTransaction: IdbTransaction
+      incompleteTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(incompleteTransaction.onabort)),
+        error: null,
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const incompleteDatabase: IdbDatabase = {
+        ...callbackDatabase,
+        transaction: () => incompleteTransaction,
+      }
+      const incompleteError = yield* Effect.flip(
+        runTransaction(incompleteDatabase, 'readonly', 'indexeddb.incomplete', undefined, () => {
+          queueMicrotask(() => fire(incompleteTransaction.oncomplete))
+        }),
+      )
+      expect(incompleteError.operation).toBe('indexeddb.incomplete:incomplete')
+
+      const transactionFailure = new Error('transaction error event')
+      let failingTransaction: IdbTransaction
+      failingTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(failingTransaction.onabort)),
+        error: transactionFailure,
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const failingDatabase: IdbDatabase = {
+        ...callbackDatabase,
+        transaction: () => failingTransaction,
+      }
+      const transactionError = yield* Effect.flip(
+        runTransaction(failingDatabase, 'readwrite', 'indexeddb.onerror', undefined, () => {
+          queueMicrotask(() => {
+            fire(failingTransaction.onerror)
+            fire(failingTransaction.onabort)
+          })
+        }),
+      )
+      expect(transactionError.cause).toBe(transactionFailure)
+
+      const errorGetterFailure = new Error('transaction error getter failed')
+      let unreadableTransaction: IdbTransaction
+      unreadableTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(unreadableTransaction.onabort)),
+        get error(): IdbDomException | null {
+          throw errorGetterFailure
+        },
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const unreadableDatabase: IdbDatabase = {
+        ...callbackDatabase,
+        transaction: () => unreadableTransaction,
+      }
+      const unreadableError = yield* Effect.flip(
+        runTransaction(unreadableDatabase, 'readwrite', 'indexeddb.abort', undefined, () => {
+          queueMicrotask(() => fire(unreadableTransaction.onabort))
+        }),
+      )
+      expect(unreadableError.cause).toBe(errorGetterFailure)
+    }),
+  )
+
+  effect('guards late transaction and request callbacks and captures unreadable errors', () =>
+    Effect.gen(function* () {
+      const names: IdbStringList = { length: 0, contains: () => false, item: () => null }
+      const request = (result: unknown): IdbRequest => ({ result, error: null, onsuccess: null, onerror: null })
+      const store: IdbObjectStore = {
+        indexNames: names,
+        get: () => request(undefined),
+        put: () => request(undefined),
+        delete: () => request(undefined),
+        index: () => ({ getAllKeys: () => request([]), openCursor: () => request(null) }),
+        createIndex: () => undefined,
+      }
+      const databaseFor = (transaction: IdbTransaction): IdbDatabase => ({
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: names,
+        createObjectStore: () => store,
+        transaction: () => transaction,
+        close: () => undefined,
+        onversionchange: null,
+      })
+
+      const transactionFailure = new Error('transaction error getter failed in onerror')
+      let unreadableTransaction: IdbTransaction
+      unreadableTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(unreadableTransaction.onabort)),
+        get error(): IdbDomException | null { throw transactionFailure },
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const transactionError = yield* Effect.flip(runTransaction<never>(
+        databaseFor(unreadableTransaction),
+        'readwrite',
+        'indexeddb.transaction-error',
+        undefined,
+        () => queueMicrotask(() => {
+          fire(unreadableTransaction.onerror)
+          fire(unreadableTransaction.onabort)
+        }),
+      ))
+      expect(transactionError.cause).toBe(transactionFailure)
+
+      let settledTransaction: IdbTransaction
+      settledTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(settledTransaction.onabort)),
+        error: null,
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const delivered = request('complete')
+      const result = yield* runTransaction<string>(
+        databaseFor(settledTransaction),
+        'readwrite',
+        'indexeddb.late-callback',
+        undefined,
+        (_activeStore, deliver, onResult, fail) => {
+          onResult(delivered, (value) => {
+            if (typeof value === 'string') deliver(value)
+            else fail(value)
+          })
+          queueMicrotask(() => {
+            fire(delivered.onsuccess)
+            fire(settledTransaction.oncomplete)
+            fail(new Error('failure arrived after completion'))
+            fire(delivered.onerror)
+          })
+        },
+      )
+      expect(result).toBe('complete')
+
+      const requestFailure = new Error('request error getter failed')
+      let requestTransaction: IdbTransaction
+      requestTransaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(requestTransaction.onabort)),
+        error: null,
+        oncomplete: null,
+        onerror: null,
+        onabort: null,
+      }
+      const unreadableRequest: IdbRequest = {
+        result: undefined,
+        get error(): IdbDomException | null { throw requestFailure },
+        onsuccess: null,
+        onerror: null,
+      }
+      const requestError = yield* Effect.flip(runTransaction<never>(
+        databaseFor(requestTransaction),
+        'readwrite',
+        'indexeddb.request-error',
+        undefined,
+        (_activeStore, _deliver, onResult) => {
+          onResult(unreadableRequest, () => undefined)
+          queueMicrotask(() => fire(unreadableRequest.onerror))
+        },
+      ))
+      expect(requestError.cause).toBe(requestFailure)
+    }),
+  )
+
+  effect('settles with the handler setup failure after an abort event', () =>
+    Effect.gen(function* () {
+      const store: IdbObjectStore = {
+        indexNames: { length: 0, contains: () => false, item: () => null },
+        get: () => {
+          throw new Error('unused')
+        },
+        put: () => {
+          throw new Error('unused')
+        },
+        delete: () => {
+          throw new Error('unused')
+        },
+        index: () => {
+          throw new Error('unused')
+        },
+        createIndex: () => {
+          throw new Error('unused')
+        },
+      }
+      const setupFailure = new Error('completion handler cannot be installed')
+      let transaction: IdbTransaction
+      transaction = {
+        objectStore: () => store,
+        abort: () => queueMicrotask(() => fire(transaction.onabort)),
+        error: null,
+        onerror: null,
+        onabort: null,
+        get oncomplete() {
+          return null
+        },
+        set oncomplete(_handler) {
+          throw setupFailure
+        },
+      }
+      const database: IdbDatabase = {
+        name: DATABASE,
+        version: STORE_LAYOUT_VERSION,
+        objectStoreNames: { length: 0, contains: () => false, item: () => null },
+        createObjectStore: () => store,
+        transaction: () => transaction,
+        close: () => undefined,
+        onversionchange: null,
+      }
+
+      const error = yield* Effect.flip(
+        runTransaction(database, 'readonly', 'indexeddb.setup', undefined, () => undefined),
+      )
+      expect(error.operation).toBe('indexeddb.setup')
+      expect(error.cause).toBe(setupFailure)
     }),
   )
 

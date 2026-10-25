@@ -1,10 +1,17 @@
+import { Result } from 'effect'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  decodeMinecraftJson,
-  encodeMinecraftJson,
+  decodeMinecraftJson as decodeMinecraftJsonResult,
+  encodeMinecraftJson as encodeMinecraftJsonResult,
   isMinecraftJsonValue,
   MinecraftJsonError,
 } from '../src/domain/minecraft-java-save-json.js'
+
+const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+const decodeMinecraftJson = (...args: Parameters<typeof decodeMinecraftJsonResult>) =>
+  unwrapResult(decodeMinecraftJsonResult(...args))
+const encodeMinecraftJson = (...args: Parameters<typeof encodeMinecraftJsonResult>) =>
+  unwrapResult(encodeMinecraftJsonResult(...args))
 
 const expectJsonError = (operation: () => unknown): void => {
   expect(operation).toThrowError(MinecraftJsonError)
@@ -171,4 +178,68 @@ describe('Minecraft JSON boundary', () => {
       iteratorSpy.mockRestore()
     }
   })
+
+  it('maps JSON snapshot and UTF-8 allocation failures to MinecraftJsonError', () => {
+    const cloneSpy = vi.spyOn(globalThis, 'structuredClone').mockImplementation(() => {
+      throw new Error('snapshot failed')
+    })
+    try {
+      expectJsonError(() => encodeMinecraftJson({ value: 1 }))
+    } finally {
+      cloneSpy.mockRestore()
+    }
+
+    const allocationSpy = vi.spyOn(Uint8Array, 'from').mockImplementation(() => {
+      throw new Error('allocation failed')
+    })
+    try {
+      expectJsonError(() => encodeMinecraftJson('small string'))
+    } finally {
+      allocationSpy.mockRestore()
+    }
+  })
+
+  it('rejects decoded JSON text that exceeds the runtime code-point argument limit', () => {
+    const bytes = new TextEncoder().encode(`"${'a'.repeat(200_000)}"`)
+    expectJsonError(() => decodeMinecraftJson(bytes))
+  })
+
+
+  it('maps revoked JSON proxies and unreadable decoded bytes to boundary failures', () => {
+    const revoked = Proxy.revocable({}, {})
+    revoked.revoke()
+    expect(isMinecraftJsonValue(revoked.proxy)).toBe(false)
+
+    const uncopiableBytes = new Uint8Array([0x6e])
+    Object.defineProperty(uncopiableBytes, 'slice', {
+      value: () => {
+        throw new Error('decode input copy failed')
+      },
+    })
+    expectJsonError(() => decodeMinecraftJson(uncopiableBytes))
+  })
+
+  it('rejects missing indexed bytes in copied UTF-8 snapshots', () => {
+    const missingByte = (bytes: Uint8Array, index: number): Uint8Array => {
+      const snapshot = new Proxy(bytes.slice(), {
+        get(target, property) {
+          if (property === 'byteLength') return target.byteLength
+          if (property === String(index)) return undefined
+          return Reflect.get(target, property, target)
+        },
+      })
+      const input = bytes.slice()
+      Object.defineProperty(input, 'slice', { value: () => snapshot })
+      return input
+    }
+
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0x41]), 0)))
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0xc2, 0x80]), 1)))
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0xe2, 0x82, 0xac]), 1)))
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0xe2, 0x82, 0xac]), 2)))
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0xf0, 0x90, 0x80, 0x80]), 1)))
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0xf0, 0x90, 0x80, 0x80]), 2)))
+    expectJsonError(() => decodeMinecraftJson(missingByte(Uint8Array.from([0xf0, 0x90, 0x80, 0x80]), 3)))
+  })
+
 })

@@ -1,7 +1,7 @@
 /**
  * The gap between a domain field typed `T | undefined` and this package's own
  * integrity checksum, which rejects a bare `undefined` anywhere in an encoded
- * payload (`integrity-canonical.ts`'s `canonicalize` throws for anything that
+ * payload (`integrity-canonical.ts`'s `canonicalize` returns a failure for anything that
  * is not a string / boolean / finite-or-non-finite number / null / plain
  * object / array / `Uint8Array`).
  *
@@ -11,10 +11,36 @@
  * domain meaning. Each field a consumer swaps is a deliberate per-field
  * decision, not a blanket normalization.
  */
-import { Schema } from 'effect'
+import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
+import { JsonFieldName } from './brand-types.js'
 
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === 'object' && value !== null
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> => {
+  if (typeof value !== 'object' || value === null) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+
+const validateFields = (
+  fields: ReadonlyArray<JsonFieldName>,
+  actual: unknown,
+): Result.Result<ReadonlyArray<JsonFieldName>, SchemaIssue.Issue> => {
+  const captured = Result.try({
+    try: () => Array.from(fields),
+    catch: () => new SchemaIssue.InvalidValue({ message: 'Optional field names could not be read' }, actual),
+  })
+  if (Result.isFailure(captured)) return Result.fail(captured.failure)
+
+  const checkedFields: Array<JsonFieldName> = []
+  for (const field of captured.success) {
+    const checked = JsonFieldName.result(field)
+    if (Result.isFailure(checked)) {
+      return Result.fail(new SchemaIssue.InvalidValue({ message: 'Optional field names must be strings' }, actual))
+    }
+    checkedFields.push(checked.success)
+  }
+  return Result.succeed(checkedFields)
+}
 
 /**
  * Decode side: a stored `null` becomes the domain's `undefined`, for exactly
@@ -22,14 +48,39 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
  * restores a VALUE, it does not invent a key.
  */
 export const restoreNullAsUndefined =
-  (fields: ReadonlyArray<string>) =>
-  (value: unknown): unknown => {
-    if (!isRecord(value)) return value
-    const patch: Record<string, unknown> = {}
-    for (const field of fields) {
-      if (Object.hasOwn(value, field) && value[field] === null) patch[field] = undefined
+  (fields: ReadonlyArray<JsonFieldName>) =>
+  (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
+    const checkedFields = validateFields(fields, value)
+    if (Result.isFailure(checkedFields)) return Result.fail(checkedFields.failure)
+    const record = Result.try({
+      try: () => isRecord(value) ? value : undefined,
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(record)) return Result.fail(record.failure)
+    const recordValue = record.success
+    if (recordValue === undefined) return Result.succeed(value)
+    const captured = Result.try({
+      try: () => {
+        const keys = new Set(Object.keys(recordValue))
+        for (const field of checkedFields.success) {
+          if (!keys.has(field) && Object.getOwnPropertyDescriptor(recordValue, field) !== undefined) keys.add(field)
+        }
+        return {
+          hasSymbolKeys: Object.getOwnPropertySymbols(recordValue).length > 0,
+          output: Object.fromEntries([...keys].map((key) => [key, recordValue[key]] as const)),
+        }
+      },
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(captured)) return Result.fail(captured.failure)
+    if (captured.success.hasSymbolKeys) {
+      return Result.fail(new SchemaIssue.InvalidValue({ message: 'Symbol-keyed fields are not supported' }, value))
     }
-    return Object.keys(patch).length === 0 ? value : { ...value, ...patch }
+    const output = captured.success.output
+    for (const field of checkedFields.success) {
+      if (Object.hasOwn(output, field) && output[field] === null) output[field] = undefined
+    }
+    return Result.succeed(output)
   }
 
 /**
@@ -38,14 +89,39 @@ export const restoreNullAsUndefined =
  * absent entirely is left absent.
  */
 export const encodeUndefinedAsNull =
-  (fields: ReadonlyArray<string>) =>
-  (value: unknown): unknown => {
-    if (!isRecord(value)) return value
-    const patch: Record<string, unknown> = {}
-    for (const field of fields) {
-      if (Object.hasOwn(value, field) && value[field] === undefined) patch[field] = null
+  (fields: ReadonlyArray<JsonFieldName>) =>
+  (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
+    const checkedFields = validateFields(fields, value)
+    if (Result.isFailure(checkedFields)) return Result.fail(checkedFields.failure)
+    const record = Result.try({
+      try: () => isRecord(value) ? value : undefined,
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(record)) return Result.fail(record.failure)
+    const recordValue = record.success
+    if (recordValue === undefined) return Result.succeed(value)
+    const captured = Result.try({
+      try: () => {
+        const keys = new Set(Object.keys(recordValue))
+        for (const field of checkedFields.success) {
+          if (!keys.has(field) && Object.getOwnPropertyDescriptor(recordValue, field) !== undefined) keys.add(field)
+        }
+        return {
+          hasSymbolKeys: Object.getOwnPropertySymbols(recordValue).length > 0,
+          output: Object.fromEntries([...keys].map((key) => [key, recordValue[key]] as const)),
+        }
+      },
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(captured)) return Result.fail(captured.failure)
+    if (captured.success.hasSymbolKeys) {
+      return Result.fail(new SchemaIssue.InvalidValue({ message: 'Symbol-keyed fields are not supported' }, value))
     }
-    return Object.keys(patch).length === 0 ? value : { ...value, ...patch }
+    const output = captured.success.output
+    for (const field of checkedFields.success) {
+      if (Object.hasOwn(output, field) && output[field] === undefined) output[field] = null
+    }
+    return Result.succeed(output)
   }
 
 /**
@@ -54,12 +130,20 @@ export const encodeUndefinedAsNull =
  * `Schema.transform(Schema.Unknown, inner, { strict: false, decode, encode })`
  * shape a format author would otherwise hand-write per field.
  */
-export const undefinedFieldsAsNull = <A, I>(
-  inner: Schema.Schema<A, I>,
-  fields: ReadonlyArray<string>,
-): Schema.Schema<A, unknown> =>
-  Schema.transform(Schema.Unknown, inner, {
-    strict: false,
-    decode: restoreNullAsUndefined(fields),
-    encode: encodeUndefinedAsNull(fields),
-  })
+export const undefinedFieldsAsNull = <A>(
+  inner: Schema.Codec<A, unknown>,
+  fields: ReadonlyArray<JsonFieldName>,
+): Schema.Codec<A, unknown> =>
+  Schema.decodeTo<Schema.Codec<A, unknown>, Schema.Unknown, never, never>(
+    inner,
+    SchemaTransformation.transformEffect({
+      decode: (value) => {
+        const decoded = restoreNullAsUndefined(fields)(value)
+        return Result.isFailure(decoded) ? Effect.fail(decoded.failure) : Effect.succeed(decoded.success)
+      },
+      encode: (value) => {
+        const encoded = encodeUndefinedAsNull(fields)(value)
+        return Result.isFailure(encoded) ? Effect.fail(encoded.failure) : Effect.succeed(encoded.success)
+      },
+    }),
+  )(Schema.Unknown)

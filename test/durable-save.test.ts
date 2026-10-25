@@ -1,17 +1,20 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema } from 'effect'
+import { SaveChecksum, SaveFormatVersion, SaveMaxBytes } from '../src/domain/brand-types.js'
 import {
   loadDurably,
   saveDurably,
-  sealSaveEnvelope,
+  sealSaveEnvelope as sealSaveEnvelopeResult,
   validateSaveEnvelope,
 } from '../src/domain/durable-save.js'
-import { saveEnvelope, type SaveEnvelope } from '../src/domain/envelope.js'
+import type { SaveEnvelope } from '../src/domain/envelope.js'
 import { StorageError } from '../src/domain/errors.js'
-import { defineFormat } from '../src/domain/format.js'
+import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import { DEFAULT_MAX_SAVE_BYTES, sameSaveEnvelope, sealAndValidateSaveEnvelope } from '../src/domain/integrity.js'
+import { canonicalize } from '../src/domain/integrity-canonical.js'
 import { makeInMemoryStorage, SaveKey, StoragePort } from '../src/domain/storage-port.js'
+import { jsonExtensions, saveEnvelope } from './support/save-envelope.js'
 
 // Widens a value's static type to `T` with NO runtime transformation and no type assertion:
 // `Record<string, any>` indexing is `any` by construction, assignable anywhere with zero compiler
@@ -23,11 +26,24 @@ const widen = <T,>(value: unknown): T => {
   return bag['value']
 }
 
+const defineFormat = <A, I>(spec: {
+  readonly name: string
+  readonly version: number
+  readonly schema: Schema.Codec<A, I>
+}) => Result.getOrThrow(defineFormatResult(spec))
 const State = defineFormat({
   name: 'mc-save/test/durable',
   version: 1,
   schema: Schema.Struct({ score: Schema.Number, label: Schema.String }),
 })
+
+const sealEnvelopeForTest = (
+  envelope: Parameters<typeof sealSaveEnvelopeResult>[0],
+  extensions?: Readonly<Record<string, unknown>>,
+): SaveEnvelope =>
+  Result.getOrThrow(
+    sealSaveEnvelopeResult(envelope, extensions === undefined ? undefined : jsonExtensions(extensions)),
+  )
 
 const CompleteWorld = defineFormat({
   name: 'mc-save/test/complete-world',
@@ -36,7 +52,7 @@ const CompleteWorld = defineFormat({
     dimension: Schema.String,
     player: Schema.Struct({
       id: Schema.String,
-      position: Schema.Tuple(Schema.Number, Schema.Number, Schema.Number),
+      position: Schema.Tuple([Schema.Number, Schema.Number, Schema.Number]),
       health: Schema.Number,
       inventory: Schema.Array(Schema.Struct({ item: Schema.String, count: Schema.Number })),
     }),
@@ -53,6 +69,81 @@ const key = SaveKey('world-1')
 const previousKey = SaveKey('world-1::previous')
 
 describe('durable save checkpoints', () => {
+  effect('fails invalid save options instead of applying defaults', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      const invalidOptions = yield* Effect.result(
+        saveDurably(
+          State,
+          key,
+          { score: 1, label: 'invalid options' },
+          widen<Parameters<typeof saveDurably>[3]>(null),
+        ).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(invalidOptions._tag).toBe('Failure')
+      if (invalidOptions._tag === 'Failure') {
+        expect(invalidOptions.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'durable save options must be an object',
+        })
+      }
+
+      const invalidLimit = yield* Effect.result(
+        saveDurably(
+          State,
+          key,
+          { score: 1, label: 'invalid limit' },
+          widen<Parameters<typeof saveDurably>[3]>({ maxBytes: null }),
+        ).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(invalidLimit._tag).toBe('Failure')
+      if (invalidLimit._tag === 'Failure') {
+        expect(invalidLimit.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'maxBytes must be a non-negative safe integer',
+        })
+      }
+
+      const invalidExtensions = yield* Effect.result(
+        saveDurably(
+          State,
+          key,
+          { score: 1, label: 'invalid extensions' },
+          widen<Parameters<typeof saveDurably>[3]>({ extensions: null }),
+        ).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(invalidExtensions._tag).toBe('Failure')
+      if (invalidExtensions._tag === 'Failure') {
+        expect(invalidExtensions.failure).toMatchObject({ _tag: 'SaveDecodeError' })
+        expect(invalidExtensions.failure.message).toContain('extensions must be a plain string-keyed object')
+      }
+
+      const getterFailure = new Error('save options could not be read')
+      const unreadableOptions = new Proxy({}, {
+        get: (_target, property) => {
+          if (property === 'extensions') throw getterFailure
+          return undefined
+        },
+      })
+      const unreadable = yield* Effect.result(
+        saveDurably(
+          State,
+          key,
+          { score: 1, label: 'unreadable options' },
+          widen<Parameters<typeof saveDurably>[3]>(unreadableOptions),
+        ).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(unreadable._tag).toBe('Failure')
+      if (unreadable._tag === 'Failure') {
+        expect(unreadable.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'durable save options could not be read',
+          cause: getterFailure,
+        })
+      }
+    }),
+  )
+
   effect('falls back to the previous known-good checkpoint when latest is corrupt', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
@@ -82,9 +173,9 @@ describe('durable save checkpoints', () => {
 
   effect('decodes a valid checkpoint above the default byte limit with the caller limit', () =>
     Effect.gen(function* () {
-      const maxBytes = DEFAULT_MAX_SAVE_BYTES + 1_024
+      const maxBytes = SaveMaxBytes(DEFAULT_MAX_SAVE_BYTES + 1_024)
       const value = { score: 1, label: 'x'.repeat(DEFAULT_MAX_SAVE_BYTES) }
-      const envelope = sealSaveEnvelope(saveEnvelope(State.name, State.version, value))
+      const envelope = sealEnvelopeForTest(saveEnvelope(State.name, State.version, value))
       expect(envelope.integrity.byteLength).toBeGreaterThan(DEFAULT_MAX_SAVE_BYTES)
 
       const storage = yield* makeInMemoryStorage
@@ -100,13 +191,13 @@ describe('durable save checkpoints', () => {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
-      yield* storage.put(key, sealSaveEnvelope(saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' })))
+      yield* storage.put(key, sealEnvelopeForTest(saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' })))
 
-      const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
-      expect(result._tag).toBe('Left')
-      if (result._tag === 'Left') {
-        expect(result.left).toMatchObject({ _tag: 'SaveDecodeError', version: State.version + 1 })
-        expect(result.left.message).toContain('newer build')
+      const result = yield* Effect.result(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure).toMatchObject({ _tag: 'SaveDecodeError', version: State.version + 1 })
+        expect(result.failure.message).toContain('newer build')
       }
     }),
   )
@@ -117,32 +208,42 @@ describe('durable save checkpoints', () => {
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
       const previous = yield* storage.get(previousKey)
-      const future = sealSaveEnvelope(saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' }))
+      const future = sealEnvelopeForTest(saveEnvelope(State.name, State.version + 1, { score: 3, label: 'future' }))
       yield* storage.put(key, future)
 
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         saveDurably(State, key, { score: 4, label: 'replacement' }).pipe(Effect.provideService(StoragePort, storage)),
       )
-      expect(result._tag).toBe('Left')
-      if (result._tag === 'Left') {
-        expect(result.left).toMatchObject({ _tag: 'SaveDecodeError', version: State.version + 1 })
-        expect(result.left.message).toContain('newer build')
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure).toMatchObject({ _tag: 'SaveDecodeError', version: State.version + 1 })
+        expect(result.failure.message).toContain('newer build')
       }
       expect(yield* storage.get(key)).toStrictEqual(Option.some(future))
       expect(yield* storage.get(previousKey)).toStrictEqual(previous)
     }),
   )
 
-  effect('does not replace a good previous checkpoint with a corrupt latest', () =>
+  effect('fails without replacing a good previous checkpoint when latest is corrupt', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
       const latest = yield* storage.get(key)
       if (Option.isNone(latest)) throw new Error('latest checkpoint was not written')
-      yield* storage.put(key, { ...latest.value, integrity: { ...latest.value.integrity, checksum: '00000000' } })
+      const corrupt = {
+        ...latest.value,
+        integrity: { ...latest.value.integrity, checksum: Result.getOrThrow(SaveChecksum.result('00000000')) },
+      }
+      yield* storage.put(key, corrupt)
 
-      yield* saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage))
+      const write = yield* Effect.result(
+        saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(write._tag).toBe('Failure')
+      if (write._tag === 'Failure') expect(write.failure._tag).toBe('SaveDecodeError')
+      expect(yield* storage.get(key)).toStrictEqual(Option.some(corrupt))
+
       const previous = yield* storage.get(previousKey)
       expect(Option.isSome(previous) && previous.value.payload).toStrictEqual({ score: 1, label: 'first' })
     }),
@@ -157,10 +258,10 @@ describe('durable save checkpoints', () => {
         commitBatch: () => Effect.fail(new StorageError({ operation: 'quota-exceeded' })),
       }
 
-      const failure = yield* Effect.either(
+      const failure = yield* Effect.result(
         saveDurably(State, key, { score: 2, label: 'lost' }).pipe(Effect.provideService(StoragePort, interrupted)),
       )
-      expect(failure._tag).toBe('Left')
+      expect(failure._tag).toBe('Failure')
       expect(yield* loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage))).toStrictEqual(
         Option.some({ score: 1, label: 'stable' }),
       )
@@ -171,10 +272,27 @@ describe('durable save checkpoints', () => {
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       const extensions = { futureInventory: { slots: [1, 2, 3] } }
-      yield* saveDurably(State, key, { score: 1, label: 'first' }, { extensions }).pipe(
+      yield* saveDurably(State, key, { score: 1, label: 'first' }, { extensions: jsonExtensions(extensions) }).pipe(
         Effect.provideService(StoragePort, storage),
       )
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
+
+      const latest = yield* storage.get(key)
+      expect(Option.isSome(latest) && latest.value.extensions).toStrictEqual(extensions)
+    }),
+  )
+
+  effect('inherits extensions from the previous checkpoint when latest is missing', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      const extensions = { futureInventory: { slots: [1, 2, 3] } }
+      const previous = sealEnvelopeForTest(
+        saveEnvelope(State.name, State.version, { score: 1, label: 'previous' }),
+        extensions,
+      )
+      yield* storage.put(previousKey, previous)
+
+      yield* saveDurably(State, key, { score: 2, label: 'next' }).pipe(Effect.provideService(StoragePort, storage))
 
       const latest = yield* storage.get(key)
       expect(Option.isSome(latest) && latest.value.extensions).toStrictEqual(extensions)
@@ -219,7 +337,7 @@ describe('durable save checkpoints', () => {
           Effect.gen(function* () {
             activeCommits += 1
             maximumActiveCommits = Math.max(maximumActiveCommits, activeCommits)
-            yield* Effect.async<void>((resume) => {
+            yield* Effect.callback<void>((resume) => {
               queueMicrotask(() => resume(Effect.void))
             })
             yield* storage.commitBatch(mutations)
@@ -261,7 +379,7 @@ describe('durable save checkpoints', () => {
           Effect.gen(function* () {
             activeCommits += 1
             maximumActiveCommits = Math.max(maximumActiveCommits, activeCommits)
-            yield* Effect.async<void>((resume) => {
+            yield* Effect.callback<void>((resume) => {
               queueMicrotask(() => resume(Effect.void))
             })
             yield* storage.commitBatch(mutations)
@@ -321,13 +439,112 @@ describe('durable save checkpoints', () => {
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       const draft = widen<SaveEnvelope>(saveEnvelope(State.name, 1, { score: 7, label: 'draft' }))
-      yield* storage.put(key, draft)
+      const malformedStorage = {
+        ...storage,
+        readBatch: () => Effect.succeed([Option.some(draft), Option.none()]),
+      }
 
-      const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
-      expect(result._tag).toBe('Left')
-      if (result._tag === 'Left') {
-        expect(result.left._tag).toBe('SaveDecodeError')
-        if (result.left._tag === 'SaveDecodeError') expect(result.left.reason).toContain('well-formed')
+      const result = yield* Effect.result(loadDurably(State, key).pipe(Effect.provideService(StoragePort, malformedStorage)))
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure._tag).toBe('SaveDecodeError')
+        if (result.failure._tag === 'SaveDecodeError') expect(result.failure.reason).toContain('well-formed')
+      }
+    }),
+  )
+
+effect('fails when storage returns an incomplete durable checkpoint batch', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      const incompleteStorage = {
+        ...storage,
+        readBatch: () => Effect.succeed([Option.none()]),
+      }
+
+      const loaded = yield* Effect.result(
+        loadDurably(State, key).pipe(Effect.provideService(StoragePort, incompleteStorage)),
+      )
+      expect(loaded._tag).toBe('Failure')
+      if (loaded._tag === 'Failure') {
+        expect(loaded.failure._tag).toBe('StorageError')
+        if (loaded.failure._tag === 'StorageError') {
+          expect(loaded.failure.operation).toBe('durable.readBatch')
+        }
+      }
+
+      const saved = yield* Effect.result(
+        saveDurably(State, key, { score: 1, label: 'first' }).pipe(
+          Effect.provideService(StoragePort, incompleteStorage),
+        ),
+      )
+      expect(saved._tag).toBe('Failure')
+      if (saved._tag === 'Failure') {
+        expect(saved.failure._tag).toBe('StorageError')
+        if (saved.failure._tag === 'StorageError') {
+          expect(saved.failure.operation).toBe('durable.readBatch')
+        }
+      }
+
+      const missingLatest = [Option.none(), Option.none()]
+      Object.defineProperty(missingLatest, '0', { value: undefined })
+      const missingPrevious = [Option.none(), Option.none()]
+      Object.defineProperty(missingPrevious, '1', { value: undefined })
+      for (const batch of [missingLatest, missingPrevious]) {
+        const missingSlotStorage = { ...storage, readBatch: () => Effect.succeed(batch) }
+        const result = yield* Effect.result(
+          loadDurably(State, key).pipe(Effect.provideService(StoragePort, missingSlotStorage)),
+        )
+        expect(result._tag).toBe('Failure')
+        if (result._tag === 'Failure') {
+          expect(result.failure._tag).toBe('StorageError')
+          if (result.failure._tag === 'StorageError') {
+            expect(result.failure.operation).toBe('durable.readBatch')
+          }
+        }
+      }
+
+      for (const malformedBatch of [[null, Option.none()], [Option.none(), null]]) {
+        let commitCount = 0
+        const malformedOptionStorage = {
+          ...storage,
+          readBatch: () => Effect.succeed(widen<ReadonlyArray<Option.Option<SaveEnvelope>>>(malformedBatch)),
+          commitBatch: () => {
+            commitCount += 1
+            return Effect.void
+          },
+        }
+
+        const malformedRead = yield* Effect.result(
+          loadDurably(State, key).pipe(Effect.provideService(StoragePort, malformedOptionStorage)),
+        )
+        expect(malformedRead._tag).toBe('Failure')
+        if (malformedRead._tag === 'Failure') {
+          expect(malformedRead.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
+        }
+
+        const malformedSave = yield* Effect.result(
+          saveDurably(State, key, { score: 1, label: 'must not overwrite malformed checkpoints' }).pipe(
+            Effect.provideService(StoragePort, malformedOptionStorage),
+          ),
+        )
+        expect(malformedSave._tag).toBe('Failure')
+        if (malformedSave._tag === 'Failure') {
+          expect(malformedSave.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
+        }
+        expect(commitCount).toBe(0)
+      }
+
+      const nonArrayStorage = { ...storage }
+      Object.defineProperty(nonArrayStorage, 'readBatch', { value: () => Effect.succeed(null) })
+      const nonArrayResult = yield* Effect.result(
+        loadDurably(State, key).pipe(Effect.provideService(StoragePort, nonArrayStorage)),
+      )
+      expect(nonArrayResult._tag).toBe('Failure')
+      if (nonArrayResult._tag === 'Failure') {
+        expect(nonArrayResult.failure._tag).toBe('StorageError')
+        if (nonArrayResult.failure._tag === 'StorageError') {
+          expect(nonArrayResult.failure.operation).toBe('durable.readBatch')
+        }
       }
     }),
   )
@@ -349,14 +566,14 @@ describe('durable save checkpoints', () => {
       // only through the write path.
       const storage = yield* makeInMemoryStorage
 
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         saveDurably(State, key, { score: Number.NaN, label: 'x' }).pipe(Effect.provideService(StoragePort, storage)),
       )
-      expect(result._tag).toBe('Left')
-      if (result._tag === 'Left') {
-        expect(result.left._tag).toBe('SaveDecodeError')
-        if (result.left._tag === 'SaveDecodeError') {
-          expect(result.left.reason).toBe('save contains a non-finite number')
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure._tag).toBe('SaveDecodeError')
+        if (result.failure._tag === 'SaveDecodeError') {
+          expect(result.failure.reason).toBe('save contains a non-finite number')
         }
       }
       expect(yield* storage.get(key)).toStrictEqual(Option.none())
@@ -367,38 +584,37 @@ describe('durable save checkpoints', () => {
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
 
-      const result = yield* Effect.either(
+      const result = yield* Effect.result(
         saveDurably(State, key, { score: 1, label: 'this label is long enough to blow a tiny byte budget' }, {
-          maxBytes: 8,
+          maxBytes: SaveMaxBytes(8),
         }).pipe(Effect.provideService(StoragePort, storage)),
       )
-      expect(result._tag).toBe('Left')
-      if (result._tag === 'Left') {
-        expect(result.left._tag).toBe('SaveDecodeError')
-        if (result.left._tag === 'SaveDecodeError') {
-          expect(result.left.reason).toContain('byte limit')
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure._tag).toBe('SaveDecodeError')
+        if (result.failure._tag === 'SaveDecodeError') {
+          expect(result.failure.reason).toContain('byte limit')
         }
       }
       expect(yield* storage.get(key)).toStrictEqual(Option.none())
     }),
   )
 
-  effect('does not carry forward a latest that parses but fails to decode (SaveDecodeError, non-future)', () =>
+  effect('fails when latest parses but fails to decode (SaveDecodeError, non-future)', () =>
     Effect.gen(function* () {
-      // Distinct from `loadDurably`'s own fallback block: this is
-      // `saveDurably`'s `recoverableCheckpoint`, which decides whether the
-      // EXISTING latest is worth keeping as the new `previous` before writing.
-      // A latest that parses and passes its checksum but fails to decode is
-      // "not good", the same as a corrupt or missing one, but by a different
-      // path through the code.
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
 
-      const badSchema = sealSaveEnvelope(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
+      const badSchema = sealEnvelopeForTest(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
       yield* storage.put(key, badSchema)
 
-      yield* saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage))
+      const write = yield* Effect.result(
+        saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(write._tag).toBe('Failure')
+      if (write._tag === 'Failure') expect(write.failure._tag).toBe('SaveDecodeError')
+      expect(yield* storage.get(key)).toStrictEqual(Option.some(badSchema))
 
       const previous = yield* storage.get(previousKey)
       expect(Option.isSome(previous) && previous.value.payload).toStrictEqual({ score: 1, label: 'first' })
@@ -422,7 +638,7 @@ describe('durable save checkpoints', () => {
 
         // Sealed (so it clears validateSaveEnvelope) but shaped so the current
         // schema's `Schema.decodeUnknown` rejects it — `score` must be a number.
-        const badSchema = sealSaveEnvelope(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
+        const badSchema = sealEnvelopeForTest(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
         yield* storage.put(key, badSchema)
 
         const restored = yield* loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage))
@@ -435,17 +651,21 @@ describe('durable save checkpoints', () => {
         // One level earlier than the two cases above: this fails inside
         // `readStoredEnvelope` itself (line ~200), before `decodeSave` is ever
         // reached, because the stored value cannot even be parsed as a
-        // `SaveEnvelope`. `Effect.either(readStoredEnvelope(...))` comes back
-        // `Left` directly, so `loadDurably` never reaches its
+        // `SaveEnvelope`. `Effect.result(readStoredEnvelope(...))` comes back
+        // `Failure` directly, so `loadDurably` never reaches its
         // `Effect.catchTags` block at all for this one.
         const storage = yield* makeInMemoryStorage
-        yield* storage.put(key, widen<SaveEnvelope>({ format: '', version: 0, payload: null }))
+        const malformed = widen<SaveEnvelope>({ format: '', version: 0, payload: null })
+        const malformedStorage = {
+          ...storage,
+          readBatch: () => Effect.succeed([Option.some(malformed), Option.none()]),
+        }
 
-        const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
-        expect(result._tag).toBe('Left')
-        if (result._tag === 'Left') {
-          expect(result.left._tag).toBe('SaveDecodeError')
-          expect(result.left.message).toContain('well-formed save envelope')
+        const result = yield* Effect.result(loadDurably(State, key).pipe(Effect.provideService(StoragePort, malformedStorage)))
+        expect(result._tag).toBe('Failure')
+        if (result._tag === 'Failure') {
+          expect(result.failure._tag).toBe('SaveDecodeError')
+          expect(result.failure.message).toContain('well-formed save envelope')
         }
       }),
     )
@@ -453,14 +673,14 @@ describe('durable save checkpoints', () => {
     effect('SaveDecodeError + no previous checkpoint: fails with the latest error', () =>
       Effect.gen(function* () {
         const storage = yield* makeInMemoryStorage
-        const badSchema = sealSaveEnvelope(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
+        const badSchema = sealEnvelopeForTest(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
         yield* storage.put(key, badSchema)
 
-        const result = yield* Effect.either(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
-        expect(result._tag).toBe('Left')
-        if (result._tag === 'Left') {
-          expect(result.left._tag).toBe('SaveDecodeError')
-          expect(result.left.message).toContain('current schema')
+        const result = yield* Effect.result(loadDurably(State, key).pipe(Effect.provideService(StoragePort, storage)))
+        expect(result._tag).toBe('Failure')
+        if (result._tag === 'Failure') {
+          expect(result.failure._tag).toBe('SaveDecodeError')
+          expect(result.failure.message).toContain('current schema')
         }
       }),
     )
@@ -470,21 +690,28 @@ describe('durable save checkpoints', () => {
 
 describe('save integrity', () => {
   it('compares supported envelopes by their canonical content', () => {
-    const ordered = sealSaveEnvelope(saveEnvelope(State.name, 1, {
+    const isSame = (left: SaveEnvelope, right: SaveEnvelope): boolean =>
+      Result.getOrThrow(sameSaveEnvelope(left, right))
+
+    const ordered = sealEnvelopeForTest(saveEnvelope(State.name, 1, {
       nested: { first: 1, second: [true, null] },
       bytes: new Uint8Array([1, 2]),
     }))
-    const reordered = sealSaveEnvelope(saveEnvelope(State.name, 1, {
+    const reordered = sealEnvelopeForTest(saveEnvelope(State.name, 1, {
       bytes: { '0': 1, '1': 2 },
       nested: { second: [true, null], first: 1 },
     }))
-    expect(sameSaveEnvelope(ordered, reordered)).toBe(true)
-    expect(sameSaveEnvelope(ordered, { ...reordered, version: 2 })).toBe(false)
-    expect(sameSaveEnvelope(ordered, { ...reordered, payload: { different: true } })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: { left: 1 } }, { ...ordered, payload: { right: 1 } })).toBe(false)
-    expect(sameSaveEnvelope(ordered, { ...reordered, payload: 'different' })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: null }, { ...ordered, payload: Number.POSITIVE_INFINITY })).toBe(true)
-    expect(sameSaveEnvelope({ ...ordered, payload: Number.NaN }, { ...ordered, payload: Number.NEGATIVE_INFINITY })).toBe(true)
+    expect(isSame(ordered, reordered)).toBe(true)
+    expect(isSame(ordered, { ...reordered, version: Result.getOrThrow(SaveFormatVersion.result(2)) })).toBe(false)
+    expect(isSame(ordered, { ...reordered, payload: { different: true } })).toBe(false)
+    expect(isSame({ ...ordered, payload: { left: 1 } }, { ...ordered, payload: { right: 1 } })).toBe(false)
+    expect(isSame(ordered, { ...reordered, payload: 'different' })).toBe(false)
+    expect(
+      Result.isFailure(sameSaveEnvelope({ ...ordered, payload: null }, { ...ordered, payload: Number.POSITIVE_INFINITY })),
+    ).toBe(true)
+    expect(
+      Result.isFailure(sameSaveEnvelope({ ...ordered, payload: Number.NaN }, { ...ordered, payload: Number.NEGATIVE_INFINITY })),
+    ).toBe(true)
 
     const cyclic: { self?: unknown } = {}
     cyclic.self = cyclic
@@ -498,33 +725,37 @@ describe('save integrity', () => {
         },
       }),
     )
-    expect(sameSaveEnvelope(ordered, { ...ordered, payload: cyclic })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: cyclic }, { ...ordered, payload: cyclic })).toBe(false)
-    expect(sameSaveEnvelope(ordered, { ...ordered, payload: sparse })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: [1] }, { ...ordered, payload: [1, 2] })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: [[1]] }, { ...ordered, payload: [[2]] })).toBe(false)
-    expect(sameSaveEnvelope(ordered, { ...ordered, payload: symbols })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: symbols }, ordered)).toBe(false)
-    expect(sameSaveEnvelope(ordered, { ...ordered, payload: new Date() })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: new Date() }, ordered)).toBe(false)
-    expect(sameSaveEnvelope(ordered, { ...ordered, payload: undefined })).toBe(false)
-    expect(sameSaveEnvelope({ ...ordered, payload: functionValue }, { ...ordered, payload: functionValue })).toBe(false)
-    expect(sameSaveEnvelope(reordered, ordered)).toBe(true)
-    expect(sameSaveEnvelope(throwingEnvelope, ordered)).toBe(false)
+    expect(Result.isFailure(sameSaveEnvelope(ordered, { ...ordered, payload: cyclic }))).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope({ ...ordered, payload: cyclic }, { ...ordered, payload: cyclic }))).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope(ordered, { ...ordered, payload: sparse }))).toBe(true)
+    expect(isSame({ ...ordered, payload: [1] }, { ...ordered, payload: [1, 2] })).toBe(false)
+    expect(isSame({ ...ordered, payload: [[1]] }, { ...ordered, payload: [[2]] })).toBe(false)
+    expect(Result.isFailure(sameSaveEnvelope(ordered, { ...ordered, payload: symbols }))).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope({ ...ordered, payload: symbols }, ordered))).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope(ordered, { ...ordered, payload: new Date() }))).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope({ ...ordered, payload: new Date() }, ordered))).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope(ordered, { ...ordered, payload: undefined }))).toBe(true)
+    expect(
+      Result.isFailure(
+        sameSaveEnvelope({ ...ordered, payload: functionValue }, { ...ordered, payload: functionValue }),
+      ),
+    ).toBe(true)
+    expect(isSame(reordered, ordered)).toBe(true)
+    expect(Result.isFailure(sameSaveEnvelope(throwingEnvelope, ordered))).toBe(true)
   })
 
   it('is deterministic across object insertion order and repeated round trips', () => {
     for (let index = 0; index < 100; index += 1) {
-      const left = sealSaveEnvelope(saveEnvelope(State.name, 1, { a: index, b: `value-${String(index)}` }))
-      const right = sealSaveEnvelope(saveEnvelope(State.name, 1, { b: `value-${String(index)}`, a: index }))
+      const left = sealEnvelopeForTest(saveEnvelope(State.name, 1, { a: index, b: `value-${String(index)}` }))
+      const right = sealEnvelopeForTest(saveEnvelope(State.name, 1, { b: `value-${String(index)}`, a: index }))
       expect(left.integrity).toStrictEqual(right.integrity)
-      expect(sealSaveEnvelope(left).integrity).toStrictEqual(left.integrity)
+      expect(sealEnvelopeForTest(left).integrity).toStrictEqual(left.integrity)
     }
   })
 
   effect('uses canonical UTF-8 bytes for multi-byte payloads', () =>
     Effect.gen(function* () {
-      const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'é漢🦊' }))
+      const sealed = sealEnvelopeForTest(saveEnvelope(State.name, 1, { score: 1, label: 'é漢🦊' }))
       expect(sealed.integrity).toStrictEqual({ algorithm: 'fnv1a32', byteLength: 87, checksum: '08574854' })
       expect(yield* validateSaveEnvelope(sealed)).toStrictEqual(sealed)
     }),
@@ -537,41 +768,135 @@ describe('save integrity', () => {
     }),
   )
 
+  effect('sanitizes malformed format and version fields and rejects altered content', () =>
+    Effect.gen(function* () {
+      const sealed = sealEnvelopeForTest(saveEnvelope(State.name, 1, { score: 1, label: 'sealed' }))
+      const malformedScalars = widen<SaveEnvelope>({
+        ...sealed,
+        format: 42,
+        version: Number.POSITIVE_INFINITY,
+      })
+      const scalarError = yield* Effect.flip(validateSaveEnvelope(malformedScalars))
+      expect(scalarError.format).toBe('unknown')
+      expect(scalarError.version).toBe(0)
+
+      const changedChecksum = widen<SaveEnvelope>({
+        ...sealed,
+        integrity: { ...sealed.integrity, checksum: '00000000' },
+      })
+      const sealMismatch = sealSaveEnvelopeResult(changedChecksum)
+      expect(Result.isFailure(sealMismatch)).toBe(true)
+      const validationMismatch = yield* Effect.flip(validateSaveEnvelope(changedChecksum))
+      expect(validationMismatch.reason).toContain('checksum')
+
+      const changedLength = widen<SaveEnvelope>({
+        ...sealed,
+        integrity: { ...sealed.integrity, byteLength: sealed.integrity.byteLength + 1 },
+      })
+      expect((yield* Effect.result(validateSaveEnvelope(changedLength)))._tag).toBe('Failure')
+
+      const unsupportedPayload = widen<SaveEnvelope>({ ...sealed, payload: new Date() })
+      const unsupportedError = yield* Effect.flip(validateSaveEnvelope(unsupportedPayload))
+      expect(unsupportedError.reason).toContain('unsupported value')
+    }),
+  )
+
   effect('rejects an unknown or malformed integrity record', () =>
     Effect.gen(function* () {
-      const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'sealed' }))
-      const unknownAlgorithm = widen<SaveEnvelope>({
-        ...sealed,
-        integrity: { ...sealed.integrity, algorithm: 'sha256' },
-      })
-      const malformed = widen<SaveEnvelope>({ ...sealed, integrity: null })
+      const sealed = sealEnvelopeForTest(saveEnvelope(State.name, 1, { score: 1, label: 'sealed' }))
+      const malformedIntegrity = [
+        null,
+        [],
+        { ...sealed.integrity, algorithm: 'sha256' },
+        { ...sealed.integrity, byteLength: '1' },
+        { ...sealed.integrity, byteLength: Number.MAX_SAFE_INTEGER + 1 },
+        { ...sealed.integrity, byteLength: -1 },
+        { ...sealed.integrity, checksum: 42 },
+        { ...sealed.integrity, checksum: 'not-a-checksum' },
+      ]
+      for (const integrity of malformedIntegrity) {
+        const candidate = widen<SaveEnvelope>({ ...sealed, integrity })
+        expect((yield* Effect.result(validateSaveEnvelope(candidate)))._tag).toBe('Failure')
+      }
 
-      expect((yield* Effect.either(validateSaveEnvelope(unknownAlgorithm)))._tag).toBe('Left')
-      expect((yield* Effect.either(validateSaveEnvelope(malformed)))._tag).toBe('Left')
+      const malformedOuter = widen<SaveEnvelope>(null)
+      const outerError = yield* Effect.flip(validateSaveEnvelope(malformedOuter))
+      expect(outerError.reason).toBe('save envelope must be an object')
+
+      const malformedExtensions = widen<SaveEnvelope>({ ...sealed, extensions: new Date() })
+      const extensionError = yield* Effect.flip(validateSaveEnvelope(malformedExtensions))
+      expect(extensionError.reason).toBe('save envelope extensions must be a plain string-keyed object')
+
+      const unreadableExtensions = new Proxy({ note: 'value' }, {
+        get: (_target, _property, _receiver) => { throw new Error('extension value could not be read') },
+      })
+      const unreadableExtensionsCandidate = widen<SaveEnvelope>({ ...sealed, extensions: unreadableExtensions })
+      const unreadableExtensionsError = yield* Effect.flip(validateSaveEnvelope(unreadableExtensionsCandidate))
+      expect(unreadableExtensionsError.reason).toBe('save envelope extensions could not be read')
+
+      const getterFailure = new Error('integrity getter failed')
+      const throwingIntegrity = new Proxy(sealed.integrity, {
+        get: (target, property, receiver) => {
+          if (property === 'checksum') throw getterFailure
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const throwingCandidate = { ...sealed, integrity: throwingIntegrity }
+      const result = yield* Effect.result(validateSaveEnvelope(throwingCandidate))
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure._tag).toBe('SaveDecodeError')
+        expect(result.failure.cause).toBe(getterFailure)
+      }
+    }),
+  )
+
+  effect('reports a non-finite untrusted payload before comparing its integrity metadata', () =>
+    Effect.gen(function* () {
+      const malformed = widen<SaveEnvelope>({
+        format: State.name,
+        version: 1,
+        payload: { score: Number.POSITIVE_INFINITY },
+        integrity: { algorithm: 'fnv1a32', byteLength: 0, checksum: '00000000' },
+      })
+
+      const error = yield* Effect.flip(validateSaveEnvelope(malformed))
+
+      expect(error._tag).toBe('SaveDecodeError')
+      expect(error.reason).toBe('save contains a non-finite number')
     }),
   )
 
   effect('rejects non-finite values and saves above the configured byte limit', () =>
     Effect.gen(function* () {
-      const nonFinite = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: Number.NaN }))
-      expect((yield* Effect.either(validateSaveEnvelope(nonFinite)))._tag).toBe('Left')
+      const nonFiniteDraft = saveEnvelope(State.name, 1, { score: Number.NaN })
+      const nonFinite = sealSaveEnvelopeResult(nonFiniteDraft)
+      expect(Result.isFailure(nonFinite)).toBe(true)
+      if (Result.isFailure(nonFinite)) {
+        expect(nonFinite.failure._tag).toBe('SaveDecodeError')
+        expect(nonFinite.failure.reason).toBe('save contains a non-finite number')
+      }
 
       const sealingNonFinite = yield* Effect.flip(
-        sealAndValidateSaveEnvelope(nonFinite, undefined, DEFAULT_MAX_SAVE_BYTES),
+        sealAndValidateSaveEnvelope(nonFiniteDraft, undefined, DEFAULT_MAX_SAVE_BYTES),
       )
       expect(sealingNonFinite.reason).toBe('save contains a non-finite number')
 
-      const oversized = sealSaveEnvelope(saveEnvelope(State.name, 1, { text: 'too large' }))
-      expect((yield* Effect.either(validateSaveEnvelope(oversized, 1)))._tag).toBe('Left')
+      const oversized = sealEnvelopeForTest(saveEnvelope(State.name, 1, { text: 'too large' }))
+      expect((yield* Effect.result(validateSaveEnvelope(oversized, SaveMaxBytes(1))))._tag).toBe('Failure')
 
-      const sealingOversize = yield* Effect.flip(sealAndValidateSaveEnvelope(oversized, undefined, 1))
+      const sealingOversize = yield* Effect.flip(
+        sealAndValidateSaveEnvelope(oversized, undefined, SaveMaxBytes(1)),
+      )
       expect(sealingOversize.reason).toContain('save exceeds the 1 byte limit')
 
-      const invalidValidationBudget = yield* Effect.flip(validateSaveEnvelope(oversized, Number.NaN))
+      const invalidValidationBudget = yield* Effect.flip(
+        validateSaveEnvelope(oversized, widen<SaveMaxBytes>(Number.NaN)),
+      )
       expect(invalidValidationBudget.reason).toContain('maxBytes must be a non-negative safe integer')
 
       const invalidSealingBudget = yield* Effect.flip(
-        sealAndValidateSaveEnvelope(oversized, undefined, -1),
+        sealAndValidateSaveEnvelope(oversized, undefined, widen<SaveMaxBytes>(-1)),
       )
       expect(invalidSealingBudget.reason).toContain('maxBytes must be a non-negative safe integer')
     }),
@@ -579,10 +904,7 @@ describe('save integrity', () => {
 
   effect('seals its own extensions argument in and rejects unsupported values', () =>
     Effect.gen(function* () {
-      // `sealSaveEnvelope`'s own `extensions` parameter, as opposed to
-      // `saveDurably`'s inherited-extensions plumbing exercised elsewhere: a
-      // direct caller can attach extensions at seal time too.
-      const withExtensions = sealSaveEnvelope(saveEnvelope(State.name, 1, { score: 1, label: 'x' }), {
+      const withExtensions = sealEnvelopeForTest(saveEnvelope(State.name, 1, { score: 1, label: 'x' }), {
         note: 'manual-seal',
       })
 
@@ -594,23 +916,105 @@ describe('save integrity', () => {
       const sparse: Array<unknown> = []
       sparse[1] = 'value'
 
-      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, undefined))).toThrow('undefined')
-      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, cyclic))).toThrow('cyclic data')
-      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, new Date()))).toThrow(
-        'only plain objects and Uint8Array values are supported',
-      )
-      expect(() => sealSaveEnvelope(saveEnvelope(State.name, 1, sparse))).toThrow(
-        'sparse arrays and custom array properties are not supported',
-      )
-      expect(() =>
-        sealSaveEnvelope(saveEnvelope(State.name, 1, { [Symbol('private')]: 'value' })),
-      ).toThrow('symbol-keyed object properties are not supported')
+      const failures = [
+        [saveEnvelope(State.name, 1, undefined), 'save envelope draft is malformed'],
+        [saveEnvelope(State.name, 1, cyclic), 'cyclic data'],
+        [saveEnvelope(State.name, 1, new Date()), 'only plain objects and Uint8Array values are supported'],
+        [saveEnvelope(State.name, 1, sparse), 'sparse arrays and custom array properties are not supported'],
+        [saveEnvelope(State.name, 1, [undefined]), 'unsupported value: undefined'],
+        [saveEnvelope(State.name, 1, { [Symbol('private')]: 'value' }), 'symbol-keyed object properties are not supported'],
+      ] as const
+      for (const [envelope, reason] of failures) {
+        const sealed = sealSaveEnvelopeResult(envelope)
+        expect(Result.isFailure(sealed)).toBe(true)
+        if (Result.isFailure(sealed)) {
+          expect(sealed.failure._tag).toBe('SaveDecodeError')
+          expect(sealed.failure.reason).toContain(reason)
+        }
+      }
+
+      const invalidExtensions: ReadonlyArray<unknown> = [
+        [],
+        new Date(),
+        { [Symbol('private')]: 'value' },
+        new Proxy({}, {
+          ownKeys: () => {
+            throw new Error('extension keys could not be read')
+          },
+        }),
+      ]
+      for (const extensions of invalidExtensions) {
+        const result = sealSaveEnvelopeResult(
+          saveEnvelope(State.name, 1, { score: 1, label: 'x' }),
+          widen<Readonly<Record<string, unknown>>>(extensions),
+        )
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure._tag).toBe('SaveDecodeError')
+        }
+      }
+    }),
+  )
+
+  effect('returns a SaveDecodeError after reading a malformed envelope getter once', () =>
+    Effect.sync(() => {
+      const getterFailure = new Error('format getter failed')
+      let reads = 0
+      const malformed = new Proxy(saveEnvelope(State.name, 1, { score: 1, label: 'x' }), {
+        get: (target, property, receiver) => {
+          if (property === 'format') {
+            reads += 1
+            throw getterFailure
+          }
+          return Reflect.get(target, property, receiver)
+        },
+      })
+
+      const result = sealSaveEnvelopeResult(malformed)
+      expect(reads).toBe(1)
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure._tag).toBe('SaveDecodeError')
+        expect(result.failure.cause).toBe(getterFailure)
+      }
+    }),
+  )
+
+  effect('rejects malformed typed-array proxy elements and normalizes property failures', () =>
+    Effect.sync(() => {
+      const malformedBytes = new Proxy(new Uint8Array([1]), {
+        get: (target, property, receiver) =>
+          property === '0' ? Symbol('not a byte') : Reflect.get(target, property, receiver),
+      })
+      const byteResult = canonicalize(malformedBytes)
+      expect(Result.isFailure(byteResult)).toBe(true)
+      if (Result.isFailure(byteResult)) expect(byteResult.failure).toContain('symbol')
+
+      const error = new Error('property getter failed')
+      const errorValue = Object.defineProperty({}, 'value', {
+        enumerable: true,
+        get: () => { throw error },
+      })
+      const errorResult = canonicalize(errorValue)
+      expect(Result.isFailure(errorResult)).toBe(true)
+      if (Result.isFailure(errorResult)) expect(errorResult.failure).toContain(error.message)
+
+      const nonErrorValue = Object.defineProperty({}, 'value', {
+        enumerable: true,
+        get: () => {
+          // oxlint-disable-next-line no-throw-literal -- deliberate non-Error throw to test canonicalize's unknown-cause handling.
+          throw 'not an Error'
+        },
+      })
+      const nonErrorResult = canonicalize(nonErrorValue)
+      expect(Result.isFailure(nonErrorResult)).toBe(true)
+      if (Result.isFailure(nonErrorResult)) expect(nonErrorResult.failure).toContain('a property could not be read')
     }),
   )
 
   effect('canonicalizes Uint8Array payloads consistently', () =>
     Effect.gen(function* () {
-      const sealed = sealSaveEnvelope(saveEnvelope(State.name, 1, new Uint8Array([1, 2, 255])))
+      const sealed = sealEnvelopeForTest(saveEnvelope(State.name, 1, new Uint8Array([1, 2, 255])))
 
       expect(sealed.integrity.byteLength).toBeGreaterThan(0)
       expect(yield* validateSaveEnvelope(sealed)).toStrictEqual(sealed)
@@ -630,12 +1034,12 @@ describe('save integrity', () => {
       const envelope = saveEnvelope(State.name, 1, throwingPayload)
 
       const validationError = yield* Effect.flip(validateSaveEnvelope(envelope))
-      expect(validationError.reason).toBe('save contains an unsupported value')
+      expect(validationError.reason).toContain('save contains an unsupported value')
 
       const sealingError = yield* Effect.flip(
         sealAndValidateSaveEnvelope(envelope, undefined, DEFAULT_MAX_SAVE_BYTES),
       )
-      expect(sealingError.reason).toBe('save contains an unsupported value')
+      expect(sealingError.reason).toContain('save contains an unsupported value')
 
       const unsupportedEnvelope = saveEnvelope(State.name, 1, new Date())
       const unsupportedValidation = yield* Effect.flip(validateSaveEnvelope(unsupportedEnvelope))
@@ -645,6 +1049,51 @@ describe('save integrity', () => {
         sealAndValidateSaveEnvelope(unsupportedEnvelope, undefined, DEFAULT_MAX_SAVE_BYTES),
       )
       expect(unsupportedSealing.reason).toContain('only plain objects')
+    }),
+  )
+
+  effect('fails closed when UTF-8 encoding or checksum generation fails', () =>
+    Effect.gen(function* () {
+      const draft = saveEnvelope(State.name, 1, { score: 1, label: 'view failure' })
+      const valid = sealEnvelopeForTest(draft)
+      const NativeUint8Array = globalThis.Uint8Array
+      vi.stubGlobal('Uint8Array', class extends NativeUint8Array {
+        override subarray(): never {
+          throw new Error('UTF-8 view could not be created')
+        }
+      })
+      try {
+        const sealed = sealSaveEnvelopeResult(draft)
+        expect(Result.isFailure(sealed) && sealed.failure.reason).toBe('save could not be encoded as UTF-8')
+
+        const validated = yield* Effect.result(validateSaveEnvelope(valid))
+        expect(validated._tag).toBe('Failure')
+        if (validated._tag === 'Failure') {
+          expect(validated.failure.reason).toBe('save could not be encoded as UTF-8')
+        }
+      } finally {
+        vi.unstubAllGlobals()
+      }
+
+      const checksumFailure = new Error('byte iterator failed')
+      const NativeUint8ArrayWithSubarray = globalThis.Uint8Array
+      vi.stubGlobal('Uint8Array', class extends NativeUint8ArrayWithSubarray {
+        override [Symbol.iterator](): never {
+          throw checksumFailure
+        }
+      })
+      try {
+        const sealed = sealSaveEnvelopeResult(draft)
+        expect(Result.isFailure(sealed) && sealed.failure.reason).toBe('save checksum could not be computed')
+
+        const validated = yield* Effect.result(validateSaveEnvelope(valid))
+        expect(validated._tag).toBe('Failure')
+        if (validated._tag === 'Failure') {
+          expect(validated.failure.reason).toBe('save checksum could not be computed')
+        }
+      } finally {
+        vi.unstubAllGlobals()
+      }
     }),
   )
 })

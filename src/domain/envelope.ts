@@ -12,16 +12,23 @@
  * payload's domain type.
  */
 import { Schema } from 'effect'
+import {
+  SaveByteLength,
+  SaveChecksum,
+  SaveFormatName,
+  SaveFormatVersion,
+  type JsonFieldName as JsonFieldNameType,
+  type SaveByteLength as SaveByteLengthType,
+  type SaveChecksum as SaveChecksumType,
+  type SaveFormatName as SaveFormatNameType,
+  type SaveFormatVersion as SaveFormatVersionType,
+} from './brand-types.js'
 
 /**
- * A format version. Positive integers, counting from 1.
- *
- * Deliberately not branded. The version has to survive a JSON/structured-clone
- * round trip through storage written by an older build, so it arrives as a bare
- * number and is validated by `SaveEnvelopeSchema` at the boundary. A brand would
- * imply a guarantee that the value's own provenance cannot support.
+ * A format version. Positive integers, counting from 1. The envelope schema
+ * restores the brand after validating values read from storage.
  */
-export const FIRST_VERSION = 1
+export const FIRST_VERSION: SaveFormatVersionType = SaveFormatVersion(1)
 
 /**
  * What is actually handed to `StoragePort`.
@@ -32,73 +39,59 @@ export const FIRST_VERSION = 1
  */
 export type SaveIntegrity = {
   readonly algorithm: 'fnv1a32'
-  readonly byteLength: number
-  readonly checksum: string
+  readonly byteLength: SaveByteLengthType
+  readonly checksum: SaveChecksumType
 }
 
 export type SaveEnvelope = {
-  readonly format: string
-  readonly version: number
+  readonly format: SaveFormatNameType
+  readonly version: SaveFormatVersionType
   readonly payload: unknown
   readonly integrity: SaveIntegrity
   /** Game-owned state unknown to mc-save, retained verbatim across checkpoints. */
-  readonly extensions?: Readonly<Record<string, unknown>> | undefined
+  readonly extensions?: Readonly<Record<JsonFieldNameType, unknown>> | undefined
 }
 
 export type SaveEnvelopeDraft = Omit<SaveEnvelope, 'integrity'>
 
-const safeVersionSchema = Schema.Number.pipe(
-  Schema.greaterThanOrEqualTo(FIRST_VERSION),
-  Schema.filter((value): value is number => Number.isSafeInteger(value), {
-    message: () => 'Save envelope version must be a safe integer',
-  }),
-)
+const safeVersionSchema: Schema.Codec<SaveFormatVersionType, number, never, never> =
+  Schema.fromBrand('SaveFormatVersion', SaveFormatVersion)(Schema.Number)
 
-const safeByteLengthSchema = Schema.Number.pipe(
-  Schema.greaterThanOrEqualTo(0),
-  Schema.filter((value): value is number => Number.isSafeInteger(value), {
-    message: () => 'Save integrity byte length must be a safe integer',
-  }),
-)
+const safeByteLengthSchema: Schema.Codec<SaveByteLengthType, number, never, never> =
+  Schema.fromBrand('SaveByteLength', SaveByteLength)(Schema.Number)
 
-export const SaveEnvelopeSchema: Schema.Schema<SaveEnvelope> = Schema.Struct({
-  format: Schema.String.pipe(
-    Schema.minLength(1),
-    Schema.filter((value): value is string => value.trim().length > 0, {
-      message: () => 'Save envelope format must be a non-blank string',
-    }),
-  ),
+const saveFormatNameSchema: Schema.Codec<SaveFormatNameType, string, never, never> =
+  Schema.fromBrand('SaveFormatName', SaveFormatName)(Schema.String)
+
+const saveChecksumSchema: Schema.Codec<SaveChecksumType, string, never, never> =
+  Schema.fromBrand('SaveChecksum', SaveChecksum)(Schema.String)
+
+const jsonFieldNameSchema = Schema.String.pipe(Schema.brand('JsonFieldName'))
+
+export const SaveEnvelopeSchema: Schema.Codec<SaveEnvelope, unknown, never, never> = Schema.Struct({
+  format: saveFormatNameSchema,
   version: safeVersionSchema,
-  payload: Schema.Unknown.pipe(
-    Schema.filter((value): value is unknown => value !== undefined, {
-      message: () => 'Save envelope payload must be present',
-    }),
+  payload: Schema.Unknown.check(
+    Schema.makeFilter<unknown>((value) => value !== undefined ? undefined : 'Save envelope payload must be present'),
   ),
   integrity: Schema.Struct({
     algorithm: Schema.Literal('fnv1a32'),
     byteLength: safeByteLengthSchema,
-    checksum: Schema.String.pipe(Schema.pattern(/^[0-9a-f]{8}$/u)),
+    checksum: saveChecksumSchema,
   }),
-  extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  extensions: Schema.optional(Schema.Record(jsonFieldNameSchema, Schema.Unknown)),
 })
 
-export const SaveEnvelopeDraftSchema: Schema.Schema<SaveEnvelopeDraft> = Schema.Struct({
-  format: Schema.String.pipe(
-    Schema.minLength(1),
-    Schema.filter((value): value is string => value.trim().length > 0, {
-      message: () => 'Save envelope format must be a non-blank string',
-    }),
-  ),
+export const SaveEnvelopeDraftSchema: Schema.Codec<SaveEnvelopeDraft, unknown, never, never> = Schema.Struct({
+  format: saveFormatNameSchema,
   version: safeVersionSchema,
-  payload: Schema.Unknown.pipe(
-    Schema.filter((value): value is unknown => value !== undefined, {
-      message: () => 'Save envelope payload must be present',
-    }),
+  payload: Schema.Unknown.check(
+    Schema.makeFilter<unknown>((value) => value !== undefined ? undefined : 'Save envelope payload must be present'),
   ),
-  extensions: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+  extensions: Schema.optional(Schema.Record(jsonFieldNameSchema, Schema.Unknown)),
 })
 
-export const saveEnvelope = (format: string, version: number, payload: unknown): SaveEnvelopeDraft => ({
+export const saveEnvelope = (format: SaveFormatNameType, version: SaveFormatVersionType, payload: unknown): SaveEnvelopeDraft => ({
   format,
   version,
   payload,
@@ -111,5 +104,5 @@ export const saveEnvelope = (format: string, version: number, payload: unknown):
  * caller can present a newer save as unavailable until a compatible build is
  * installed instead of offering destructive recovery actions.
  */
-export const isFromFuture = (envelope: Pick<SaveEnvelope, 'version'>, currentVersion: number): boolean =>
+export const isFromFuture = (envelope: Pick<SaveEnvelope, 'version'>, currentVersion: SaveFormatVersionType): boolean =>
   envelope.version > currentVersion

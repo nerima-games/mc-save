@@ -1,5 +1,6 @@
 /* eslint-disable no-bitwise -- UTF-8 encoding and FNV-1a are byte-level algorithms. */
-import { Effect, Option, Schema } from 'effect'
+import { Effect, Option, Result, Schema, Semaphore } from 'effect'
+import type { JsonFieldName, SaveMaxBytes } from './brand-types.js'
 import { isFromFuture, type SaveEnvelope, SaveEnvelopeSchema } from './envelope.js'
 import { SaveDecodeError, StorageError } from './errors.js'
 import { decodeSave, encodeSave, type SaveFormat } from './format.js'
@@ -8,14 +9,16 @@ import type { SaveKey } from './save-key.js'
 import { StoragePort } from './storage-port.js'
 import {
   DEFAULT_MAX_SAVE_BYTES,
+  resolveSaveMaxBytes,
   sealAndValidateSaveEnvelope,
+  validateSaveExtensions,
   validateSaveEnvelope,
 } from './integrity.js'
 
 export { DEFAULT_MAX_SAVE_BYTES, sealSaveEnvelope, validateSaveEnvelope } from './integrity.js'
 
 interface SaveLock {
-  readonly semaphore: Effect.Semaphore
+  readonly semaphore: Semaphore.Semaphore
   /** The per-storage table this lock lives in, so release never has to look it up again. */
   readonly owner: Map<string, SaveLock>
   users: number
@@ -34,7 +37,7 @@ const acquireLock = (storage: object, key: SaveKey): SaveLock => {
     existing.users += 1
     return existing
   }
-  const created: SaveLock = { semaphore: Effect.runSync(Effect.makeSemaphore(1)), owner: locks, users: 1 }
+  const created: SaveLock = { semaphore: Semaphore.makeUnsafe(1), owner: locks, users: 1 }
   locks.set(key, created)
   return created
 }
@@ -49,9 +52,9 @@ const releaseLock = (storage: object, key: SaveKey, lock: SaveLock): void => {
 const readStoredEnvelope = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
-  maxBytes: number,
+  maxBytes: SaveMaxBytes,
 ): Effect.Effect<SaveEnvelope, SaveDecodeError> =>
-  Schema.decodeUnknown(SaveEnvelopeSchema)(stored).pipe(
+  Schema.decodeUnknownEffect(SaveEnvelopeSchema)(stored).pipe(
     Effect.mapError(
       (cause) =>
         new SaveDecodeError({
@@ -67,7 +70,7 @@ const readStoredEnvelope = <A, I>(
 const decodeStored = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
-  maxBytes: number,
+  maxBytes: SaveMaxBytes,
 ): Effect.Effect<A, SaveDecodeError> =>
   readStoredEnvelope(format, stored, maxBytes).pipe(Effect.flatMap((envelope) => decodeSave(format, envelope)))
 
@@ -80,48 +83,98 @@ const isFutureSaveDecodeError = <A, I>(
 const recoverableCheckpoint = <A, I>(
   format: SaveFormat<A, I>,
   stored: unknown,
-  maxBytes: number,
-): Effect.Effect<Option.Option<SaveEnvelope>, SaveDecodeError> =>
-  Effect.gen(function* () {
-    const envelope = yield* readStoredEnvelope(format, stored, maxBytes).pipe(Effect.option)
-    if (Option.isNone(envelope)) return Option.none<SaveEnvelope>()
+  maxBytes: SaveMaxBytes,
+): Effect.Effect<SaveEnvelope, SaveDecodeError> =>
+  readStoredEnvelope(format, stored, maxBytes).pipe(
+    Effect.flatMap((envelope) => decodeSave(format, envelope).pipe(Effect.as(envelope))),
+  )
 
-    return yield* decodeSave(format, envelope.value).pipe(
-      Effect.as(Option.some(envelope.value)),
-      Effect.catchTags({
-        SaveDecodeError: (error) =>
-          isFutureSaveDecodeError(format, envelope.value, error)
-            ? Effect.fail(error)
-            : Effect.succeed(Option.none<SaveEnvelope>()),
+const assertDurableBatch = (
+  batch: ReadonlyArray<Option.Option<SaveEnvelope>>,
+): Effect.Effect<
+  readonly [Option.Option<SaveEnvelope>, Option.Option<SaveEnvelope>],
+  StorageError
+> => {
+  if (!Array.isArray(batch) || batch.length !== 2) {
+    return Effect.fail(
+      new StorageError({
+        operation: 'durable.readBatch',
+        cause: 'storage returned an incomplete checkpoint batch',
       }),
     )
-  })
+  }
+  const latest = batch[0]
+  const previous = batch[1]
+  if (latest === undefined || previous === undefined) {
+    return Effect.fail(
+      new StorageError({
+        operation: 'durable.readBatch',
+        cause: 'storage returned an incomplete checkpoint batch',
+      }),
+    )
+  }
+  const latestValue: unknown = latest
+  const previousValue: unknown = previous
+  if (!Option.isOption(latestValue) || !Option.isOption(previousValue)) {
+    return Effect.fail(
+      new StorageError({
+        operation: 'durable.readBatch',
+        cause: 'storage returned an invalid checkpoint option',
+      }),
+    )
+  }
+  return Effect.succeed([latest, previous] as const)
+}
 
 export const saveDurably = <A, I>(
   format: SaveFormat<A, I>,
   key: SaveKey,
   value: A,
   options?: {
-    readonly extensions?: Readonly<Record<string, unknown>>
-    readonly maxBytes?: number
+    readonly extensions?: Readonly<Record<JsonFieldName, unknown>>
+    readonly maxBytes?: SaveMaxBytes
   },
 ): Effect.Effect<void, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      yield* Effect.fail(
+        new SaveDecodeError({
+          format: format.name,
+          version: format.version,
+          reason: 'durable save options must be an object',
+          cause: new TypeError('options must be an object'),
+        }),
+      )
+    }
+    const fields = yield* Effect.try({
+      try: () => {
+        if (options === undefined) return { extensions: undefined, maxBytes: undefined }
+        return {
+          extensions: Reflect.get(options, 'extensions'),
+          maxBytes: Reflect.get(options, 'maxBytes'),
+        }
+      },
+      catch: (cause) => new SaveDecodeError({
+        format: format.name,
+        version: format.version,
+        reason: 'durable save options could not be read',
+        cause,
+      }),
+    })
+    const extensions = yield* Effect.fromResult(validateSaveExtensions(format.name, format.version, fields.extensions))
+    const maxBytes = yield* Effect.fromResult(resolveSaveMaxBytes(fields.maxBytes, format.name, format.version))
     const storage = yield* StoragePort
     const lock = acquireLock(storage, key)
     yield* lock.semaphore.withPermits(1)(
       Effect.gen(function* () {
-        const maxBytes = options?.maxBytes ?? DEFAULT_MAX_SAVE_BYTES
-        const [latest = Option.none(), previous = Option.none()] = yield* storage.readBatch([
-          key,
-          durablePreviousKey(key),
-        ])
+        const batch = yield* storage.readBatch([key, durablePreviousKey(key)])
+        const [latest, previous] = yield* assertDurableBatch(batch)
         const latestGood = Option.isSome(latest)
-          ? yield* recoverableCheckpoint(format, latest.value, maxBytes)
+          ? Option.some(yield* recoverableCheckpoint(format, latest.value, maxBytes))
           : Option.none<SaveEnvelope>()
         const previousGood =
           Option.isNone(latestGood) && Option.isSome(previous)
-            ? yield* recoverableCheckpoint(format, previous.value, maxBytes)
+            ? Option.some(yield* recoverableCheckpoint(format, previous.value, maxBytes))
             : Option.none<SaveEnvelope>()
         const inherited = Option.isSome(latestGood)
           ? latestGood.value.extensions
@@ -131,7 +184,7 @@ export const saveDurably = <A, I>(
         const encoded = yield* encodeSave(format, value)
         const sealed = yield* sealAndValidateSaveEnvelope(
           encoded,
-          options?.extensions ?? inherited,
+          extensions === undefined ? inherited : extensions,
           maxBytes,
         )
         const mutations = Option.isSome(latestGood)
@@ -153,30 +206,28 @@ export const saveDurably = <A, I>(
 export const loadDurably = <A, I>(
   format: SaveFormat<A, I>,
   key: SaveKey,
-  maxBytes: number = DEFAULT_MAX_SAVE_BYTES,
+  maxBytes: SaveMaxBytes = DEFAULT_MAX_SAVE_BYTES,
 ): Effect.Effect<Option.Option<A>, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
     const storage = yield* StoragePort
-    const [latest = Option.none(), previous = Option.none()] = yield* storage.readBatch([
-      key,
-      durablePreviousKey(key),
-    ])
+    const batch = yield* storage.readBatch([key, durablePreviousKey(key)])
+    const [latest, previous] = yield* assertDurableBatch(batch)
     if (Option.isNone(latest)) {
       if (Option.isNone(previous)) return Option.none<A>()
       return Option.some(yield* decodeStored(format, previous.value, maxBytes))
     }
-    const latestEnvelope = yield* Effect.either(readStoredEnvelope(format, latest.value, maxBytes))
-    if (latestEnvelope._tag === 'Left') {
+    const latestEnvelope = yield* Effect.result(readStoredEnvelope(format, latest.value, maxBytes))
+    if (Result.isFailure(latestEnvelope)) {
       return Option.isSome(previous)
         ? yield* decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))
-        : yield* Effect.fail(latestEnvelope.left)
+        : yield* Effect.fail(latestEnvelope.failure)
     }
 
-    return yield* decodeSave(format, latestEnvelope.right).pipe(
+    return yield* decodeSave(format, latestEnvelope.success).pipe(
       Effect.map(Option.some),
       Effect.catchTags({
         SaveDecodeError: (latestError) =>
-          isFutureSaveDecodeError(format, latestEnvelope.right, latestError)
+          isFutureSaveDecodeError(format, latestEnvelope.success, latestError)
             ? Effect.fail(latestError)
             : Option.isSome(previous)
               ? decodeStored(format, previous.value, maxBytes).pipe(Effect.map(Option.some))

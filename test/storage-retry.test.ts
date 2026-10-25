@@ -1,5 +1,5 @@
 import { describe, expect } from 'vitest'
-import { Effect, Either, Option, Schedule } from 'effect'
+import { Effect, Option, Result, Schedule } from 'effect'
 import { effect } from './support/effect-test.js'
 import { StorageError } from '../src/domain/errors.js'
 import {
@@ -75,9 +75,9 @@ describe('withStorageRetry', () => {
     Effect.gen(function* () {
       const attempts = allAttempts()
       const storage = withStorageRetry(makeStorage(attempts, 'permanent'), retryPolicy)
-      const result = yield* Effect.either(storage.put(KEY, ENVELOPE))
+      const result = yield* Effect.result(storage.put(KEY, ENVELOPE))
 
-      expect(result).toStrictEqual(Either.left(new StorageError({ operation: 'permanent' })))
+      expect(result).toStrictEqual(Result.fail(new StorageError({ operation: 'permanent' })))
       expect(attempts.put).toBe(1)
     }),
   )
@@ -94,9 +94,9 @@ describe('withStorageRetry', () => {
             return Effect.fail(new StorageError({ operation: 'retryable' }))
           }),
       }
-      const result = yield* Effect.either(withStorageRetry(storage, retryPolicy).put(KEY, ENVELOPE))
+      const result = yield* Effect.result(withStorageRetry(storage, retryPolicy).put(KEY, ENVELOPE))
 
-      expect(result).toStrictEqual(Either.left(new StorageError({ operation: 'retryable' })))
+      expect(result).toStrictEqual(Result.fail(new StorageError({ operation: 'retryable' })))
       expect(attempts.put).toBe(2)
     }),
   )
@@ -116,22 +116,22 @@ describe('withStorageRetry', () => {
         },
       }
       const retryingStorage = withStorageRetry(storage, retryPolicy)
-      const result = yield* Effect.either(retryingStorage.get(KEY))
-      const keysResult = yield* Effect.either(retryingStorage.keys)
+      const result = yield* Effect.result(retryingStorage.get(KEY))
+      const keysResult = yield* Effect.result(retryingStorage.keys)
 
-      expect(result._tag).toBe('Left')
-      if (result._tag === 'Left') {
-        expect(result.left).toBeInstanceOf(StorageError)
-        expect(result.left.operation).toBe('get')
-        expect(result.left.key).toBe(KEY)
-        expect(result.left.cause).toBe(thrown)
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure).toBeInstanceOf(StorageError)
+        expect(result.failure.operation).toBe('get')
+        expect(result.failure.key).toBe(KEY)
+        expect(result.failure.cause).toBe(thrown)
       }
-      expect(keysResult._tag).toBe('Left')
-      if (keysResult._tag === 'Left') {
-        expect(keysResult.left).toBeInstanceOf(StorageError)
-        expect(keysResult.left.operation).toBe('keys')
-        expect(keysResult.left.key).toBeUndefined()
-        expect(keysResult.left.cause).toBe(keysThrown)
+      expect(keysResult._tag).toBe('Failure')
+      if (keysResult._tag === 'Failure') {
+        expect(keysResult.failure).toBeInstanceOf(StorageError)
+        expect(keysResult.failure.operation).toBe('keys')
+        expect(keysResult.failure.key).toBeUndefined()
+        expect(keysResult.failure.cause).toBe(keysThrown)
       }
     }),
   )

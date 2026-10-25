@@ -9,7 +9,10 @@
  * this module, never a bad input: every caller has already rejected bad input
  * with its own typed error before reaching this line.
  */
-export const assertDefined = <T,>(value: T | undefined, what: string): T => {
-  if (value === undefined) throw new Error(what)
-  return value
-}
+import { Result } from 'effect'
+import type { ValidationMessage } from './brand-types.js'
+
+export const assertDefined = <T,>(
+  value: T | undefined,
+  what: ValidationMessage,
+): Result.Result<T, ValidationMessage> => (value === undefined ? Result.fail(what) : Result.succeed(value))

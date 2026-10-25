@@ -14,7 +14,8 @@
  * keeps `captionsEnabled` and `activeRows` as file-level `let`/`const`, and its
  * tests have to reset global state between cases.
  */
-import { Either, Option } from 'effect'
+import { Option, Result } from 'effect'
+import type { SaveFormatName, SaveFormatVersion } from './brand-types.js'
 import { DuplicateFormatError } from './errors.js'
 
 /**
@@ -25,39 +26,39 @@ import { DuplicateFormatError } from './errors.js'
  * typed `SaveFormat` value they defined when they need to encode or decode.
  */
 export type RegisteredSaveFormat = {
-  readonly name: string
-  readonly version: number
+  readonly name: SaveFormatName
+  readonly version: SaveFormatVersion
   readonly schema: unknown
 }
 
-export type FormatRegistry = ReadonlyMap<string, RegisteredSaveFormat>
+export type FormatRegistry = ReadonlyMap<SaveFormatName, RegisteredSaveFormat>
 
 export const emptyRegistry: FormatRegistry = new Map()
 
 export const registerFormat = (
   registry: FormatRegistry,
   format: RegisteredSaveFormat,
-): Either.Either<FormatRegistry, DuplicateFormatError> => {
+): Result.Result<FormatRegistry, DuplicateFormatError> => {
   if (registry.has(format.name)) {
-    return Either.left(new DuplicateFormatError({ format: format.name }))
+    return Result.fail(new DuplicateFormatError({ format: format.name }))
   }
   const next = new Map(registry)
   next.set(format.name, format)
-  return Either.right(next)
+  return Result.succeed(next)
 }
 
 /** Register many at once, stopping at the first duplicate. */
 export const registerFormats = (
   registry: FormatRegistry,
   formats: ReadonlyArray<RegisteredSaveFormat>,
-): Either.Either<FormatRegistry, DuplicateFormatError> =>
-  formats.reduce<Either.Either<FormatRegistry, DuplicateFormatError>>(
-    (accumulated, format) => Either.flatMap(accumulated, (current) => registerFormat(current, format)),
-    Either.right(registry),
+): Result.Result<FormatRegistry, DuplicateFormatError> =>
+  formats.reduce<Result.Result<FormatRegistry, DuplicateFormatError>>(
+    (accumulated, format) => Result.flatMap(accumulated, (current) => registerFormat(current, format)),
+    Result.succeed(registry),
   )
 
-export const lookupFormat = (registry: FormatRegistry, name: string): Option.Option<RegisteredSaveFormat> =>
-  Option.fromNullable(registry.get(name))
+export const lookupFormat = (registry: FormatRegistry, name: SaveFormatName): Option.Option<RegisteredSaveFormat> =>
+  Option.fromUndefinedOr(registry.get(name))
 
 /**
  * Every registered format's name and current version.
@@ -67,7 +68,7 @@ export const lookupFormat = (registry: FormatRegistry, name: string): Option.Opt
  */
 export const describeRegistry = (
   registry: FormatRegistry,
-): ReadonlyArray<{ readonly name: string; readonly version: number }> =>
+): ReadonlyArray<{ readonly name: SaveFormatName; readonly version: SaveFormatVersion }> =>
   [...registry.values()]
     .map((format) => ({ name: format.name, version: format.version }))
     .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))

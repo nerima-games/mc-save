@@ -223,6 +223,7 @@ export type FakeIndexedDb = IdbFactory & {
   /** Hold `name` open at `version`, so the next open of a higher version blocks. */
   readonly holdOpenAt: (name: string, version: number) => void
   /** Every database name that exists, for the row #9 port. */
+  readonly databases: () => Promise<ReadonlyArray<{ readonly name: string; readonly version: number }>>
   readonly databaseNames: () => ReadonlyArray<string>
   /** The store names of `name`, or undefined if there is no such database. */
   readonly storeNamesOf: (name: string) => ReadonlyArray<string> | undefined
@@ -273,6 +274,8 @@ export type FakeIndexedDb = IdbFactory & {
    * than a domain one.
    */
   readonly corruptNextIndexKeys: (value: unknown) => void
+  /** Return an arbitrary value from the next insertion-index cursor request. */
+  readonly corruptNextCursor: (value: unknown) => void
 }
 
 export const makeFakeIndexedDb = (): FakeIndexedDb => {
@@ -290,6 +293,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
   let pendingMalformedWriteFailure: { readonly value: unknown } | undefined
   let pendingAbort = false
   let pendingIndexKeysOverride: { readonly value: unknown } | undefined
+  let pendingCursorOverride: { readonly value: unknown } | undefined
   let pendingAbortFailure: IdbDomException | undefined
 
   const stringList = (names: ReadonlyArray<string>): IdbStringList => ({
@@ -399,7 +403,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           // `IdbDomException` is a plain `{ name, message }` shape (see
           // `indexeddb-surface.ts`), not an `Error`; a real `abort()` throws
           // an actual `DOMException` instance, so wrap it the same way here.
-          throw new DOMException(failure.message, failure.name)
+          const message = typeof failure.message === 'string' ? failure.message : ''
+          const name = typeof failure.name === 'string' ? failure.name : 'UnknownError'
+          throw new DOMException(message, name)
         }
         abortWith(null)
       },
@@ -550,9 +556,12 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
         [...store.records.values()]
           .filter((record) => indexKeyOf(record.value, keyPath) !== undefined)
           .sort((left, right) => {
-            const a = indexKeyOf(left.value, keyPath) ?? 0
-            const b = indexKeyOf(right.value, keyPath) ?? 0
-            return a - b
+            const a = indexKeyOf(left.value, keyPath)
+            const b = indexKeyOf(right.value, keyPath)
+            if (a === undefined || b === undefined) return 0
+            if (typeof a === 'number') return typeof b === 'number' ? a - b : -1
+            if (typeof b === 'number') return 1
+            return a < b ? -1 : a > b ? 1 : 0
           })
 
       return {
@@ -567,11 +576,18 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           }, false),
         openCursor: (_query, direction) =>
           submit(() => {
+            if (pendingCursorOverride !== undefined) {
+              const { value } = pendingCursorOverride
+              pendingCursorOverride = undefined
+              return value
+            }
             const rows = ordered()
             const chosen = direction === 'prev' ? rows[rows.length - 1] : rows[0]
             // A cursor past the end is `null`, which is how the adapter learns
             // the store is empty and starts its sequence at zero.
-            return chosen === undefined ? null : { value: clone(chosen.value) }
+            return chosen === undefined
+              ? null
+              : { key: indexKeyOf(chosen.value, keyPath), value: clone(chosen.value) }
           }, false),
       }
     }
@@ -776,9 +792,10 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     return request
   }
 
-  const indexKeyOf = (value: unknown, keyPath: string): number | undefined => {
+  const indexKeyOf = (value: unknown, keyPath: string): number | string | undefined => {
     const holder: unknown = isPlainRecord(value) ? value[keyPath] : undefined
-    return typeof holder === 'number' ? holder : undefined
+    if (typeof holder === 'string') return holder
+    return typeof holder === 'number' && Number.isFinite(holder) ? holder : undefined
   }
 
   const seedStore = (
@@ -860,6 +877,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     },
     corruptNextIndexKeys: (value) => {
       pendingIndexKeysOverride = { value }
+    },
+    corruptNextCursor: (value) => {
+      pendingCursorOverride = { value }
     },
   }
 }
