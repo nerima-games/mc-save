@@ -28,7 +28,7 @@ export const makeWriteQueue = <E, R>(): Effect.Effect<WriteQueue<E, R>> =>
             const result = yield* Effect.result(write)
             yield* SynchronizedRef.update(state, (latest) => ({
               ...latest,
-              lastFailure: Result.isFailure(result) ? Option.some(result.failure) : Option.none()
+              lastFailure: Result.isFailure(result) ? Option.some(result.failure) : latest.lastFailure
             }))
           })
 
@@ -43,9 +43,12 @@ export const makeWriteQueue = <E, R>(): Effect.Effect<WriteQueue<E, R>> =>
         yield* Fiber.join(current.tail.value)
       }
 
-      const latest = yield* SynchronizedRef.get(state)
-      if (Option.isSome(latest.lastFailure)) {
-        return yield* Effect.fail(latest.lastFailure.value)
+      const lastFailure = yield* SynchronizedRef.modify(state, (latest) => [
+        latest.lastFailure,
+        { ...latest, lastFailure: Option.none<E>() },
+      ] as const)
+      if (Option.isSome(lastFailure)) {
+        return yield* Effect.fail(lastFailure.value)
       }
     })
 

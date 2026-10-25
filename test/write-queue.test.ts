@@ -83,15 +83,22 @@ describe('makeWriteQueue', () => {
     })
   )
 
-  effect('clears a recorded failure after a later successful write', () =>
+  effect('retains a failure across a later success until drain consumes it', () =>
     Effect.gen(function* () {
       const queue = yield* makeWriteQueue<string, never>()
+      let laterWriteRan = false
       yield* queue.enqueue(Effect.fail('write failed'))
+      yield* queue.enqueue(
+        Effect.sync(() => {
+          laterWriteRan = true
+        }),
+      )
 
       const failedDrain = yield* Effect.result(queue.drain)
       expect(Result.isFailure(failedDrain)).toBe(true)
+      if (Result.isFailure(failedDrain)) expect(failedDrain.failure).toBe('write failed')
+      expect(laterWriteRan).toBe(true)
 
-      yield* queue.enqueue(Effect.void)
       const recoveredDrain = yield* Effect.result(queue.drain)
       expect(Result.isSuccess(recoveredDrain)).toBe(true)
     })
