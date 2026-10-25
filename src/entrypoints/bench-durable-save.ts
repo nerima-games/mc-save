@@ -1,4 +1,5 @@
 import { Clock, Effect, Option, Result, Schedule, Schema } from 'effect'
+import { fileURLToPath } from 'node:url'
 import {
   decodeSave,
   defineFormat,
@@ -42,16 +43,28 @@ const world = {
 const key = SaveKey('benchmark-world')
 const previous = SaveKey('benchmark-world::previous')
 
+const checkpointPair = (
+  batch: ReadonlyArray<Option.Option<SaveEnvelope>>,
+): Result.Result<readonly [Option.Option<SaveEnvelope>, Option.Option<SaveEnvelope>], TypeError> => {
+  if (batch.length !== 2) return Result.fail(new TypeError('storage returned an incomplete checkpoint batch'))
+  const latest = batch[0]
+  const old = batch[1]
+  if (!Option.isOption(latest) || !Option.isOption(old)) {
+    return Result.fail(new TypeError('storage returned an invalid checkpoint option'))
+  }
+  return Result.succeed([latest, old])
+}
+
 const baselineSave = <A, I>(format: SaveFormat<A, I>, value: A) =>
   Effect.gen(function* () {
     const storage = yield* StoragePort
-    const [latest = Option.none(), old = Option.none()] = yield* storage.readBatch([key, previous])
+    const [latest, old] = yield* Effect.fromResult(checkpointPair(yield* storage.readBatch([key, previous])))
     const validateStored = (envelope: SaveEnvelope) =>
       validateSaveEnvelope(envelope).pipe(Effect.flatMap((valid) => decodeSave(format, valid)))
     const latestGood = Option.isSome(latest)
-      ? yield* validateStored(latest.value).pipe(Effect.as(latest.value), Effect.option)
+      ? Option.some(yield* validateStored(latest.value).pipe(Effect.as(latest.value)))
       : Option.none<SaveEnvelope>()
-    if (Option.isSome(old)) yield* validateStored(old.value).pipe(Effect.option)
+    if (Option.isSome(old)) yield* validateStored(old.value)
     const encoded = yield* encodeSave(format, value)
     const sealed = yield* Effect.fromResult(sealSaveEnvelope(encoded))
     yield* validateSaveEnvelope(sealed)
@@ -73,21 +86,57 @@ const measure = (run: Effect.Effect<void, unknown, never>, iterations: number): 
     return Number(elapsedNanos) / 1_000_000 / iterations
   })
 
-const benchmark = Effect.gen(function* () {
-  const storage = yield* makeInMemoryStorage
-  const current = saveDurably(World, key, world).pipe(Effect.provideService(StoragePort, storage))
-  const baseline = baselineSave(World, world).pipe(Effect.provideService(StoragePort, storage))
+type BenchmarkResult = {
+  readonly chunks: number
+  readonly blocks: number
+  readonly baselineMs: number
+  readonly currentMs: number
+  readonly speedup: number
+}
 
-  yield* current
-  yield* current
-  const baselineMs = yield* measure(baseline, 5)
-  const currentMs = yield* measure(current, 5)
+const benchmark = <A, I>(
+  format: SaveFormat<A, I>,
+  value: A,
+  summary: Pick<BenchmarkResult, 'chunks' | 'blocks'>,
+  iterations: number,
+): Effect.Effect<BenchmarkResult, unknown, never> =>
+  Effect.gen(function* () {
+    const storage = yield* makeInMemoryStorage
+    const current = saveDurably(format, key, value).pipe(Effect.provideService(StoragePort, storage))
+    const baseline = baselineSave(format, value).pipe(Effect.provideService(StoragePort, storage))
 
-  return { chunks: world.chunks.length, blocks: 64 * 16_384, baselineMs, currentMs, speedup: baselineMs / currentMs }
-})
+    yield* baseline
+    yield* current
+    yield* current
+    const baselineMs = yield* measure(baseline, iterations)
+    const currentMs = yield* measure(current, iterations)
 
-const result = await Effect.runPromise(benchmark)
+    return { ...summary, baselineMs, currentMs, speedup: baselineMs / currentMs }
+  })
 
-// Benchmark output is consumed directly by release verification.
-// eslint-disable-next-line no-console
-console.log(JSON.stringify(result))
+export const runDurableSaveBenchmark = <A, I>(
+  shouldRun: boolean,
+  format: SaveFormat<A, I>,
+  value: A,
+  summary: Pick<BenchmarkResult, 'chunks' | 'blocks'>,
+  iterations: number,
+): Effect.Effect<void, unknown, never> => {
+  if (!shouldRun) return Effect.void
+
+  return Effect.gen(function* () {
+    const result = yield* benchmark(format, value, summary, iterations)
+    // Benchmark output is consumed directly by release verification.
+    yield* Effect.sync(() => {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(result))
+    })
+  })
+}
+
+const invokedDirectly = process.argv[1] === fileURLToPath(import.meta.url)
+await Effect.runPromise(
+  runDurableSaveBenchmark(invokedDirectly, World, world, {
+    chunks: world.chunks.length,
+    blocks: 64 * 16_384,
+  }, 5),
+)
