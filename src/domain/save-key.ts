@@ -39,6 +39,9 @@ export const saveKeyForWorld = (
   namespace: SaveKeyNamespace,
   segments: ReadonlyArray<SaveKeySegment> = [],
 ): Result.Result<SaveKey, ValidationMessage> => {
+  if (typeof worldId !== 'string') {
+    return Result.fail(ValidationMessage('world id must be valid'))
+  }
   const checkedWorldId = Result.mapError(
     WorldId.result(worldId),
     () => ValidationMessage('world id must be valid'),
