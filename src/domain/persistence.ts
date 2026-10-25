@@ -83,6 +83,11 @@ const loadFromWithMaxBytes = <A, I>(
   Effect.gen(function* () {
     const storage = yield* StoragePort
     const stored = yield* storage.get(key)
+    if (!Option.isOption(stored)) {
+      return yield* Effect.fail(
+        new StorageError({ operation: 'persistence.get', key, cause: 'storage returned an invalid option' }),
+      )
+    }
 
     if (Option.isNone(stored)) {
       return Option.none<A>()

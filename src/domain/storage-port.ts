@@ -125,7 +125,14 @@ const snapshotDenseArray = <A>(value: unknown, operation: string): Result.Result
       const values: A[] = []
       for (let index = 0; index < length; index += 1) {
         const descriptor = Reflect.getOwnPropertyDescriptor(value, String(index))
-        if (descriptor === undefined || !('value' in descriptor) || descriptor.value === undefined) return undefined
+        if (
+          descriptor === undefined ||
+          !('value' in descriptor) ||
+          descriptor.value === undefined ||
+          descriptor.value === null
+        ) {
+          return undefined
+        }
         values.push(descriptor.value)
       }
       return values
@@ -134,7 +141,7 @@ const snapshotDenseArray = <A>(value: unknown, operation: string): Result.Result
   })
   if (Result.isFailure(captured)) return Result.fail(captured.failure)
   return captured.success === undefined
-    ? Result.fail(new StorageError({ operation, cause: 'batch input must be a dense array without undefined entries' }))
+    ? Result.fail(new StorageError({ operation, cause: 'batch input must be a dense array without null or undefined entries' }))
     : Result.succeed(captured.success)
 }
 

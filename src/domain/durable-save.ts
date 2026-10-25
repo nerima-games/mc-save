@@ -113,6 +113,14 @@ const assertDurableBatch = (
       }),
     )
   }
+  if (!Option.isOption(latest as unknown) || !Option.isOption(previous as unknown)) {
+    return Effect.fail(
+      new StorageError({
+        operation: 'durable.readBatch',
+        cause: 'storage returned an invalid checkpoint option',
+      }),
+    )
+  }
   return Effect.succeed([latest, previous] as const)
 }
 
