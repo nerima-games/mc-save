@@ -11,7 +11,7 @@ import {
   validateSaveEnvelope,
   type SaveEnvelope,
   type SaveFormat,
-} from '../src/index'
+} from '../src/index.js'
 
 const Chunk = Schema.Struct({
   x: Schema.Number,
@@ -58,33 +58,35 @@ const baselineSave = <A, I>(format: SaveFormat<A, I>, value: A) =>
     yield* storage.commitBatch(
       Option.isSome(latestGood)
         ? [
-            { _tag: 'Put', key: previous, envelope: latestGood.value },
-            { _tag: 'Put', key, envelope: sealed },
+            { _tag: 'Put' as const, key: previous, envelope: latestGood.value },
+            { _tag: 'Put' as const, key, envelope: sealed },
           ]
-        : [{ _tag: 'Put', key, envelope: sealed }],
+        : [{ _tag: 'Put' as const, key, envelope: sealed }],
     )
   })
 
-const measure = (run: Effect.Effect<void, unknown, never>, iterations: number): Promise<number> =>
-  Effect.runPromise(
-    Effect.gen(function* () {
-      const started = performance.now()
-      yield* Effect.repeat(run, Schedule.recurs(iterations - 1))
-      return (performance.now() - started) / iterations
-    }),
-  )
+const measure = (run: Effect.Effect<void, unknown, never>, iterations: number): Effect.Effect<number, unknown, never> =>
+  Effect.gen(function* () {
+    const started = performance.now()
+    yield* Effect.repeat(run, Schedule.recurs(iterations - 1))
+    return (performance.now() - started) / iterations
+  })
 
-const storage = Effect.runSync(makeInMemoryStorage)
-const current = saveDurably(World, key, world).pipe(Effect.provideService(StoragePort, storage))
-const baseline = baselineSave(World, world).pipe(Effect.provideService(StoragePort, storage))
+const benchmark = Effect.gen(function* () {
+  const storage = yield* makeInMemoryStorage
+  const current = saveDurably(World, key, world).pipe(Effect.provideService(StoragePort, storage))
+  const baseline = baselineSave(World, world).pipe(Effect.provideService(StoragePort, storage))
 
-await Effect.runPromise(current)
-await Effect.runPromise(current)
-const baselineMs = await measure(baseline, 5)
-const currentMs = await measure(current, 5)
+  yield* current
+  yield* current
+  const baselineMs = yield* measure(baseline, 5)
+  const currentMs = yield* measure(current, 5)
+
+  return { chunks: world.chunks.length, blocks: 64 * 16_384, baselineMs, currentMs, speedup: baselineMs / currentMs }
+})
+
+const result = await Effect.runPromise(benchmark)
 
 // Benchmark output is consumed directly by release verification.
 // eslint-disable-next-line no-console
-console.log(
-  JSON.stringify({ chunks: world.chunks.length, blocks: 64 * 16_384, baselineMs, currentMs, speedup: baselineMs / currentMs }),
-)
+console.log(JSON.stringify(result))

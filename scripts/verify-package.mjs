@@ -70,14 +70,15 @@ const format = Result.getOrThrow(packageModule.defineFormat({
   schema: Schema.Struct({ value: Schema.String }),
 }))
 const envelope = await Effect.runPromise(packageModule.encodeSave(format, { value: 'ok' }))
-const decoded = await Effect.runPromise(packageModule.decodeSave(format, envelope))
+const sealed = Result.getOrThrow(packageModule.sealSaveEnvelope(envelope))
+const decoded = await Effect.runPromise(packageModule.decodeSave(format, sealed))
 if (decoded.value !== 'ok') {
   throw new Error('root import did not decode an encoded value')
 }
 
 const storage = await Effect.runPromise(packageModule.makeInMemoryStorage)
 const key = packageModule.SaveKey('package-verify')
-await Effect.runPromise(storage.put(key, envelope))
+await Effect.runPromise(storage.put(key, sealed))
 const stored = await Effect.runPromise(storage.get(key))
 if (!Option.isSome(stored) || stored.value.payload.value !== 'ok') {
   throw new Error('root import did not expose a working storage adapter')
