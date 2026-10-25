@@ -522,6 +522,31 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('maps a throwing database-name getter to StorageError before opening the factory', () =>
+    Effect.gen(function* () {
+      const getterFailure = new Error('database name is unavailable')
+      let openCalls = 0
+      const options = Object.defineProperty({
+        factory: {
+          open: () => {
+            openCalls += 1
+            throw new Error('factory must not be opened when the name getter fails')
+          },
+        },
+      }, 'databaseName', {
+        get: () => {
+          throw getterFailure
+        },
+      })
+      const error = yield* Effect.flip(applyUntrustedArgument(openDatabase, undefined, [options]))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(error.cause).toBe(getterFailure)
+      expect(openCalls).toBe(0)
+    }),
+  )
+
   effect('rejects an unbranded key before starting an IndexedDB operation', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()

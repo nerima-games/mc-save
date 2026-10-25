@@ -53,7 +53,15 @@ const failureFor = (
 export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<IdbDatabase, StorageError> =>
   Effect.callback<IdbDatabase, StorageError>((resume) => {
     const operation = OPEN_OPERATION
-    const checkedName = IndexedDbDatabaseName.result(options.databaseName)
+    const observedName = Result.try({
+      try: () => options.databaseName,
+      catch: (cause) => cause,
+    })
+    if (Result.isFailure(observedName)) {
+      resume(Effect.fail(failureFor(operation, undefined, observedName.failure)))
+      return
+    }
+    const checkedName = IndexedDbDatabaseName.result(observedName.success)
     if (Result.isFailure(checkedName)) {
       resume(Effect.fail(storageError(operation, undefined, checkedName.failure)))
       return
