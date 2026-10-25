@@ -55,7 +55,7 @@ Each ledger key links a package-level check to the downstream end-to-end check t
 | Ledger key | mc-save package coverage | Downstream end-to-end coverage |
 |---|---|---|
 | `parity/survival/save-load` | `test/format-roundtrip.test.ts` and `test/migration.test.ts` | `e2e/persistence.e2e.ts` in mc-compose after mc-save 0.6.0 is published and pinned |
-| `perf/fr-2.3` | `test/indexeddb-storage.test.ts` and the IndexedDB browser contract | `e2e/persistence.e2e.ts` in mc-compose after the same downstream update |
+| `perf/fr-2.3` | `test/indexeddb-storage.test.ts`, the IndexedDB browser contract, and `pnpm bench:durable-save` for performance evidence | `e2e/persistence.e2e.ts` in mc-compose after the same downstream update |
 
 The mc-save browser suite verifies the real IndexedDB adapter boundary. The mc-compose end-to-end suite depends on the published package and pinned version, so it runs in the consumer repository after this package is released.
 
