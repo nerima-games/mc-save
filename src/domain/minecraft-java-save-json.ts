@@ -2,6 +2,7 @@
 
 import { Data, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
+import { ValidationMessage } from './brand-types.js'
 import { assertDefined } from './assert-defined.js'
 import type { MinecraftJsonValue } from './minecraft-java-save-types.js'
 
@@ -102,7 +103,7 @@ const decodeUtf8 = (bytes: Uint8Array): Result.Result<string, MinecraftJsonError
     const codePoints: number[] = []
     let offset = 0
     while (offset < bytes.byteLength) {
-      const first = yield* Result.mapError(assertDefined(bytes[offset], 'decodeUtf8: offset is within byteLength but byte is missing'), (reason) => jsonError('decode', reason))
+      const first = yield* Result.mapError(assertDefined(bytes[offset], ValidationMessage('decodeUtf8: offset is within byteLength but byte is missing')), (reason) => jsonError('decode', reason))
       if (first <= 0x7f) {
         codePoints.push(first)
         offset += 1
@@ -111,7 +112,7 @@ const decodeUtf8 = (bytes: Uint8Array): Result.Result<string, MinecraftJsonError
 
       if (first >= 0xc2 && first <= 0xdf) {
         if (offset + 1 >= bytes.byteLength) return yield* Result.fail(jsonError('decode', 'truncated two-byte UTF-8 sequence'))
-        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a two-byte sequence'), (reason) => jsonError('decode', reason))
+        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], ValidationMessage('decodeUtf8: missing second byte of a two-byte sequence')), (reason) => jsonError('decode', reason))
         if (!continuation(second)) return yield* Result.fail(jsonError('decode', 'invalid UTF-8 continuation byte'))
         codePoints.push(((first & 0x1f) << 6) | (second & 0x3f))
         offset += 2
@@ -120,8 +121,8 @@ const decodeUtf8 = (bytes: Uint8Array): Result.Result<string, MinecraftJsonError
 
       if (first >= 0xe0 && first <= 0xef) {
         if (offset + 2 >= bytes.byteLength) return yield* Result.fail(jsonError('decode', 'truncated three-byte UTF-8 sequence'))
-        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a three-byte sequence'), (reason) => jsonError('decode', reason))
-        const third = yield* Result.mapError(assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a three-byte sequence'), (reason) => jsonError('decode', reason))
+        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], ValidationMessage('decodeUtf8: missing second byte of a three-byte sequence')), (reason) => jsonError('decode', reason))
+        const third = yield* Result.mapError(assertDefined(bytes[offset + 2], ValidationMessage('decodeUtf8: missing third byte of a three-byte sequence')), (reason) => jsonError('decode', reason))
         if (!continuation(second) || !continuation(third)) return yield* Result.fail(jsonError('decode', 'invalid UTF-8 continuation byte'))
         if ((first === 0xe0 && second < 0xa0) || (first === 0xed && second >= 0xa0)) {
           return yield* Result.fail(jsonError('decode', 'UTF-8 sequence is overlong or encodes a surrogate'))
@@ -133,9 +134,9 @@ const decodeUtf8 = (bytes: Uint8Array): Result.Result<string, MinecraftJsonError
 
       if (first >= 0xf0 && first <= 0xf4) {
         if (offset + 3 >= bytes.byteLength) return yield* Result.fail(jsonError('decode', 'truncated four-byte UTF-8 sequence'))
-        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], 'decodeUtf8: missing second byte of a four-byte sequence'), (reason) => jsonError('decode', reason))
-        const third = yield* Result.mapError(assertDefined(bytes[offset + 2], 'decodeUtf8: missing third byte of a four-byte sequence'), (reason) => jsonError('decode', reason))
-        const fourth = yield* Result.mapError(assertDefined(bytes[offset + 3], 'decodeUtf8: missing fourth byte of a four-byte sequence'), (reason) => jsonError('decode', reason))
+        const second = yield* Result.mapError(assertDefined(bytes[offset + 1], ValidationMessage('decodeUtf8: missing second byte of a four-byte sequence')), (reason) => jsonError('decode', reason))
+        const third = yield* Result.mapError(assertDefined(bytes[offset + 2], ValidationMessage('decodeUtf8: missing third byte of a four-byte sequence')), (reason) => jsonError('decode', reason))
+        const fourth = yield* Result.mapError(assertDefined(bytes[offset + 3], ValidationMessage('decodeUtf8: missing fourth byte of a four-byte sequence')), (reason) => jsonError('decode', reason))
         if (!continuation(second) || !continuation(third) || !continuation(fourth)) {
           return yield* Result.fail(jsonError('decode', 'invalid UTF-8 continuation byte'))
         }

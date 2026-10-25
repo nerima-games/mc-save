@@ -3,11 +3,12 @@ import { Effect, Result } from 'effect'
 import { ANVIL_REGION_CHUNK_SIDE } from './anvil-region.js'
 import {
   type MinecraftDimension,
+  type MinecraftPathSegment,
+  type MinecraftRelativePath,
   type MinecraftRegionStorage,
 } from './minecraft-paths.js'
 import {
   decodeMinecraftRegionFiles,
-  type MinecraftExternalChunkFile,
 } from './minecraft-region-files.js'
 import { decodeCompressedNbt } from './minecraft-nbt-compression.js'
 import { decodeMinecraftJson } from './minecraft-java-save-json.js'
@@ -36,6 +37,9 @@ import {
   validateMinecraftJavaSaveFiles,
   type ResolvedMinecraftJavaSaveOptions,
 } from './minecraft-java-save-validation.js'
+
+type MinecraftJavaSaveFailure = MinecraftJavaSaveError | TypeError
+
 type RegionGroup = {
   readonly dimension: MinecraftDimension
   readonly storage: MinecraftRegionStorage
@@ -44,36 +48,59 @@ type RegionGroup = {
   regionPath?: string
   externalPath?: string
   regionBytes?: Uint8Array
-  readonly externalChunks: MinecraftExternalChunkFile[]
+  readonly externalChunks: unknown[]
 }
 
-const asOperation = (error: unknown, path?: string): MinecraftJavaSaveError =>
-  minecraftJavaSaveError('decode', errorReason(error), path)
+const asOperation = (error: unknown, path?: string): Result.Result<MinecraftJavaSaveError, TypeError> =>
+  Result.gen(function* () {
+    const reason = yield* errorReason(error)
+    return yield* minecraftJavaSaveError('decode', reason, path)
+  })
 
+const failureFrom = <A, E>(result: Result.Result<A, E>): Result.Result<never, A | E> => {
+  if (Result.isFailure(result)) return Result.fail(result.failure)
+  return Result.fail(result.success)
+}
 
 const operationError = (path?: string) =>
-  (error: unknown): MinecraftJavaSaveError => asOperation(error, path)
+  (error: unknown): Result.Result<never, MinecraftJavaSaveFailure> =>
+    failureFrom(asOperation(error, path))
+
+const mapResultError = <A, E>(
+  result: Result.Result<A, E>,
+  mapError: (error: E) => Result.Result<never, MinecraftJavaSaveFailure>,
+): Result.Result<A, MinecraftJavaSaveFailure> => {
+  if (Result.isSuccess(result)) return Result.succeed(result.success)
+  return mapError(result.failure)
+}
+
+const mapEffectError = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  mapError: (error: E) => Result.Result<never, MinecraftJavaSaveFailure>,
+): Effect.Effect<A, MinecraftJavaSaveFailure, R> =>
+  Effect.matchEffect(effect, {
+    onFailure: (error) => Effect.fromResult(mapError(error)),
+    onSuccess: Effect.succeed,
+  })
 
 const filePath = (file: MinecraftJavaSaveFile): string => file.path
 
 const decodeNbtFile = (
   file: MinecraftJavaSaveFile,
   options: ResolvedMinecraftJavaSaveOptions,
-): Effect.Effect<MinecraftJavaSave['level'], MinecraftJavaSaveError> =>
-  decodeCompressedNbt(file.bytes, 'gzip', options.compressedNbt).pipe(
-    Effect.mapError(operationError(file.path)),
-  )
+): Effect.Effect<MinecraftJavaSave['level'], MinecraftJavaSaveFailure> =>
+  mapEffectError(decodeCompressedNbt(file.bytes, 'gzip', options.compressedNbt), operationError(file.path))
 
 const decodeJsonFile = (file: MinecraftJavaSaveFile): Result.Result<
   MinecraftJavaWorldClockFile['value'],
-  MinecraftJavaSaveError
-> => Result.mapError(decodeMinecraftJson(file.bytes), operationError(file.path))
+  MinecraftJavaSaveFailure
+> => mapResultError(decodeMinecraftJson(file.bytes), operationError(file.path))
 
 const decodeWorldClockFile = (
   file: MinecraftJavaSaveFile,
-  namespace: string,
-  id: string,
-): Result.Result<MinecraftJavaWorldClockFile, MinecraftJavaSaveError> =>
+  namespace: MinecraftPathSegment,
+  id: MinecraftRelativePath,
+): Result.Result<MinecraftJavaWorldClockFile, MinecraftJavaSaveFailure> =>
   Result.map(decodeJsonFile(file), (value) => ({ namespace, id, value }))
 
 const addRegion = (
@@ -97,8 +124,8 @@ const addRegion = (
   return group
 }
 
-const descriptorFor = (file: MinecraftJavaSaveFile): Result.Result<MinecraftJavaSavePath, MinecraftJavaSaveError> =>
-  Result.mapError(parseMinecraftJavaSavePath(file.path), operationError(file.path))
+const descriptorFor = (file: MinecraftJavaSaveFile): Result.Result<MinecraftJavaSavePath, MinecraftJavaSaveFailure> =>
+  mapResultError(parseMinecraftJavaSavePath(file.path), operationError(file.path))
 
 const sortBy = <T>(values: T[], key: (value: T) => string): T[] =>
   values.sort((left, right) => key(left).localeCompare(key(right), 'en'))
@@ -116,28 +143,28 @@ const playerSortKey = (file: MinecraftJavaPlayerDataFile | MinecraftJavaPlayerJs
 const decodeMinecraftJavaSaveInternal = (
   files: ReadonlyArray<MinecraftJavaSaveFile>,
   options: ResolvedMinecraftJavaSaveOptions,
-): Effect.Effect<MinecraftJavaSave, MinecraftJavaSaveError> =>
+): Effect.Effect<MinecraftJavaSave, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
     const normalized = yield* Effect.fromResult(validateMinecraftJavaSaveFiles(files, options))
     const regions = new Map<string, RegionGroup>()
-    const playerDataEntries: Array<{ readonly file: MinecraftJavaSaveFile; readonly playerId: string }> = []
-    const playerStatsEntries: Array<{ readonly file: MinecraftJavaSaveFile; readonly playerId: string }> = []
-    const playerAdvancementEntries: Array<{ readonly file: MinecraftJavaSaveFile; readonly playerId: string }> = []
+    const playerDataEntries: Array<{ readonly file: MinecraftJavaSaveFile; readonly playerId: MinecraftPathSegment }> = []
+    const playerStatsEntries: Array<{ readonly file: MinecraftJavaSaveFile; readonly playerId: MinecraftPathSegment }> = []
+    const playerAdvancementEntries: Array<{ readonly file: MinecraftJavaSaveFile; readonly playerId: MinecraftPathSegment }> = []
     const dataEntries: Array<{
       readonly file: MinecraftJavaSaveFile
-      readonly namespace: string
-      readonly name: string
+      readonly namespace: MinecraftPathSegment
+      readonly name: MinecraftRelativePath
       readonly dimension?: MinecraftDimension
     }> = []
     const worldClockEntries: Array<{
       readonly file: MinecraftJavaSaveFile
-      readonly namespace: string
-      readonly id: string
+      readonly namespace: MinecraftPathSegment
+      readonly id: MinecraftRelativePath
     }> = []
     const structureEntries: Array<{
       readonly file: MinecraftJavaSaveFile
-      readonly namespace: string
-      readonly name: string
+      readonly namespace: MinecraftPathSegment
+      readonly name: MinecraftRelativePath
     }> = []
     const extraFiles: MinecraftJavaSaveFile[] = []
     let levelFile: MinecraftJavaSaveFile | undefined
@@ -221,7 +248,9 @@ const decodeMinecraftJavaSaveInternal = (
     }
 
     if (levelFile === undefined) {
-      return yield* Effect.fail(minecraftJavaSaveError('decode', 'level.dat is required', 'level.dat'))
+      return yield* Effect.fromResult(
+        failureFrom(minecraftJavaSaveError('decode', 'level.dat is required', 'level.dat')),
+      )
     }
     const grouped = yield* Effect.all(
       {
@@ -229,7 +258,7 @@ const decodeMinecraftJavaSaveInternal = (
         levelBackup:
           levelBackupFile === undefined ? Effect.succeed(undefined) : decodeNbtFile(levelBackupFile, options),
         playerData: Effect.all(
-          playerDataEntries.map(({ file, playerId }): Effect.Effect<MinecraftJavaPlayerDataFile, MinecraftJavaSaveError> =>
+          playerDataEntries.map(({ file, playerId }): Effect.Effect<MinecraftJavaPlayerDataFile, MinecraftJavaSaveFailure> =>
             Effect.map(decodeNbtFile(file, options), (document) => ({ playerId, document })),
           ),
           { concurrency: 'unbounded' },
@@ -252,7 +281,7 @@ const decodeMinecraftJavaSaveInternal = (
         ),
         dataFiles: Effect.all(
           dataEntries.map(
-            ({ file, namespace, name, dimension }): Effect.Effect<MinecraftJavaDataFile, MinecraftJavaSaveError> =>
+            ({ file, namespace, name, dimension }): Effect.Effect<MinecraftJavaDataFile, MinecraftJavaSaveFailure> =>
               Effect.map(decodeNbtFile(file, options), (document) => ({
                 namespace,
                 name,
@@ -270,23 +299,25 @@ const decodeMinecraftJavaSaveInternal = (
         ),
         structures: Effect.all(
           structureEntries.map(
-            ({ file, namespace, name }): Effect.Effect<MinecraftJavaStructureFile, MinecraftJavaSaveError> =>
+            ({ file, namespace, name }): Effect.Effect<MinecraftJavaStructureFile, MinecraftJavaSaveFailure> =>
               Effect.map(decodeNbtFile(file, options), (document) => ({ namespace, name, document })),
           ),
           { concurrency: 'unbounded' },
         ),
         regions: Effect.all(
-          [...regions.values()].map((group): Effect.Effect<MinecraftJavaRegionFile, MinecraftJavaSaveError> =>
+          [...regions.values()].map((group): Effect.Effect<MinecraftJavaRegionFile, MinecraftJavaSaveFailure> =>
             Effect.gen(function* () {
               const regionBytes = group.regionBytes
               const regionPath = group.regionPath
               if (regionBytes === undefined || regionPath === undefined) {
-                return yield* Effect.fail(
-                  minecraftJavaSaveError('decode', 'external chunk has no matching region file', group.externalPath),
+                return yield* Effect.fromResult(
+                  failureFrom(
+                    minecraftJavaSaveError('decode', 'external chunk has no matching region file', group.externalPath),
+                  ),
                 )
               }
               const region = yield* Effect.fromResult(
-                Result.mapError(
+                mapResultError(
                   decodeMinecraftRegionFiles(regionBytes, group.externalChunks, options.region),
                   operationError(regionPath),
                 ),
@@ -306,7 +337,7 @@ const decodeMinecraftJavaSaveInternal = (
           sessionLockFile === undefined
             ? Effect.succeed(undefined)
             : Effect.fromResult(
-                Result.mapError(
+                mapResultError(
                   decodeMinecraftSessionLock(sessionLockFile.bytes),
                   operationError(sessionLockFile.path),
                 ),
@@ -336,7 +367,7 @@ const decodeMinecraftJavaSaveInternal = (
 export const decodeMinecraftJavaSave = (
   files: ReadonlyArray<MinecraftJavaSaveFile>,
   options?: Parameters<typeof resolveMinecraftJavaSaveOptions>[0],
-): Effect.Effect<MinecraftJavaSave, MinecraftJavaSaveError> =>
+): Effect.Effect<MinecraftJavaSave, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
     const resolved = yield* Effect.fromResult(resolveMinecraftJavaSaveOptions(options))
     return yield* decodeMinecraftJavaSaveInternal(files, resolved)

@@ -17,6 +17,19 @@ describe('Minecraft Java save path parsing', () => {
     })
   })
 
+  it('rejects unsafe file paths before classifying otherwise unknown files', () => {
+    for (const value of [
+      '../level.dat',
+      '/level.dat',
+      'data//minecraft/raids.dat',
+      'data/minecraft/',
+      'data\\minecraft\\raids.dat',
+      'data/minecraft/\u0000raids.dat',
+    ]) {
+      expect(() => parseMinecraftJavaSavePath(value)).toThrow(TypeError)
+    }
+  })
+
   it('parses player data and json paths and rejects malformed shapes', () => {
     const playerId = '01234567-89ab-cdef-0123-456789abcdef'
     expect(parseMinecraftJavaSavePath(`players/data/${playerId}.dat`)).toStrictEqual({
@@ -91,14 +104,14 @@ describe('Minecraft Java save path parsing', () => {
     expect(parseMinecraftJavaSavePath('region/r.0.0.mca').kind).toBe('extra')
     // enough segments, but the directory prefix does not start with 'dimensions'
     expect(parseMinecraftJavaSavePath('notdimensions/example/moon/region/r.0.0.mca').kind).toBe('extra')
-    // dimension directory namespace itself is unsafe
-    expect(parseMinecraftJavaSavePath('dimensions/../moon/region/r.0.0.mca').kind).toBe('extra')
+    // traversal in a dimension directory is rejected before the unknown-path fallback
+    expect(() => parseMinecraftJavaSavePath('dimensions/../moon/region/r.0.0.mca')).toThrow(TypeError)
     // unknown storage directory
     expect(parseMinecraftJavaSavePath('dimensions/minecraft/overworld/unknownstorage/r.0.0.mca').kind).toBe('extra')
     // file matches neither region nor external chunk pattern
     expect(parseMinecraftJavaSavePath('dimensions/minecraft/overworld/region/r.0.0.mcx').kind).toBe('extra')
-    // dimension directory invalid (unsafe segment)
-    expect(parseMinecraftJavaSavePath('dimensions/example/../region/r.0.0.mca').kind).toBe('extra')
+    // traversal in a dimension directory is rejected before the unknown-path fallback
+    expect(() => parseMinecraftJavaSavePath('dimensions/example/../region/r.0.0.mca')).toThrow(TypeError)
     // dimensions path missing a namespace/path segment before storage+file
     expect(parseMinecraftJavaSavePath('dimensions/example/region/r.0.0.mca').kind).toBe('extra')
   })
@@ -149,15 +162,14 @@ describe('Minecraft Java save path parsing', () => {
 
     // dimensions prefix present but no 'data' segment found within the scan window
     expect(parseMinecraftJavaSavePath('dimensions/minecraft/the_end/nope/minecraft/x.dat').kind).toBe('extra')
-    // a 'data' segment is found, but its directory prefix fails dimensionFromDirectory, so the scan
-    // must continue past it (here, to exhaustion, since there is no other 'data' segment to fall back to)
-    expect(parseMinecraftJavaSavePath('dimensions/../nested/data/ns/name.dat').kind).toBe('extra')
+    // traversal is rejected before a data-path candidate can fall back to extra
+    expect(() => parseMinecraftJavaSavePath('dimensions/../nested/data/ns/name.dat')).toThrow(TypeError)
     // too short after the data segment
     expect(parseMinecraftJavaSavePath('data/minecraft').kind).toBe('extra')
-    // unsafe namespace
-    expect(parseMinecraftJavaSavePath('data/../raids.dat').kind).toBe('extra')
-    // unsafe nested name segment
-    expect(parseMinecraftJavaSavePath('data/minecraft/../raids.dat').kind).toBe('extra')
+    // traversal is rejected before the generic data-path fallback
+    expect(() => parseMinecraftJavaSavePath('data/../raids.dat')).toThrow(TypeError)
+    // traversal is rejected before the generic data-path fallback
+    expect(() => parseMinecraftJavaSavePath('data/minecraft/../raids.dat')).toThrow(TypeError)
 
     // world clock's own extension/id checks fail but the generic 'data' parser still accepts the path,
     // since anything under data/<namespace>/... that isn't a recognized shape falls back to a plain data file
@@ -175,21 +187,20 @@ describe('Minecraft Java save path parsing', () => {
     })
     // world clock: wrong top-level directory or missing marker segment
     expect(parseMinecraftJavaSavePath('other/minecraft/world_clock/day.json').kind).toBe('extra')
-    // world clock: unsafe namespace (also rejected by the data fallback)
-    expect(parseMinecraftJavaSavePath('data/../world_clock/day.json').kind).toBe('extra')
-    // world clock: unsafe intermediate id segment (also rejected by the data fallback)
-    expect(parseMinecraftJavaSavePath('data/minecraft/world_clock/../day.json').kind).toBe('extra')
+    // world clock traversal is rejected before the data-path fallback
+    expect(() => parseMinecraftJavaSavePath('data/../world_clock/day.json')).toThrow(TypeError)
+    expect(() => parseMinecraftJavaSavePath('data/minecraft/world_clock/../day.json')).toThrow(TypeError)
 
     // structure: too few segments / wrong marker directory (no data-path fallback applies here)
     expect(parseMinecraftJavaSavePath('generated/minecraft/house.nbt').kind).toBe('extra')
     expect(parseMinecraftJavaSavePath('other/minecraft/structure/house.nbt').kind).toBe('extra')
-    // structure: unsafe namespace
-    expect(parseMinecraftJavaSavePath('generated/../structure/house.nbt').kind).toBe('extra')
+    // structure traversal is rejected before the unknown-path fallback
+    expect(() => parseMinecraftJavaSavePath('generated/../structure/house.nbt')).toThrow(TypeError)
     // structure: wrong extension
     expect(parseMinecraftJavaSavePath('generated/minecraft/structure/house.txt').kind).toBe('extra')
     // structure: unsafe name or intermediate segment
     expect(parseMinecraftJavaSavePath('generated/minecraft/structure/..nbt').kind).toBe('extra')
-    expect(parseMinecraftJavaSavePath('generated/minecraft/structure/../house.nbt').kind).toBe('extra')
+    expect(() => parseMinecraftJavaSavePath('generated/minecraft/structure/../house.nbt')).toThrow(TypeError)
   })
 
   it('falls back to extra for anything unrecognized', () => {

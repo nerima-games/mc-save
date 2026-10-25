@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest'
 import {
   ANVIL_CHUNK_COUNT,
   anvilRegion as anvilRegionResult,
-  type AnvilChunkRecord,
   type AnvilRegion,
   decodeMinecraftJavaSave as decodeMinecraftJavaSaveEffect,
   encodeMinecraftJavaSave as encodeMinecraftJavaSaveEffect,
@@ -17,8 +16,18 @@ import {
   type MinecraftJavaSave,
   type MinecraftJavaSaveFile,
 } from '../src/index.js'
+import {
+  parseMinecraftDimension,
+  parseMinecraftPathSegment,
+  parseMinecraftRelativePath,
+} from '../src/domain/minecraft-paths.js'
+import { parseMinecraftJavaSaveFilePath } from '../src/domain/minecraft-java-save-paths.js'
 
 const unwrapResult = <A, E>(result: Result.Result<A, E>): A => Result.getOrThrow(result)
+const pathSegment = (value: string) => unwrapResult(parseMinecraftPathSegment(value))
+const relativePath = (value: string) => unwrapResult(parseMinecraftRelativePath(value))
+const dimension = (value: string) => unwrapResult(parseMinecraftDimension(value))
+const saveFilePath = (value: string) => unwrapResult(parseMinecraftJavaSaveFilePath(value))
 const anvilRegion = (...args: Parameters<typeof anvilRegionResult>) => unwrapResult(anvilRegionResult(...args))
 const nbtCompound = (...args: Parameters<typeof nbtCompoundResult>) => unwrapResult(nbtCompoundResult(...args))
 const nbtDocument = (...args: Parameters<typeof nbtDocumentResult>) => unwrapResult(nbtDocumentResult(...args))
@@ -30,7 +39,7 @@ const encodeMinecraftJavaSave = (...args: Parameters<typeof encodeMinecraftJavaS
 const decodeMinecraftJavaSave = (...args: Parameters<typeof decodeMinecraftJavaSaveEffect>) =>
   Effect.runPromise(decodeMinecraftJavaSaveEffect(...args))
 
-const PLAYER_ID = '01234567-89ab-cdef-0123-456789abcdef'
+const PLAYER_ID = pathSegment('01234567-89ab-cdef-0123-456789abcdef')
 
 const document = (name: string, marker: number) =>
   nbtDocument(
@@ -48,7 +57,7 @@ const document = (name: string, marker: number) =>
   )
 
 const regionWithChunk = (payload: Uint8Array, external = false): AnvilRegion => {
-  const chunks: Array<AnvilChunkRecord | null> = new Array(ANVIL_CHUNK_COUNT).fill(null)
+  const chunks: unknown[] = new Array(ANVIL_CHUNK_COUNT).fill(null)
   chunks[0] = {
     localX: 0,
     localZ: 0,
@@ -70,21 +79,21 @@ const fixture = (): MinecraftJavaSave => ({
   playerAdvancements: [{ playerId: PLAYER_ID, value: { DataVersion: 4325, done: true } }],
   regions: [
     {
-      dimension: 'example:moon',
+      dimension: dimension('example:moon'),
       storage: 'entities',
       regionX: ChunkAxis(-1),
       regionZ: ChunkAxis(2),
       region: regionWithChunk(new Uint8Array([4, 5, 6]), true),
     },
     {
-      dimension: 'overworld',
+      dimension: dimension('overworld'),
       storage: 'region',
       regionX: ChunkAxis(0),
       regionZ: ChunkAxis(0),
       region: regionWithChunk(new Uint8Array([1, 2, 3])),
     },
     {
-      dimension: 'the_end',
+      dimension: dimension('the_end'),
       storage: 'poi',
       regionX: ChunkAxis(1),
       regionZ: ChunkAxis(-2),
@@ -92,16 +101,16 @@ const fixture = (): MinecraftJavaSave => ({
     },
   ],
   dataFiles: [
-    { namespace: 'minecraft', name: 'ender_dragon_fight.dat', dimension: 'the_end', document: document('Data', 4) },
-    { namespace: 'minecraft', name: 'raids.dat', document: document('Data', 5) },
-    { namespace: 'example', name: 'moon/state.dat', dimension: 'example:moon', document: document('Data', 6) },
+    { namespace: pathSegment('minecraft'), name: relativePath('ender_dragon_fight.dat'), dimension: dimension('the_end'), document: document('Data', 4) },
+    { namespace: pathSegment('minecraft'), name: relativePath('raids.dat'), document: document('Data', 5) },
+    { namespace: pathSegment('example'), name: relativePath('moon/state.dat'), dimension: dimension('example:moon'), document: document('Data', 6) },
   ],
-  worldClocks: [{ namespace: 'minecraft', id: 'day', value: { ticks: 12345, paused: false } }],
-  structures: [{ namespace: 'minecraft', name: 'village/plains/houses/small_house_1', document: document('', 7) }],
+  worldClocks: [{ namespace: pathSegment('minecraft'), id: relativePath('day'), value: { ticks: 12345, paused: false } }],
+  structures: [{ namespace: pathSegment('minecraft'), name: relativePath('village/plains/houses/small_house_1'), document: document('', 7) }],
   resourcePack: new Uint8Array([80, 75, 3, 4]),
   extraFiles: [
-    { path: 'datapacks/example/pack.mcmeta', bytes: new Uint8Array([123, 125]) },
-    { path: 'unknown.bin', bytes: new Uint8Array([10, 11]) },
+    { path: saveFilePath('datapacks/example/pack.mcmeta'), bytes: new Uint8Array([123, 125]) },
+    { path: saveFilePath('unknown.bin'), bytes: new Uint8Array([10, 11]) },
   ],
 })
 
@@ -114,7 +123,6 @@ const findFile = (files: ReadonlyArray<MinecraftJavaSaveFile>, path: string): Mi
 }
 
 const expectInvalidSave = (save: unknown, message: string) =>
-  // @ts-expect-error -- `save` is deliberately shaped wrong by every caller to verify runtime rejection
   expect(encodeMinecraftJavaSave(save)).rejects.toThrow(message)
 
 describe('Minecraft Java 26.1 world save boundary', () => {
@@ -230,14 +238,13 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     expect(source.icon?.[0]).toBe(137)
 
     await expect(
-      // @ts-expect-error -- deliberately null level to verify runtime rejection
       encodeMinecraftJavaSave({ ...source, level: null }),
     ).rejects.toThrow(MinecraftJavaSaveError)
     await expect(
       encodeMinecraftJavaSave({ ...source, extraFiles: [{ path: '../escape', bytes: new Uint8Array() }] }),
     ).rejects.toThrow('unsafe path segment')
     await expect(
-      decodeMinecraftJavaSave([{ path: 'level.dat', bytes: new Uint8Array([1, 2, 3]) }]),
+      decodeMinecraftJavaSave([{ path: saveFilePath('level.dat'), bytes: new Uint8Array([1, 2, 3]) }]),
     ).rejects.toThrow('gzip')
   })
 
@@ -327,8 +334,8 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     )
 
     const invalidChunkRegion = firstRegion.region
-    const invalidChunks = [...invalidChunkRegion.chunks]
-    const firstInvalidChunk = invalidChunks[0]
+    const invalidChunks: unknown[] = [...invalidChunkRegion.chunks]
+    const firstInvalidChunk = invalidChunkRegion.chunks[0]
     if (firstInvalidChunk === undefined || firstInvalidChunk === null) {
       throw new Error('fixture region must declare a non-null first chunk')
     }
@@ -358,7 +365,7 @@ describe('Minecraft Java 26.1 world save boundary', () => {
   })
 
   it('sorts multiple entries per category into canonical order', async () => {
-    const secondPlayerId = 'zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz'
+    const secondPlayerId = pathSegment('zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz')
     const source: MinecraftJavaSave = {
       ...fixture(),
       playerData: [
@@ -374,12 +381,12 @@ describe('Minecraft Java 26.1 world save boundary', () => {
         { playerId: secondPlayerId, value: { DataVersion: 4325, done: false } },
       ],
       worldClocks: [
-        { namespace: 'minecraft', id: 'day', value: { ticks: 12345, paused: false } },
-        { namespace: 'minecraft', id: 'night', value: { ticks: 999, paused: true } },
+        { namespace: pathSegment('minecraft'), id: relativePath('day'), value: { ticks: 12345, paused: false } },
+        { namespace: pathSegment('minecraft'), id: relativePath('night'), value: { ticks: 999, paused: true } },
       ],
       structures: [
-        { namespace: 'minecraft', name: 'village/plains/houses/small_house_1', document: document('', 7) },
-        { namespace: 'minecraft', name: 'village/plains/houses/small_house_2', document: document('', 8) },
+        { namespace: pathSegment('minecraft'), name: relativePath('village/plains/houses/small_house_1'), document: document('', 7) },
+        { namespace: pathSegment('minecraft'), name: relativePath('village/plains/houses/small_house_2'), document: document('', 8) },
       ],
     }
     const files = await encodeMinecraftJavaSave(source)
@@ -440,14 +447,14 @@ describe('Minecraft Java 26.1 world save boundary', () => {
     const regionPath = 'dimensions/minecraft/overworld/region/r.0.0.mca'
     const withHugeCoordinate = [
       ...files.filter((file) => file.path !== regionPath),
-      { path: 'dimensions/minecraft/overworld/region/r.99999999999999999999.0.mca', bytes: new Uint8Array([0]) },
+      { path: saveFilePath('dimensions/minecraft/overworld/region/r.99999999999999999999.0.mca'), bytes: new Uint8Array([0]) },
     ]
     await expect(decodeMinecraftJavaSave(withHugeCoordinate)).rejects.toBeInstanceOf(MinecraftJavaSaveError)
     await expect(decodeMinecraftJavaSave(withHugeCoordinate)).rejects.toThrow('canonical safe integer')
   })
 
   it('decodes a region group carrying more than one external chunk', async () => {
-    const chunks: Array<AnvilChunkRecord | null> = new Array(ANVIL_CHUNK_COUNT).fill(null)
+    const chunks: unknown[] = new Array(ANVIL_CHUNK_COUNT).fill(null)
     chunks[0] = {
       localX: 0,
       localZ: 0,
@@ -468,7 +475,7 @@ describe('Minecraft Java 26.1 world save boundary', () => {
       ...fixture(),
       regions: [
         {
-          dimension: 'overworld',
+          dimension: dimension('overworld'),
           storage: 'region',
           regionX: ChunkAxis(0),
           regionZ: ChunkAxis(0),

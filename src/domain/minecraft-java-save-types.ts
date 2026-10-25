@@ -1,8 +1,14 @@
+import type { Brand } from 'effect'
 import type { ChunkAxis } from '@nerima-games/mc-kernel'
 import type { AnvilRegion } from './anvil-region.js'
 import type { MinecraftCompressedNbtOptions } from './minecraft-nbt-compression.js'
 import type { NbtCodecOptions, NbtDocument } from './minecraft-nbt.js'
-import type { MinecraftDimension, MinecraftRegionStorage } from './minecraft-paths.js'
+import type {
+  MinecraftDimension,
+  MinecraftPathSegment,
+  MinecraftRegionStorage,
+  MinecraftRelativePath,
+} from './minecraft-paths.js'
 import type { MinecraftRegionFilesOptions } from './minecraft-region-files.js'
 
 export type MinecraftJsonValue =
@@ -14,36 +20,38 @@ export type MinecraftJsonValue =
   | { readonly [key: string]: MinecraftJsonValue }
 
 export type MinecraftJavaSaveFile = {
-  readonly path: string
+  readonly path: MinecraftJavaSaveFilePath
   readonly bytes: Uint8Array
 }
 
+export type MinecraftJavaSaveFilePath = string & Brand.Brand<'MinecraftJavaSaveFilePath'>
+
 export type MinecraftJavaPlayerDataFile = {
-  readonly playerId: string
+  readonly playerId: MinecraftPathSegment
   readonly document: NbtDocument
 }
 
 export type MinecraftJavaPlayerJsonFile = {
-  readonly playerId: string
+  readonly playerId: MinecraftPathSegment
   readonly value: MinecraftJsonValue
 }
 
 export type MinecraftJavaDataFile = {
-  readonly namespace: string
-  readonly name: string
+  readonly namespace: MinecraftPathSegment
+  readonly name: MinecraftRelativePath
   readonly dimension?: MinecraftDimension
   readonly document: NbtDocument
 }
 
 export type MinecraftJavaWorldClockFile = {
-  readonly namespace: string
-  readonly id: string
+  readonly namespace: MinecraftPathSegment
+  readonly id: MinecraftRelativePath
   readonly value: MinecraftJsonValue
 }
 
 export type MinecraftJavaStructureFile = {
-  readonly namespace: string
-  readonly name: string
+  readonly namespace: MinecraftPathSegment
+  readonly name: MinecraftRelativePath
   readonly document: NbtDocument
 }
 
@@ -72,9 +80,9 @@ export type MinecraftJavaSave = {
 }
 
 export type MinecraftJavaSaveOptions = {
-  readonly maxFiles?: number
-  readonly maxFileBytes?: number
-  readonly maxTotalBytes?: number
+  readonly maxFiles?: unknown
+  readonly maxFileBytes?: unknown
+  readonly maxTotalBytes?: unknown
   readonly nbt?: NbtCodecOptions
   readonly compressedNbt?: MinecraftCompressedNbtOptions
   readonly region?: MinecraftRegionFilesOptions

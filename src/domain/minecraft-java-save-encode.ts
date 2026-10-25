@@ -1,6 +1,7 @@
 import { ChunkAxis, chunkCoord } from '@nerima-games/mc-kernel/domain/coordinates'
 import { Effect, Result } from 'effect'
 import { ANVIL_REGION_CHUNK_SIDE } from './anvil-region.js'
+import type { AnvilLocalCoordinate } from './anvil-region.js'
 import { encodeCompressedNbt } from './minecraft-nbt-compression.js'
 import { encodeMinecraftJson } from './minecraft-java-save-json.js'
 import {
@@ -23,8 +24,10 @@ import {
   minecraftWorldResourcePackPath,
   minecraftWorldClockPath,
   type MinecraftDimension,
+  type MinecraftSavePath,
   type MinecraftRegionStorage,
 } from './minecraft-paths.js'
+import { parseMinecraftJavaSaveFilePath } from './minecraft-java-save-paths.js'
 import { encodeMinecraftRegionFiles } from './minecraft-region-files.js'
 import { encodeMinecraftSessionLock } from './minecraft-save-files.js'
 import type {
@@ -32,7 +35,6 @@ import type {
   MinecraftJavaPlayerDataFile,
   MinecraftJavaPlayerJsonFile,
   MinecraftJavaRegionFile,
-  MinecraftJavaSave,
   MinecraftJavaSaveFile,
   MinecraftJavaSaveOptions,
   MinecraftJavaStructureFile,
@@ -44,43 +46,83 @@ import {
   type ResolvedMinecraftJavaSaveOptions,
 } from './minecraft-java-save-validation.js'
 
-const asOperation = (error: unknown, operation: 'encode', path?: string): MinecraftJavaSaveError =>
-  minecraftJavaSaveError(operation, errorReason(error), path)
+type MinecraftJavaSaveFailure = MinecraftJavaSaveError | TypeError
 
+const asOperation = (
+  error: unknown,
+  operation: 'encode',
+  path?: string,
+): Result.Result<MinecraftJavaSaveError, TypeError> =>
+  Result.gen(function* () {
+    const reason = yield* errorReason(error)
+    return yield* minecraftJavaSaveError(operation, reason, path)
+  })
+
+const failureFrom = <A, E>(result: Result.Result<A, E>): Result.Result<never, A | E> => {
+  if (Result.isFailure(result)) return Result.fail(result.failure)
+  return Result.fail(result.success)
+}
 
 const operationError = (operation: 'encode', path?: string) =>
-  (error: unknown): MinecraftJavaSaveError => asOperation(error, operation, path)
+  (error: unknown): Result.Result<never, MinecraftJavaSaveFailure> =>
+    failureFrom(asOperation(error, operation, path))
+
+const mapResultError = <A, E>(
+  result: Result.Result<A, E>,
+  mapError: (error: E) => Result.Result<never, MinecraftJavaSaveFailure>,
+): Result.Result<A, MinecraftJavaSaveFailure> => {
+  if (Result.isSuccess(result)) return Result.succeed(result.success)
+  return mapError(result.failure)
+}
+
+const mapEffectError = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  mapError: (error: E) => Result.Result<never, MinecraftJavaSaveFailure>,
+): Effect.Effect<A, MinecraftJavaSaveFailure, R> =>
+  Effect.matchEffect(effect, {
+    onFailure: (error) => Effect.fromResult(mapError(error)),
+    onSuccess: Effect.succeed,
+  })
 
 const encodeNbtFile = (
-  path: string,
+  path: MinecraftSavePath,
   document: Parameters<typeof encodeCompressedNbt>[0],
   options: ResolvedMinecraftJavaSaveOptions,
-): Effect.Effect<MinecraftJavaSaveFile, MinecraftJavaSaveError> =>
-  encodeCompressedNbt(document, 'gzip', options.compressedNbt).pipe(
-    Effect.map((bytes) => ({ path, bytes })),
-    Effect.mapError(operationError('encode', path)),
-  )
+): Effect.Effect<MinecraftJavaSaveFile, MinecraftJavaSaveFailure> =>
+  Effect.gen(function* () {
+    const filePath = yield* Effect.fromResult(
+      mapResultError(parseMinecraftJavaSaveFilePath(path), operationError('encode')),
+    )
+    const bytes = yield* mapEffectError(
+      encodeCompressedNbt(document, 'gzip', options.compressedNbt),
+      operationError('encode', path),
+    )
+    return { path: filePath, bytes }
+  })
 
 const encodeNbtFileAtPath = (
-  path: Result.Result<string, unknown>,
+  path: Result.Result<MinecraftSavePath, unknown>,
   document: Parameters<typeof encodeCompressedNbt>[0],
   options: ResolvedMinecraftJavaSaveOptions,
-): Effect.Effect<MinecraftJavaSaveFile, MinecraftJavaSaveError> =>
+): Effect.Effect<MinecraftJavaSaveFile, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
-    const validatedPath = yield* Effect.fromResult(Result.mapError(path, operationError('encode')))
+    const validatedPath = yield* Effect.fromResult(mapResultError(path, operationError('encode')))
     return yield* encodeNbtFile(validatedPath, document, options)
   })
 
 const encodeJsonFile = (
-  path: Result.Result<string, unknown>,
+  path: Result.Result<MinecraftSavePath, unknown>,
   value: Parameters<typeof encodeMinecraftJson>[0],
-): Effect.Effect<MinecraftJavaSaveFile, MinecraftJavaSaveError> =>
+): Effect.Effect<MinecraftJavaSaveFile, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
-    const validatedPath = yield* Effect.fromResult(Result.mapError(path, operationError('encode')))
-    const bytes = yield* Effect.fromResult(
-      Result.mapError(encodeMinecraftJson(value), operationError('encode', validatedPath)),
+    const validatedPath = yield* Effect.fromResult(mapResultError(path, operationError('encode')))
+    const filePath = yield* Effect.fromResult(
+      mapResultError(parseMinecraftJavaSaveFilePath(validatedPath), operationError('encode', validatedPath)),
     )
-    return { path: validatedPath, bytes }
+    const bytes = yield* Effect.fromResult(
+      mapResultError(encodeMinecraftJson(value), operationError('encode', validatedPath)),
+    )
+    return { path: filePath, bytes }
   })
 
 // regionOrigin's product is not re-guarded for safe-integer overflow: validateMinecraftJavaSave (the first
@@ -95,9 +137,9 @@ const externalChunkPath = (
   storage: MinecraftRegionStorage,
   originX: ReturnType<typeof ChunkAxis>,
   originZ: ReturnType<typeof ChunkAxis>,
-  localX: number,
-  localZ: number,
-): Result.Result<string, TypeError> =>
+  localX: AnvilLocalCoordinate,
+  localZ: AnvilLocalCoordinate,
+): Result.Result<MinecraftSavePath, TypeError> =>
   minecraftExternalChunkFilePath(
     dimension,
     chunkCoord(
@@ -110,19 +152,22 @@ const externalChunkPath = (
 const encodeRegion = (
   region: MinecraftJavaRegionFile,
   options: ResolvedMinecraftJavaSaveOptions,
-): Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveError> =>
+): Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
     const originX = regionOrigin(region.regionX)
     const originZ = regionOrigin(region.regionZ)
     const coordinate = chunkCoord(originX, originZ)
     const regionPath = yield* Effect.fromResult(
-      Result.mapError(
+      mapResultError(
         minecraftRegionFilePath(region.dimension, coordinate, region.storage),
         operationError('encode'),
       ),
     )
+    const fileRegionPath = yield* Effect.fromResult(
+      mapResultError(parseMinecraftJavaSaveFilePath(regionPath), operationError('encode', regionPath)),
+    )
     const encoded = yield* Effect.fromResult(
-      Result.mapError(
+      mapResultError(
         encodeMinecraftRegionFiles(region.region, options.region),
         operationError('encode', regionPath),
       ),
@@ -131,7 +176,7 @@ const encodeRegion = (
       encoded.externalChunks.map((external) =>
         Effect.gen(function* () {
           const path = yield* Effect.fromResult(
-            Result.mapError(
+              mapResultError(
               externalChunkPath(
                 region.dimension,
                 region.storage,
@@ -143,18 +188,21 @@ const encodeRegion = (
               operationError('encode'),
             ),
           )
-          return { path, bytes: external.bytes }
+          const filePath = yield* Effect.fromResult(
+            mapResultError(parseMinecraftJavaSaveFilePath(path), operationError('encode', path)),
+          )
+          return { path: filePath, bytes: external.bytes }
         }),
       ),
       { concurrency: 'unbounded' },
     )
-    return [{ path: regionPath, bytes: encoded.region }, ...externalFiles]
+    return [{ path: fileRegionPath, bytes: encoded.region }, ...externalFiles]
   })
 
 const encodeMinecraftJavaSaveInternal = (
-  input: MinecraftJavaSave,
+  input: unknown,
   options: ResolvedMinecraftJavaSaveOptions,
-): Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveError> =>
+): Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
     const save = yield* Effect.fromResult(validateMinecraftJavaSave(input, options))
     const level = yield* encodeNbtFile(minecraftLevelDataPath(), save.level, options)
@@ -223,26 +271,51 @@ const encodeMinecraftJavaSaveInternal = (
     if (levelBackup !== undefined) files.push(levelBackup)
     if (save.sessionLock !== undefined) {
       const bytes = yield* Effect.fromResult(
-        Result.mapError(
+        mapResultError(
           encodeMinecraftSessionLock(save.sessionLock),
           operationError('encode', minecraftSessionLockPath()),
         ),
       )
-      files.push({ path: minecraftSessionLockPath(), bytes })
+      const path = yield* Effect.fromResult(
+        mapResultError(
+          parseMinecraftJavaSaveFilePath(minecraftSessionLockPath()),
+          operationError('encode', minecraftSessionLockPath()),
+        ),
+      )
+      files.push({ path, bytes })
     }
-    if (save.icon !== undefined) files.push({ path: minecraftIconPath(), bytes: save.icon.slice() })
+    if (save.icon !== undefined) {
+      const path = yield* Effect.fromResult(
+        mapResultError(parseMinecraftJavaSaveFilePath(minecraftIconPath()), operationError('encode', minecraftIconPath())),
+      )
+      files.push({ path, bytes: save.icon.slice() })
+    }
     if (save.resourcePack !== undefined) {
-      files.push({ path: minecraftWorldResourcePackPath(), bytes: save.resourcePack.slice() })
+      const path = yield* Effect.fromResult(
+        mapResultError(
+          parseMinecraftJavaSaveFilePath(minecraftWorldResourcePackPath()),
+          operationError('encode', minecraftWorldResourcePackPath()),
+        ),
+      )
+      files.push({ path, bytes: save.resourcePack.slice() })
     }
     for (const file of save.extraFiles) files.push({ path: file.path, bytes: file.bytes.slice() })
     return yield* Effect.fromResult(validateMinecraftJavaSaveFiles(files, options))
   })
 
 export const encodeMinecraftJavaSave = (
-  save: MinecraftJavaSave,
+  save: unknown,
   options?: MinecraftJavaSaveOptions,
-): Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveError> =>
+): Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveFailure> =>
   Effect.gen(function* () {
     const resolved = yield* Effect.fromResult(resolveMinecraftJavaSaveOptions(options))
-    return yield* encodeMinecraftJavaSaveInternal(save, resolved)
+    return yield* Effect.matchEffect(encodeMinecraftJavaSaveInternal(save, resolved), {
+      onFailure: (error) => {
+        if (error instanceof MinecraftJavaSaveError && error.operation === 'validate') {
+          return Effect.fromResult(failureFrom(minecraftJavaSaveError('encode', error.reason, error.path)))
+        }
+        return Effect.fail(error)
+      },
+      onSuccess: Effect.succeed,
+    })
   })

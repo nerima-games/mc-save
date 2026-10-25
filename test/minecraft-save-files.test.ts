@@ -67,6 +67,17 @@ describe('Minecraft save files', () => {
     ).rejects.toThrow()
   })
 
+  it('rejects explicit null NBT file options and compression', async () => {
+    // @ts-expect-error -- deliberately invalid options to verify runtime rejection
+    await expect(encodeMinecraftNbtFile(original, null)).rejects.toThrow('Minecraft NBT file options must be an object')
+    // @ts-expect-error -- deliberately invalid options to verify runtime rejection
+    await expect(decodeMinecraftNbtFile(new Uint8Array(), null)).rejects.toThrow('Minecraft NBT file options must be an object')
+    // @ts-expect-error -- explicit null compression must not select the gzip default
+    await expect(encodeMinecraftNbtFile(original, { compression: null })).rejects.toThrow('Minecraft NBT file compression is invalid')
+    // @ts-expect-error -- explicit null compression must not select the gzip default
+    await expect(decodeMinecraftNbtFile(new Uint8Array(), { compression: null })).rejects.toThrow('Minecraft NBT file compression is invalid')
+  })
+
   it('maps unreadable NBT file options to typed failures', async () => {
     const unreadableOptions = Object.defineProperty({}, 'compression', {
       get: () => {

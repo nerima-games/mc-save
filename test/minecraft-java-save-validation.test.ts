@@ -5,7 +5,6 @@ import {
   nbtCompound,
   nbtDocument,
   MinecraftJavaSaveError,
-  type AnvilChunkRecord,
   type MinecraftJavaSave,
 } from '../src/index.js'
 import {
@@ -19,11 +18,14 @@ const unwrapSuccess = <Success, Failure>(result: Result.Result<Success, Failure>
   throw new Error('expected a successful Result')
 }
 
-const expectFailure = <Success>(result: Result.Result<Success, MinecraftJavaSaveError>, reason: string) => {
+const expectFailure = <Success, Failure extends MinecraftJavaSaveError | TypeError>(
+  result: Result.Result<Success, Failure>,
+  reason: string,
+) => {
   expect(Result.isFailure(result)).toBe(true)
   if (Result.isFailure(result)) {
     expect(result.failure).toBeInstanceOf(MinecraftJavaSaveError)
-    expect(result.failure.reason).toContain(reason)
+    if (result.failure instanceof MinecraftJavaSaveError) expect(result.failure.reason).toContain(reason)
   }
 }
 
@@ -57,11 +59,14 @@ const anvilChunk = (localX: number, localZ: number) => ({
   payload: new Uint8Array(),
 })
 
-const fullChunks = (): Array<AnvilChunkRecord | null> =>
-  Array.from({ length: ANVIL_CHUNK_COUNT }, (): AnvilChunkRecord | null => null)
-const fullTimestamps = (): number[] => Array.from({ length: ANVIL_CHUNK_COUNT }, (): number => 0)
+const fullChunks = (): unknown[] => Array.from({ length: ANVIL_CHUNK_COUNT }, () => null)
+const fullTimestamps = (): unknown[] => Array.from({ length: ANVIL_CHUNK_COUNT }, () => 0)
 
 describe('resolveMinecraftJavaSaveOptions merge logic', () => {
+  it('rejects null options instead of replacing them with defaults', () => {
+    expectFailure(resolveMinecraftJavaSaveOptions(null), 'options must be an object')
+  })
+
   it('defaults to an empty compressedNbt when neither compressedNbt nor nbt is set', () => {
     expect(unwrapSuccess(resolveMinecraftJavaSaveOptions(undefined))).toMatchObject({ compressedNbt: {} })
     expect(unwrapSuccess(resolveMinecraftJavaSaveOptions({}))).toMatchObject({ compressedNbt: {} })
@@ -118,14 +123,11 @@ describe('resolveMinecraftJavaSaveOptions merge logic', () => {
   })
 
   it('rejects unsupported nested option keys', () => {
-    // @ts-expect-error -- deliberately unsupported options to verify runtime rejection
     expectFailure(resolveMinecraftJavaSaveOptions({ nbt: { unknownLimit: 1 } }), 'nbt contains an unsupported option')
     expectFailure(
-      // @ts-expect-error -- deliberately unsupported options to verify runtime rejection
       resolveMinecraftJavaSaveOptions({ compressedNbt: { unknownLimit: 1 } }),
       'compressedNbt contains an unsupported option',
     )
-    // @ts-expect-error -- deliberately unsupported options to verify runtime rejection
     expectFailure(resolveMinecraftJavaSaveOptions({ region: { unknownLimit: 1 } }), 'region contains an unsupported option')
   })
 
@@ -154,8 +156,7 @@ describe('validateMinecraftJavaSaveFiles low-level boundary', () => {
   const options = defaultOptions
 
   it('rejects a non-string, empty, too-long, or unsafely shaped path', () => {
-    // @ts-expect-error -- deliberately non-string path to verify runtime rejection
-    const filesWithNumericPath: Array<{ path: string; bytes: Uint8Array }> = [{ path: 1, bytes: new Uint8Array() }]
+    const filesWithNumericPath: unknown = [{ path: 1, bytes: new Uint8Array() }]
     expectFailure(validateMinecraftJavaSaveFiles(filesWithNumericPath, options), 'must be a non-empty path')
     expectFailure(validateMinecraftJavaSaveFiles([{ path: '', bytes: new Uint8Array() }], options), 'must be a non-empty path')
     expectFailure(validateMinecraftJavaSaveFiles([{ path: 'a'.repeat(4097), bytes: new Uint8Array() }], options), 'must be a non-empty path')
@@ -168,7 +169,8 @@ describe('validateMinecraftJavaSaveFiles low-level boundary', () => {
 
   it('rejects a file exceeding the per-file byte limit while total bytes stay within range', () => {
     const files = [{ path: 'big.dat', bytes: new Uint8Array(10) }]
-    expectFailure(validateMinecraftJavaSaveFiles(files, { ...options, maxFileBytes: 5 }), 'maxFileBytes')
+    const limitedOptions = unwrapSuccess(resolveMinecraftJavaSaveOptions({ maxFileBytes: 5 }))
+    expectFailure(validateMinecraftJavaSaveFiles(files, limitedOptions), 'maxFileBytes')
   })
 
   it('rejects file payloads that are not Uint8Array values', () => {
@@ -237,7 +239,6 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
   it('rejects a region whose timestamps array has the right length but a non-number entry', () => {
     const chunks = fullChunks()
     const timestamps = fullTimestamps()
-    // @ts-expect-error -- deliberately non-number timestamp entry to verify runtime rejection
     timestamps[0] = 'not-a-number'
     expectValidateFailure(
       {
@@ -259,7 +260,7 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
   it('rejects a region whose chunks are individually well-shaped but positioned at the wrong slot', () => {
     const chunks = fullChunks()
     // Every per-item field is valid, but slot 1 must hold localX=1,localZ=0 (index % 32, floor(index/32));
-    // placing a slot-0-shaped chunk there passes isAnvilChunk yet fails anvilRegion's positional check.
+    // A slot-0-shaped chunk there fails anvilRegion's positional check.
     chunks[1] = anvilChunk(0, 0)
     expectValidateFailure(
       {
@@ -324,7 +325,7 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
   })
 
   it('accepts chunk compression values beyond the first two disjuncts', () => {
-    const chunks: Array<AnvilChunkRecord | null> = fullChunks()
+    const chunks = fullChunks()
     chunks[0] = { ...anvilChunk(0, 0), compression: 'lz4' }
     chunks[1] = { ...anvilChunk(1, 0), compression: 'custom' }
     expectValidateSuccess({
@@ -343,7 +344,6 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
 
   it('rejects an anvil chunk payload that is not a Uint8Array', () => {
     const chunks = fullChunks()
-    // @ts-expect-error -- deliberately non-Uint8Array payload to verify runtime rejection
     chunks[0] = { ...anvilChunk(0, 0), payload: [1, 2, 3] }
     expectValidateFailure(
       {

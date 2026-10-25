@@ -1,13 +1,20 @@
-import { Data, Result } from 'effect'
+import { Brand, Data, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
+import { ValidationMessage } from './brand-types.js'
 
 export type MinecraftJavaSaveOperation = 'encode' | 'decode' | 'validate'
 
 type MinecraftJavaSaveErrorFields = {
   readonly operation: MinecraftJavaSaveOperation
-  readonly reason: string
-  readonly path?: string
+  readonly reason: ValidationMessage
+  readonly path?: MinecraftJavaSaveErrorPath
 }
+
+export type MinecraftJavaSaveErrorPath = string & Brand.Brand<'MinecraftJavaSaveErrorPath'>
+
+const toMinecraftJavaSaveErrorPath = Brand.make<MinecraftJavaSaveErrorPath>(
+  (value) => typeof value === 'string' || 'error path must be a string',
+)
 
 const MinecraftJavaSaveErrorBase: new (
   args: MinecraftJavaSaveErrorFields,
@@ -23,15 +30,39 @@ export class MinecraftJavaSaveError extends MinecraftJavaSaveErrorBase {
 
 export const minecraftJavaSaveError = (
   operation: MinecraftJavaSaveOperation,
-  reason: string,
-  path?: string,
-): MinecraftJavaSaveError =>
-  new MinecraftJavaSaveError({ operation, reason, ...(path === undefined ? {} : { path }) })
+  reason: unknown,
+  path?: unknown,
+): Result.Result<MinecraftJavaSaveError, TypeError> =>
+  Result.gen(function* () {
+    const reasonText = yield* Result.try({
+      try: () => String(reason),
+      catch: () => new TypeError('error reason could not be formatted'),
+    })
+    const brandedReason = yield* Result.mapError(
+      ValidationMessage.result(reasonText),
+      () => new TypeError('error reason is not a valid validation message'),
+    )
+    if (path === undefined) return new MinecraftJavaSaveError({ operation, reason: brandedReason })
 
-export const errorReason = (error: unknown): string => {
-  const result = Result.try({
-    try: () => (error instanceof Error ? error.message : String(error)),
-    catch: () => 'operation failed',
+    const pathText = yield* Result.try({
+      try: () => String(path),
+      catch: () => new TypeError('error path could not be formatted'),
+    })
+    const brandedPath = yield* Result.mapError(
+      toMinecraftJavaSaveErrorPath.result(pathText),
+      () => new TypeError('error path is not a valid string'),
+    )
+    return new MinecraftJavaSaveError({ operation, reason: brandedReason, path: brandedPath })
   })
-  return Result.isSuccess(result) ? result.success : 'operation failed'
-}
+
+export const errorReason = (error: unknown): Result.Result<ValidationMessage, TypeError> =>
+  Result.gen(function* () {
+    const message = yield* Result.try({
+      try: () => error instanceof Error ? error.message : String(error),
+      catch: () => new TypeError('operation error could not be formatted'),
+    })
+    return yield* Result.mapError(
+      ValidationMessage.result(message),
+      () => new TypeError('operation error is not a valid validation message'),
+    )
+  })

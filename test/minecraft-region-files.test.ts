@@ -7,6 +7,7 @@ import {
   ANVIL_SECTOR_BYTES,
   type AnvilCompression,
   type AnvilChunkRecord,
+  type AnvilRegion,
   anvilRegion as anvilRegionResult,
   decodeAnvilRegion as decodeAnvilRegionResult,
 } from '../src/domain/anvil-region.js'
@@ -27,7 +28,8 @@ const encodeMinecraftRegionFiles = (...args: Parameters<typeof encodeMinecraftRe
 
 const emptySlots = (): Array<null> => new Array(ANVIL_CHUNK_COUNT).fill(null)
 
-const timestamps = (value = 0): number[] => new Array(ANVIL_CHUNK_COUNT).fill(value)
+const timestamps = (value = 0): AnvilRegion['timestamps'] =>
+  Result.getOrThrow(anvilRegionResult(emptySlots(), new Array(ANVIL_CHUNK_COUNT).fill(value))).timestamps
 
 const slotsWith = (index: number, chunk: AnvilChunkRecord): Array<AnvilChunkRecord | null> => {
   const slots: Array<AnvilChunkRecord | null> = emptySlots()
@@ -40,13 +42,19 @@ const chunkAt = (
   payload = new Uint8Array([1, 2, 3]),
   compression: AnvilCompression = 'none',
   timestamp = 7,
-): AnvilChunkRecord => ({
-  localX: index % 32,
-  localZ: Math.floor(index / 32),
-  timestamp,
-  compression,
-  payload,
-})
+): AnvilChunkRecord => {
+  const chunks: unknown[] = new Array(ANVIL_CHUNK_COUNT).fill(null)
+  chunks[index] = {
+    localX: index % 32,
+    localZ: Math.floor(index / 32),
+    timestamp,
+    compression,
+    payload,
+  }
+  const chunk = Result.getOrThrow(anvilRegionResult(chunks)).chunks[index]
+  if (chunk === null || chunk === undefined) throw new Error('expected a validated chunk')
+  return chunk
+}
 
 const emptyRegion = (): ReturnType<typeof anvilRegion> => anvilRegion(emptySlots(), timestamps())
 
@@ -55,6 +63,14 @@ const expectRegionFilesError = (operation: () => unknown): void => {
 }
 
 describe('Minecraft external region file codec', () => {
+  it('keeps the inherited Error.message field writable', () => {
+    const error = new MinecraftRegionFilesError({ reason: 'bad region' })
+
+    error.message = 'custom message'
+
+    expect(error.message).toBe('custom message')
+  })
+
   it('encodes and decodes raw compressed .mcc payload bytes', () => {
     const payload = new Uint8Array([4, 5, 6])
     const encoded = encodeMinecraftExternalChunkFile(payload)
@@ -113,6 +129,8 @@ describe('Minecraft external region file codec', () => {
 
     expectRegionFilesError(() => encodeMinecraftExternalChunkFile(payload, unreadableOptions))
     expectRegionFilesError(() => decodeMinecraftExternalChunkFile(payload, unreadableOptions))
+    expectRegionFilesError(() => encodeMinecraftExternalChunkFile(payload, null))
+    expectRegionFilesError(() => decodeMinecraftExternalChunkFile(payload, null))
 
     const unreadablePayload = new Uint8Array([1])
     Object.defineProperty(unreadablePayload, 'slice', {
@@ -198,11 +216,9 @@ describe('Minecraft external region file codec', () => {
       encodeMinecraftRegionFiles({ chunks: null, timestamps: [] })
     })
     expectRegionFilesError(() => {
-      // @ts-expect-error -- deliberately not an externalChunks array
       decodeMinecraftRegionFiles(emptyBytes, null)
     })
     expectRegionFilesError(() => {
-      // @ts-expect-error -- deliberately not a MinecraftExternalChunkFile
       decodeMinecraftRegionFiles(files.region, [null])
     })
     expectRegionFilesError(() =>

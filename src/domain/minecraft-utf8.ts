@@ -1,6 +1,17 @@
 /* oxlint-disable no-bitwise -- Java modified UTF-8 packs code-unit bits into wire bytes. */
 
-import { Result } from 'effect'
+import { Brand, Result } from 'effect'
+
+export type JavaModifiedUtf8String = string & Brand.Brand<'JavaModifiedUtf8String'>
+
+const toJavaModifiedUtf8String = Brand.make<JavaModifiedUtf8String>(
+  (value) => typeof value === 'string' || 'modified UTF-8 text must be a string',
+)
+
+export const parseModifiedUtf8String = (value: unknown): Result.Result<JavaModifiedUtf8String, TypeError> =>
+  typeof value === 'string'
+    ? Result.mapError(toJavaModifiedUtf8String.result(value), () => new TypeError('modified UTF-8 text must be a string'))
+    : Result.fail(new TypeError('modified UTF-8 text must be a string'))
 
 const CONTINUATION_MASK = 0xc0
 const CONTINUATION_VALUE = 0x80
@@ -12,9 +23,10 @@ const invalidModifiedUtf8 = (offset: number): TypeError =>
 
 /** Encode the UTF-16 code units used by Java's DataOutput.writeUTF. */
 export const encodeModifiedUtf8 = (
-  value: string,
+  input: unknown,
 ): Result.Result<Uint8Array, TypeError> =>
   Result.gen(function* () {
+    const value = yield* parseModifiedUtf8String(input)
     let length = 0
     for (const codeUnit of value) {
       const codePoint = codeUnit.codePointAt(0)
@@ -64,7 +76,7 @@ export const encodeModifiedUtf8 = (
 /** Decode the UTF-16 code units accepted by Java's DataInput.readUTF. */
 export const decodeModifiedUtf8 = (
   input: Uint8Array,
-): Result.Result<string, TypeError> =>
+): Result.Result<JavaModifiedUtf8String, TypeError> =>
   Result.gen(function* () {
     if (!(input instanceof Uint8Array)) {
       return yield* Result.fail(new TypeError('modified UTF-8 input must be a Uint8Array'))
@@ -122,5 +134,5 @@ export const decodeModifiedUtf8 = (
 
       return yield* Result.fail(invalidModifiedUtf8(offset))
     }
-    return value
+    return yield* parseModifiedUtf8String(value)
   })

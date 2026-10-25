@@ -1,44 +1,56 @@
 import { ChunkAxis } from '@nerima-games/mc-kernel/domain/coordinates'
-import { Result } from 'effect'
+import { Brand, Result } from 'effect'
+import { SaveMaxBytes } from './brand-types.js'
 import type { NbtCodecOptions } from './minecraft-nbt-codec.js'
 import {
-  ANVIL_CHUNK_COUNT,
   ANVIL_REGION_CHUNK_SIDE,
   anvilRegion,
-  type AnvilChunkRecord,
   type AnvilRegion,
 } from './anvil-region.js'
 import { isMinecraftJsonValue } from './minecraft-java-save-json.js'
 import { isMinecraftNbtDocument } from './minecraft-nbt-validation.js'
+import { parseMinecraftJavaSaveFilePath } from './minecraft-java-save-paths.js'
 import type {
   MinecraftJavaDataFile,
   MinecraftJavaPlayerDataFile,
   MinecraftJavaPlayerJsonFile,
   MinecraftJavaSave,
   MinecraftJavaSaveFile,
-  MinecraftJavaSaveOptions,
+  MinecraftJavaSaveFilePath,
   MinecraftJavaStructureFile,
   MinecraftJavaWorldClockFile,
 } from './minecraft-java-save-types.js'
 import { minecraftJavaSaveError, type MinecraftJavaSaveError } from './minecraft-java-save-errors.js'
 import type { MinecraftCompressedNbtOptions } from './minecraft-nbt-compression.js'
 import type { MinecraftRegionFilesOptions } from './minecraft-region-files.js'
-import { minecraftDimensionDirectory } from './minecraft-paths.js'
-import type { MinecraftDimension, MinecraftRegionStorage } from './minecraft-paths.js'
+import {
+  parseMinecraftDimension,
+  parseMinecraftPathSegment,
+  parseMinecraftRelativePath,
+} from './minecraft-paths.js'
+import type { MinecraftRegionStorage } from './minecraft-paths.js'
 
-export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES = 100_000
-export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES: number = 64 * 1024 * 1024
-export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES: number = 512 * 1024 * 1024
+export type MinecraftJavaSaveFileCountLimit = number & Brand.Brand<'MinecraftJavaSaveFileCountLimit'>
+
+const toMinecraftJavaSaveFileCountLimit = Brand.make<MinecraftJavaSaveFileCountLimit>(
+  (value) => Number.isSafeInteger(value) && value >= 0 || 'file count limit must be a non-negative safe integer',
+)
+
+export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES: MinecraftJavaSaveFileCountLimit =
+  toMinecraftJavaSaveFileCountLimit(100_000)
+export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES: SaveMaxBytes = SaveMaxBytes(64 * 1024 * 1024)
+export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES: SaveMaxBytes = SaveMaxBytes(512 * 1024 * 1024)
 
 export type ResolvedMinecraftJavaSaveOptions = {
-  readonly maxFiles: number
-  readonly maxFileBytes: number
-  readonly maxTotalBytes: number
+  readonly maxFiles: MinecraftJavaSaveFileCountLimit
+  readonly maxFileBytes: SaveMaxBytes
+  readonly maxTotalBytes: SaveMaxBytes
   readonly nbt?: NbtCodecOptions
   readonly compressedNbt: MinecraftCompressedNbtOptions
   readonly region?: MinecraftRegionFilesOptions
 }
 
+type MinecraftJavaSaveValidationError = MinecraftJavaSaveError | TypeError
 type RecordValue = { readonly [key: string]: unknown }
 type SnapshotOutcome = { readonly ok: true; readonly value: unknown } | { readonly ok: false }
 
@@ -117,13 +129,18 @@ const snapshotValue = (value: unknown, ancestors: WeakSet<object>): SnapshotOutc
   return { ok: true, value: output }
 }
 
-const snapshotUntrusted = (value: unknown, label: string): Result.Result<unknown, MinecraftJavaSaveError> =>
+const checkedValidationError = (reason: string, path?: string): MinecraftJavaSaveValidationError => {
+  const error = minecraftJavaSaveError('validate', reason, path)
+  return Result.isSuccess(error) ? error.success : error.failure
+}
+
+const snapshotUntrusted = (value: unknown, label: string): Result.Result<unknown, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const copied = yield* Result.try({
       try: () => snapshotValue(value, new WeakSet<object>()),
-      catch: () => minecraftJavaSaveError('validate', `${label} could not be snapshotted`),
+      catch: () => checkedValidationError(`${label} could not be snapshotted`),
     })
-    if (!copied.ok) return yield* Result.fail(minecraftJavaSaveError('validate', `${label} is not snapshot-safe`))
+    if (!copied.ok) return yield* Result.fail(checkedValidationError(`${label} is not snapshot-safe`))
     return copied.value
   })
 
@@ -145,14 +162,8 @@ const isByteArray = (value: unknown): value is Uint8Array => {
   return Reflect.ownKeys(value).every((key) => typeof key === 'string' && isArrayIndex(key, value.byteLength))
 }
 
-const isUnsigned32 = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 0xffffffff
-
 const isSigned64 = (value: unknown): value is bigint =>
   typeof value === 'bigint' && value >= -(2n ** 63n) && value <= (2n ** 63n) - 1n
-
-const isMinecraftDimension = (value: unknown): value is MinecraftDimension =>
-  typeof value === 'string' && Result.isSuccess(minecraftDimensionDirectory(value))
 
 const isMinecraftRegionStorage = (value: unknown): value is MinecraftRegionStorage =>
   value === 'region' || value === 'entities' || value === 'poi'
@@ -160,38 +171,21 @@ const isMinecraftRegionStorage = (value: unknown): value is MinecraftRegionStora
 const isSafeRegionCoordinate = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value * ANVIL_REGION_CHUNK_SIDE)
 
-const ANVIL_CHUNK_KEYS = new Set(['localX', 'localZ', 'timestamp', 'compression', 'payload', 'external'])
 const ANVIL_REGION_KEYS = new Set(['chunks', 'timestamps'])
 
-const isAnvilChunk = (value: unknown): value is AnvilChunkRecord => {
-  if (!isRecord(value) || !hasOnlyKeys(value, ANVIL_CHUNK_KEYS)) return false
-  return (
-    Number.isInteger(value['localX']) &&
-    Number.isInteger(value['localZ']) &&
-    isUnsigned32(value['timestamp']) &&
-    (value['compression'] === 'gzip' ||
-      value['compression'] === 'zlib' ||
-      value['compression'] === 'none' ||
-      value['compression'] === 'lz4' ||
-      value['compression'] === 'custom') &&
-    isByteArray(value['payload']) &&
-    (value['external'] === undefined || typeof value['external'] === 'boolean')
-  )
-}
+const failValidation = (reason: string, path?: string): Result.Result<never, MinecraftJavaSaveValidationError> =>
+  Result.fail(checkedValidationError(reason, path))
 
-const failValidation = (reason: string, path?: string): Result.Result<never, MinecraftJavaSaveError> =>
-  Result.fail(minecraftJavaSaveError('validate', reason, path))
-
-const requireRecord = (value: unknown, label: string): Result.Result<RecordValue, MinecraftJavaSaveError> =>
+const requireRecord = (value: unknown, label: string): Result.Result<RecordValue, MinecraftJavaSaveValidationError> =>
   isRecord(value) ? Result.succeed(value) : failValidation(`${label} must be an object`)
 
-const requireArray = (value: unknown, label: string): Result.Result<ReadonlyArray<unknown>, MinecraftJavaSaveError> =>
+const requireArray = (value: unknown, label: string): Result.Result<ReadonlyArray<unknown>, MinecraftJavaSaveValidationError> =>
   isSnapshotArray(value) ? Result.succeed(value) : failValidation(`${label} must be an array`)
 
-const requireBytes = (value: unknown, label: string): Result.Result<Uint8Array, MinecraftJavaSaveError> =>
+const requireBytes = (value: unknown, label: string): Result.Result<Uint8Array, MinecraftJavaSaveValidationError> =>
   isByteArray(value) ? Result.succeed(value) : failValidation(`${label} must be a Uint8Array`)
 
-const requireRelativePath = (value: unknown, label: string): Result.Result<string, MinecraftJavaSaveError> => {
+const requireRelativePath = (value: unknown, label: string): Result.Result<MinecraftJavaSaveFilePath, MinecraftJavaSaveValidationError> => {
   if (typeof value !== 'string' || value.length === 0 || value.length > 4096) {
     return failValidation(`${label} must be a non-empty path of at most 4096 characters`)
   }
@@ -202,13 +196,16 @@ const requireRelativePath = (value: unknown, label: string): Result.Result<strin
   if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
     return failValidation(`${label} contains an unsafe path segment`, value)
   }
-  return Result.succeed(value)
+  return Result.mapError(
+    parseMinecraftJavaSaveFilePath(value),
+    () => checkedValidationError(`${label} contains an unsafe path segment`),
+  )
 }
 
 const optionalSafeInteger = (
   value: unknown,
   label: string,
-): Result.Result<number | undefined, MinecraftJavaSaveError> => {
+): Result.Result<number | undefined, MinecraftJavaSaveValidationError> => {
   if (value === undefined) return Result.succeed(undefined)
   return typeof value === 'number' && Number.isSafeInteger(value)
     ? Result.succeed(value)
@@ -218,7 +215,7 @@ const optionalSafeInteger = (
 const resolveNbtOptions = (
   value: unknown,
   label: string,
-): Result.Result<NbtCodecOptions | undefined, MinecraftJavaSaveError> =>
+): Result.Result<NbtCodecOptions | undefined, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     if (value === undefined) return undefined
     const record = yield* requireRecord(value, `${label} must be an object`)
@@ -239,7 +236,7 @@ const resolveNbtOptions = (
 
 const resolveCompressedNbtOptions = (
   value: unknown,
-): Result.Result<MinecraftCompressedNbtOptions | undefined, MinecraftJavaSaveError> =>
+): Result.Result<MinecraftCompressedNbtOptions | undefined, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     if (value === undefined) return undefined
     const record = yield* requireRecord(value, 'compressedNbt must be an object')
@@ -261,7 +258,7 @@ const resolveCompressedNbtOptions = (
 
 const resolveRegionOptions = (
   value: unknown,
-): Result.Result<MinecraftRegionFilesOptions | undefined, MinecraftJavaSaveError> =>
+): Result.Result<MinecraftRegionFilesOptions | undefined, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     if (value === undefined) return undefined
     const record = yield* requireRecord(value, 'region must be an object')
@@ -276,17 +273,22 @@ const resolveRegionOptions = (
     }
   })
 
-const assertOptionLimit = (name: string, value: unknown, fallback: number): Result.Result<number, MinecraftJavaSaveError> => {
-  const resolved = value ?? fallback
+const assertOptionLimit = <Limit extends number>(
+  name: string,
+  value: unknown,
+  fallback: Limit,
+  make: (value: number) => Result.Result<Limit, unknown>,
+): Result.Result<Limit, MinecraftJavaSaveValidationError> => {
+  const resolved = value === undefined ? fallback : value
   if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < 0) {
     return failValidation(`${name} must be a non-negative safe integer`)
   }
-  return Result.succeed(resolved)
+  return Result.mapError(make(resolved), () => checkedValidationError(`${name} must be a non-negative safe integer`))
 }
 
 export const resolveMinecraftJavaSaveOptions = (
-  options: MinecraftJavaSaveOptions | undefined,
-): Result.Result<ResolvedMinecraftJavaSaveOptions, MinecraftJavaSaveError> =>
+  options: unknown,
+): Result.Result<ResolvedMinecraftJavaSaveOptions, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const snapshot = yield* snapshotUntrusted(options, 'options')
     if (snapshot !== undefined && !isRecord(snapshot)) return yield* failValidation('options must be an object')
@@ -307,16 +309,19 @@ export const resolveMinecraftJavaSaveOptions = (
         'maxFiles',
         record?.['maxFiles'],
         MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES,
+        (value) => toMinecraftJavaSaveFileCountLimit.result(value),
       ),
       maxFileBytes: yield* assertOptionLimit(
         'maxFileBytes',
         record?.['maxFileBytes'],
         MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES,
+        (value) => SaveMaxBytes.result(value),
       ),
       maxTotalBytes: yield* assertOptionLimit(
         'maxTotalBytes',
         record?.['maxTotalBytes'],
         MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES,
+        (value) => SaveMaxBytes.result(value),
       ),
       ...(nbt === undefined ? {} : { nbt }),
       compressedNbt,
@@ -324,25 +329,22 @@ export const resolveMinecraftJavaSaveOptions = (
     }
   })
 
-const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/u
-
-const isSafeRelativeIdentifier = (value: string): boolean => {
-  const segments = value.split('/')
-  return segments.length > 0 && segments.every((segment) => SAFE_SEGMENT.test(segment) && segment !== '.' && segment !== '..')
-}
-
 const assertNbtDocument = (value: unknown, label: string) =>
   isMinecraftNbtDocument(value)
     ? Result.succeed(value)
     : failValidation(`${label} must be a valid NBT document`)
 
-const validatePlayerData = (value: unknown, index: number): Result.Result<MinecraftJavaPlayerDataFile, MinecraftJavaSaveError> =>
+const validatePlayerData = (value: unknown, index: number): Result.Result<MinecraftJavaPlayerDataFile, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const record = yield* requireRecord(value, `playerData ${String(index)}`)
-    const playerId = record['playerId']
-    if (typeof playerId !== 'string' || !isSafeRelativeIdentifier(playerId)) {
+    const playerIdValue = record['playerId']
+    if (typeof playerIdValue !== 'string') {
       return yield* failValidation(`playerData ${String(index)} playerId is invalid`)
     }
+    const playerId = yield* Result.mapError(
+      parseMinecraftPathSegment(playerIdValue),
+      () => checkedValidationError(`playerData ${String(index)} playerId is invalid`),
+    )
     return {
       playerId,
       document: yield* assertNbtDocument(record['document'], `playerData ${String(index)} document`),
@@ -353,39 +355,49 @@ const validatePlayerJson = (
   value: unknown,
   index: number,
   label: string,
-): Result.Result<MinecraftJavaPlayerJsonFile, MinecraftJavaSaveError> =>
+): Result.Result<MinecraftJavaPlayerJsonFile, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const record = yield* requireRecord(value, `${label} ${String(index)}`)
-    const playerId = record['playerId']
+    const playerIdValue = record['playerId']
     const json = record['value']
-    if (typeof playerId !== 'string' || !isSafeRelativeIdentifier(playerId) || !isMinecraftJsonValue(json)) {
+    if (typeof playerIdValue !== 'string' || !isMinecraftJsonValue(json)) {
       return yield* failValidation(`${label} ${String(index)} is invalid`)
     }
+    const playerId = yield* Result.mapError(
+      parseMinecraftPathSegment(playerIdValue),
+      () => checkedValidationError(`${label} ${String(index)} is invalid`),
+    )
     return { playerId, value: json }
   })
 
-const validateDataFile = (value: unknown, index: number): Result.Result<MinecraftJavaDataFile, MinecraftJavaSaveError> =>
+const validateDataFile = (value: unknown, index: number): Result.Result<MinecraftJavaDataFile, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const record = yield* requireRecord(value, `dataFiles ${String(index)}`)
-    const namespace = record['namespace']
-    const name = record['name']
-    if (
-      typeof namespace !== 'string' ||
-      !SAFE_SEGMENT.test(namespace) ||
-      typeof name !== 'string' ||
-      !isSafeRelativeIdentifier(name)
-    ) {
+    const namespaceValue = record['namespace']
+    const nameValue = record['name']
+    if (typeof namespaceValue !== 'string' || typeof nameValue !== 'string') {
       return yield* failValidation(`dataFiles ${String(index)} namespace or name is invalid`)
     }
+    const namespace = yield* Result.mapError(
+      parseMinecraftPathSegment(namespaceValue),
+      () => checkedValidationError(`dataFiles ${String(index)} namespace or name is invalid`),
+    )
+    const name = yield* Result.mapError(
+      parseMinecraftRelativePath(nameValue),
+      () => checkedValidationError(`dataFiles ${String(index)} namespace or name is invalid`),
+    )
     const dimensionValue = record['dimension']
-    if (dimensionValue !== undefined && !isMinecraftDimension(dimensionValue)) {
-      return yield* failValidation(`dataFiles ${String(index)} dimension is invalid`)
-    }
+    const dimension = dimensionValue === undefined
+      ? undefined
+      : yield* Result.mapError(
+          parseMinecraftDimension(dimensionValue),
+          () => checkedValidationError(`dataFiles ${String(index)} dimension is invalid`),
+        )
     const document = yield* assertNbtDocument(record['document'], `dataFiles ${String(index)} document`)
     return {
       namespace,
       name,
-      ...(dimensionValue === undefined ? {} : { dimension: dimensionValue }),
+      ...(dimension === undefined ? {} : { dimension }),
       document,
     }
   })
@@ -393,40 +405,45 @@ const validateDataFile = (value: unknown, index: number): Result.Result<Minecraf
 const validateWorldClock = (
   value: unknown,
   index: number,
-): Result.Result<MinecraftJavaWorldClockFile, MinecraftJavaSaveError> =>
+): Result.Result<MinecraftJavaWorldClockFile, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const record = yield* requireRecord(value, `worldClocks ${String(index)}`)
-    const namespace = record['namespace']
-    const id = record['id']
+    const namespaceValue = record['namespace']
+    const idValue = record['id']
     const json = record['value']
-    if (
-      typeof namespace !== 'string' ||
-      !SAFE_SEGMENT.test(namespace) ||
-      typeof id !== 'string' ||
-      !isSafeRelativeIdentifier(id) ||
-      !isMinecraftJsonValue(json)
-    ) {
+    if (typeof namespaceValue !== 'string' || typeof idValue !== 'string' || !isMinecraftJsonValue(json)) {
       return yield* failValidation(`worldClocks ${String(index)} is invalid`)
     }
+    const namespace = yield* Result.mapError(
+      parseMinecraftPathSegment(namespaceValue),
+      () => checkedValidationError(`worldClocks ${String(index)} is invalid`),
+    )
+    const id = yield* Result.mapError(
+      parseMinecraftRelativePath(idValue),
+      () => checkedValidationError(`worldClocks ${String(index)} is invalid`),
+    )
     return { namespace, id, value: json }
   })
 
 const validateStructure = (
   value: unknown,
   index: number,
-): Result.Result<MinecraftJavaStructureFile, MinecraftJavaSaveError> =>
+): Result.Result<MinecraftJavaStructureFile, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const record = yield* requireRecord(value, `structures ${String(index)}`)
-    const namespace = record['namespace']
-    const name = record['name']
-    if (
-      typeof namespace !== 'string' ||
-      !SAFE_SEGMENT.test(namespace) ||
-      typeof name !== 'string' ||
-      !isSafeRelativeIdentifier(name)
-    ) {
+    const namespaceValue = record['namespace']
+    const nameValue = record['name']
+    if (typeof namespaceValue !== 'string' || typeof nameValue !== 'string') {
       return yield* failValidation(`structures ${String(index)} namespace or name is invalid`)
     }
+    const namespace = yield* Result.mapError(
+      parseMinecraftPathSegment(namespaceValue),
+      () => checkedValidationError(`structures ${String(index)} namespace or name is invalid`),
+    )
+    const name = yield* Result.mapError(
+      parseMinecraftRelativePath(nameValue),
+      () => checkedValidationError(`structures ${String(index)} namespace or name is invalid`),
+    )
     return {
       namespace,
       name,
@@ -434,50 +451,41 @@ const validateStructure = (
     }
   })
 
-const validateAnvilRegion = (value: unknown, index: number): Result.Result<AnvilRegion, MinecraftJavaSaveError> => {
-  const invalid = (): Result.Result<AnvilRegion, MinecraftJavaSaveError> =>
+const validateAnvilRegion = (value: unknown, index: number): Result.Result<AnvilRegion, MinecraftJavaSaveValidationError> => {
+  const invalid = (): Result.Result<AnvilRegion, MinecraftJavaSaveValidationError> =>
     failValidation(`regions ${String(index)} is invalid`)
   if (!isRecord(value) || !hasOnlyKeys(value, ANVIL_REGION_KEYS)) return invalid()
-  const chunksField = value['chunks']
-  const timestampsField = value['timestamps']
-  if (!isSnapshotArray(chunksField) || !isSnapshotArray(timestampsField)) return invalid()
-  if (chunksField.length !== ANVIL_CHUNK_COUNT || timestampsField.length !== ANVIL_CHUNK_COUNT) return invalid()
-  const chunks: Array<AnvilChunkRecord | null> = []
-  for (const chunk of chunksField) {
-    if (chunk === null) chunks.push(null)
-    else if (isAnvilChunk(chunk)) chunks.push(chunk)
-    else return invalid()
-  }
-  const timestamps: number[] = []
-  for (const timestamp of timestampsField) {
-    if (typeof timestamp !== 'number') return invalid()
-    timestamps.push(timestamp)
-  }
-  return Result.mapError(anvilRegion(chunks, timestamps), () => minecraftJavaSaveError('validate', `regions ${String(index)} is invalid`))
+  return Result.mapError(
+    anvilRegion(value['chunks'], value['timestamps']),
+    () => checkedValidationError(`regions ${String(index)} is invalid`),
+  )
 }
 
 const validateRegion = (value: unknown, index: number) =>
   Result.gen(function* () {
     const record = yield* requireRecord(value, `regions ${String(index)}`)
-    const dimension = record['dimension']
+    const dimensionValue = record['dimension']
     const storage = record['storage']
     const regionXValue = record['regionX']
     const regionZValue = record['regionZ']
     if (
-      !isMinecraftDimension(dimension) ||
       !isMinecraftRegionStorage(storage) ||
       !isSafeRegionCoordinate(regionXValue) ||
       !isSafeRegionCoordinate(regionZValue)
     ) {
       return yield* failValidation(`regions ${String(index)} is invalid`)
     }
+    const dimension = yield* Result.mapError(
+      parseMinecraftDimension(dimensionValue),
+      () => checkedValidationError(`regions ${String(index)} is invalid`),
+    )
     const regionX = yield* Result.mapError(
       ChunkAxis.result(regionXValue),
-      () => minecraftJavaSaveError('validate', `regions ${String(index)} is invalid`),
+      () => checkedValidationError(`regions ${String(index)} is invalid`),
     )
     const regionZ = yield* Result.mapError(
       ChunkAxis.result(regionZValue),
-      () => minecraftJavaSaveError('validate', `regions ${String(index)} is invalid`),
+      () => checkedValidationError(`regions ${String(index)} is invalid`),
     )
     return {
       dimension,
@@ -491,8 +499,8 @@ const validateRegion = (value: unknown, index: number) =>
 const validateItems = <Item>(
   value: unknown,
   label: string,
-  validateItem: (item: unknown, index: number) => Result.Result<Item, MinecraftJavaSaveError>,
-): Result.Result<ReadonlyArray<Item>, MinecraftJavaSaveError> =>
+  validateItem: (item: unknown, index: number) => Result.Result<Item, MinecraftJavaSaveValidationError>,
+): Result.Result<ReadonlyArray<Item>, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const values = yield* requireArray(value, label)
     const items: Item[] = []
@@ -502,7 +510,7 @@ const validateItems = <Item>(
     return items
   })
 
-const validateExtraFile = (value: unknown, index: number): Result.Result<MinecraftJavaSaveFile, MinecraftJavaSaveError> =>
+const validateExtraFile = (value: unknown, index: number): Result.Result<MinecraftJavaSaveFile, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const file = yield* requireRecord(value, `extraFiles ${String(index)}`)
     return {
@@ -514,7 +522,7 @@ const validateExtraFile = (value: unknown, index: number): Result.Result<Minecra
 export const validateMinecraftJavaSave = (
   save: unknown,
   _options: ResolvedMinecraftJavaSaveOptions,
-): Result.Result<MinecraftJavaSave, MinecraftJavaSaveError> =>
+): Result.Result<MinecraftJavaSave, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const snapshot = yield* snapshotUntrusted(save, 'save')
     const record = yield* requireRecord(snapshot, 'save')
@@ -550,30 +558,41 @@ export const validateMinecraftJavaSave = (
     }
   })
 
-type FileLimits = Readonly<{ maxFiles: number; maxFileBytes: number; maxTotalBytes: number }>
+type FileLimits = Readonly<{
+  maxFiles: MinecraftJavaSaveFileCountLimit
+  maxFileBytes: SaveMaxBytes
+  maxTotalBytes: SaveMaxBytes
+}>
 
-const readFileLimits = (value: unknown): Result.Result<FileLimits, MinecraftJavaSaveError> =>
+const readFileLimits = (value: unknown): Result.Result<FileLimits, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const options = yield* snapshotUntrusted(value, 'options')
     const record = yield* requireRecord(options, 'options must be an object')
-    const maxFiles = yield* assertOptionLimit('maxFiles', record['maxFiles'], MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES)
+    const maxFiles = yield* assertOptionLimit(
+      'maxFiles',
+      record['maxFiles'],
+      MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES,
+      (limit) => toMinecraftJavaSaveFileCountLimit.result(limit),
+    )
     const maxFileBytes = yield* assertOptionLimit(
       'maxFileBytes',
       record['maxFileBytes'],
       MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES,
+      (limit) => SaveMaxBytes.result(limit),
     )
     const maxTotalBytes = yield* assertOptionLimit(
       'maxTotalBytes',
       record['maxTotalBytes'],
       MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES,
+      (limit) => SaveMaxBytes.result(limit),
     )
     return { maxFiles, maxFileBytes, maxTotalBytes }
   })
 
 export const validateMinecraftJavaSaveFiles = (
-  files: ReadonlyArray<MinecraftJavaSaveFile>,
+  files: unknown,
   options: ResolvedMinecraftJavaSaveOptions,
-): Result.Result<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveError> =>
+): Result.Result<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
     const limits = yield* readFileLimits(options)
     const snapshot = yield* snapshotUntrusted(files, 'files')

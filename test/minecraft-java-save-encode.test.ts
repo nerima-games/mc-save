@@ -2,6 +2,7 @@ import { ChunkAxis } from '@nerima-games/mc-kernel/domain/coordinates'
 import { Effect, Result } from 'effect'
 import { describe, expect, it, vi } from 'vitest'
 import { encodeMinecraftJavaSave as encodeMinecraftJavaSaveEffect } from '../src/domain/minecraft-java-save-encode.js'
+import { parseMinecraftPathSegment } from '../src/domain/minecraft-paths.js'
 import {
   ANVIL_CHUNK_COUNT,
   anvilRegion as anvilRegionResult,
@@ -9,7 +10,6 @@ import {
   nbtCompound as nbtCompoundResult,
   nbtDocument as nbtDocumentResult,
   nbtInt as nbtIntResult,
-  type AnvilChunkRecord,
   type MinecraftJavaSave,
 } from '../src/index.js'
 
@@ -25,6 +25,7 @@ const anvilRegion = (...args: Parameters<typeof anvilRegionResult>) => unwrapRes
 const nbtCompound = (...args: Parameters<typeof nbtCompoundResult>) => unwrapResult(nbtCompoundResult(...args))
 const nbtDocument = (...args: Parameters<typeof nbtDocumentResult>) => unwrapResult(nbtDocumentResult(...args))
 const nbtInt = (...args: Parameters<typeof nbtIntResult>) => unwrapResult(nbtIntResult(...args))
+const pathSegment = (...args: Parameters<typeof parseMinecraftPathSegment>) => unwrapResult(parseMinecraftPathSegment(...args))
 const encodeMinecraftJavaSave = (...args: Parameters<typeof encodeMinecraftJavaSaveEffect>) =>
   Effect.runPromise(encodeMinecraftJavaSaveEffect(...args))
 
@@ -56,7 +57,7 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
   it('wraps a non-MinecraftJavaSaveError raised by the JSON encoder', async () => {
     const source: MinecraftJavaSave = {
       ...baseSave(),
-      playerStats: [{ playerId: 'player-one', value: { score: 1 } }],
+      playerStats: [{ playerId: pathSegment('player-one'), value: { score: 1 } }],
     }
     const stringifySpy = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
       throw new Error('stringify boundary failure')
@@ -70,7 +71,7 @@ describe('Minecraft Java save encode boundary, low-level failure paths', () => {
   })
 
   it('wraps a non-MinecraftJavaSaveError raised by the region encoder', async () => {
-    const chunks = Array.from({ length: ANVIL_CHUNK_COUNT }, (): AnvilChunkRecord | null => null)
+    const chunks: unknown[] = Array.from({ length: ANVIL_CHUNK_COUNT }, () => null)
     chunks[0] = { localX: 0, localZ: 0, timestamp: 1, compression: 'none', payload: new Uint8Array([1, 2, 3]) }
     const source: MinecraftJavaSave = {
       ...baseSave(),
