@@ -57,10 +57,8 @@ const asOperation = (error: unknown, path?: string): Result.Result<MinecraftJava
     return yield* minecraftJavaSaveError('decode', reason, path)
   })
 
-const failureFrom = <A, E>(result: Result.Result<A, E>): Result.Result<never, A | E> => {
-  if (Result.isFailure(result)) return Result.fail(result.failure)
-  return Result.fail(result.success)
-}
+const failureFrom = <A, E>(result: Result.Result<A, E>): Result.Result<never, A | E> =>
+  Result.fail(Result.merge(result))
 
 const operationError = (path?: string) =>
   (error: unknown): Result.Result<never, MinecraftJavaSaveFailure> =>

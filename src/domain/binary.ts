@@ -1,4 +1,4 @@
-import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
+import { Brand, Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
 import { EncodedByteSequence, SaveByteLength } from './brand-types.js'
 
 /** Define a wire-compatible Uint8Array with an exact byte length. */
@@ -50,16 +50,7 @@ export const fixedUint8Array = (
         )
       }
       const bytes = snapshot.success.bytes
-      const encoded = EncodedByteSequence.result(bytes)
-      return Result.isSuccess(encoded)
-        ? Effect.succeed(encoded.success)
-        : Effect.fail(
-            new SchemaIssue.InvalidValue(
-              { message: encoded.failure.message },
-              value,
-              options,
-            ),
-          )
+      return Effect.succeed(Brand.nominal<EncodedByteSequence>()(bytes))
     },
   )
 
@@ -69,21 +60,11 @@ export const fixedUint8Array = (
       decode: (value) => Effect.succeed(new Uint8Array(value)),
       encode: (value, options) => {
         const bytes = Result.try({
-          try: () => {
-            if (!(value instanceof Uint8Array)) {
-              return { _tag: 'failure' as const, message: 'Uint8Array could not be read' }
-            }
-            return { _tag: 'success' as const, bytes: Array.from(value) }
-          },
-          catch: () => ({ _tag: 'failure' as const, message: 'Uint8Array could not be read' }),
+          try: () => Array.from(value),
+          catch: () => new SchemaIssue.InvalidValue({ message: 'Uint8Array could not be read' }, value, options),
         })
-        if (Result.isFailure(bytes)) {
-          return Effect.fail(new SchemaIssue.InvalidValue({ message: bytes.failure.message }, value, options))
-        }
-        if (bytes.success._tag === 'failure') {
-          return Effect.fail(new SchemaIssue.InvalidValue({ message: bytes.success.message }, value, options))
-        }
-        if (!Result.isSuccess(checkedLength) || bytes.success.bytes.length !== checkedLength.success) {
+        if (Result.isFailure(bytes)) return Effect.fail(bytes.failure)
+        if (!Result.isSuccess(checkedLength) || bytes.success.length !== checkedLength.success) {
           return Effect.fail(
             new SchemaIssue.InvalidValue(
               { message: `Uint8Array must contain exactly ${String(length)} bytes` },
@@ -92,7 +73,7 @@ export const fixedUint8Array = (
             ),
           )
         }
-        const encoded = EncodedByteSequence.result(bytes.success.bytes)
+        const encoded = EncodedByteSequence.result(bytes.success)
         return Result.isSuccess(encoded)
           ? Effect.succeed(encoded.success)
           : Effect.fail(new SchemaIssue.InvalidValue({ message: encoded.failure.message }, value, options))

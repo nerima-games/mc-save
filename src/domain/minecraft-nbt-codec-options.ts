@@ -6,16 +6,6 @@ export type NbtDepthLimit = number & Brand.Brand<'NbtDepthLimit'>
 export type NbtElementLimit = number & Brand.Brand<'NbtElementLimit'>
 export type NbtStringByteLimit = number & Brand.Brand<'NbtStringByteLimit'>
 
-const nonNegativeSafeInteger = (value: number): true | string =>
-  Number.isSafeInteger(value) && value >= 0 || 'value must be a non-negative safe integer'
-
-const toNbtByteLimit = Brand.make<NbtByteLimit>(nonNegativeSafeInteger)
-const toNbtDepthLimit = Brand.make<NbtDepthLimit>(nonNegativeSafeInteger)
-const toNbtElementLimit = Brand.make<NbtElementLimit>(nonNegativeSafeInteger)
-const toNbtStringByteLimit = Brand.make<NbtStringByteLimit>((value) =>
-  Number.isSafeInteger(value) && value >= 0 && value <= 0xffff || 'value must be a safe integer from 0 to 65535',
-)
-
 export type NbtCodecOptions = {
   readonly maxBytes?: unknown
   readonly maxDepth?: unknown
@@ -31,10 +21,10 @@ export type ResolvedNbtCodecOptions = {
 }
 
 export const DEFAULT_NBT_CODEC_OPTIONS: ResolvedNbtCodecOptions = {
-  maxBytes: toNbtByteLimit(64 * 1024 * 1024),
-  maxDepth: toNbtDepthLimit(512),
-  maxElements: toNbtElementLimit(1_000_000),
-  maxStringBytes: toNbtStringByteLimit(0xffff),
+  maxBytes: Brand.nominal<NbtByteLimit>()(64 * 1024 * 1024),
+  maxDepth: Brand.nominal<NbtDepthLimit>()(512),
+  maxElements: Brand.nominal<NbtElementLimit>()(1_000_000),
+  maxStringBytes: Brand.nominal<NbtStringByteLimit>()(0xffff),
 }
 
 export const nbtError = (reason: unknown, offset?: unknown): NbtFormatError => {
@@ -48,7 +38,7 @@ const resolveLimit = <Limit extends number>(
   value: unknown,
   minimum: number,
   maximum: number | undefined,
-  make: (value: number) => Result.Result<Limit, unknown>,
+  make: (value: number) => Limit,
 ): Result.Result<Limit, NbtFormatError> => {
   const resolved = value === undefined ? DEFAULT_NBT_CODEC_OPTIONS[name] : value
   if (
@@ -62,7 +52,7 @@ const resolveLimit = <Limit extends number>(
       nbtError(`${name} must be a safe integer of at least ${String(minimum)}${upper}`),
     )
   }
-  return Result.mapError(make(resolved), () => nbtError(`${name} must be a non-negative safe integer`))
+  return Result.succeed(make(resolved))
 }
 
 export const resolveNbtCodecOptions = (
@@ -84,9 +74,9 @@ export const resolveNbtCodecOptions = (
       catch: () => nbtError('NBT codec options must be readable'),
     })
     return {
-      maxBytes: yield* resolveLimit('maxBytes', values.maxBytes, 1, undefined, (value) => toNbtByteLimit.result(value)),
-      maxDepth: yield* resolveLimit('maxDepth', values.maxDepth, 1, undefined, (value) => toNbtDepthLimit.result(value)),
-      maxElements: yield* resolveLimit('maxElements', values.maxElements, 0, undefined, (value) => toNbtElementLimit.result(value)),
-      maxStringBytes: yield* resolveLimit('maxStringBytes', values.maxStringBytes, 0, 0xffff, (value) => toNbtStringByteLimit.result(value)),
+      maxBytes: yield* resolveLimit('maxBytes', values.maxBytes, 1, undefined, (value) => Brand.nominal<NbtByteLimit>()(value)),
+      maxDepth: yield* resolveLimit('maxDepth', values.maxDepth, 1, undefined, (value) => Brand.nominal<NbtDepthLimit>()(value)),
+      maxElements: yield* resolveLimit('maxElements', values.maxElements, 0, undefined, (value) => Brand.nominal<NbtElementLimit>()(value)),
+      maxStringBytes: yield* resolveLimit('maxStringBytes', values.maxStringBytes, 0, 0xffff, (value) => Brand.nominal<NbtStringByteLimit>()(value)),
     }
   })

@@ -29,18 +29,6 @@ export type AnvilTimestamp = number & Brand.Brand<'AnvilTimestamp'>
 export type AnvilRegionByteLimit = number & Brand.Brand<'AnvilRegionByteLimit'>
 export type AnvilCompressionId = number & Brand.Brand<'AnvilCompressionId'>
 
-const toAnvilLocalCoordinate = Brand.make<AnvilLocalCoordinate>((value) =>
-  Number.isInteger(value) && value >= 0 && value < ANVIL_REGION_CHUNK_SIDE || 'local coordinate is out of range',
-)
-const toAnvilTimestamp = Brand.make<AnvilTimestamp>((value) =>
-  Number.isInteger(value) && value >= 0 && value <= 0xffffffff || 'timestamp is out of range',
-)
-const toAnvilRegionByteLimit = Brand.make<AnvilRegionByteLimit>((value) =>
-  Number.isSafeInteger(value) && value >= ANVIL_HEADER_BYTES && value <= ANVIL_MAX_REGION_BYTES || 'byte limit is out of range',
-)
-const toAnvilCompressionId = Brand.make<AnvilCompressionId>((value) =>
-  Number.isInteger(value) && value >= 0 && value <= 0xff || 'compression id is out of range',
-)
 
 type AnvilRegionErrorFields = {
   readonly reason: string
@@ -100,10 +88,7 @@ const resolveMaxBytes = (maxBytes: unknown): Result.Result<AnvilRegionByteLimit,
       ),
     )
   }
-  return Result.mapError(
-    toAnvilRegionByteLimit.result(resolved),
-    () => regionError('maxBytes must be a safe integer between the minimum and maximum region sizes'),
-  )
+  return Result.succeed(Brand.nominal<AnvilRegionByteLimit>()(resolved))
 }
 
 const readMaxBytesOption = (options: unknown): Result.Result<unknown, AnvilRegionError> =>
@@ -142,15 +127,12 @@ export const anvilCompressionId = (
   compression: AnvilCompression,
 ): Result.Result<AnvilCompressionId, AnvilRegionError> =>
   isCompression(compression)
-    ? Result.mapError(
-        toAnvilCompressionId.result(ANVIL_COMPRESSION_IDS[compression]),
-        () => regionError('unknown compression type'),
-      )
+    ? Result.succeed(Brand.nominal<AnvilCompressionId>()(ANVIL_COMPRESSION_IDS[compression]))
     : Result.fail(regionError('unknown compression type'))
 
 const assertTimestamp = (timestamp: unknown): Result.Result<AnvilTimestamp, AnvilRegionError> =>
   typeof timestamp === 'number' && Number.isInteger(timestamp) && timestamp >= 0 && timestamp <= 0xffffffff
-    ? Result.mapError(toAnvilTimestamp.result(timestamp), () => regionError('timestamp must be an unsigned 32-bit integer'))
+    ? Result.succeed(Brand.nominal<AnvilTimestamp>()(timestamp))
     : Result.fail(regionError('timestamp must be an unsigned 32-bit integer'))
 
 const assertChunk = (value: unknown, index: number): Result.Result<AnvilChunkRecord, AnvilRegionError> => {
@@ -215,14 +197,8 @@ const assertChunk = (value: unknown, index: number): Result.Result<AnvilChunkRec
       catch: () => regionError(`chunk ${String(index)} payload could not be copied`),
     })
     return {
-      localX: yield* Result.mapError(
-        toAnvilLocalCoordinate.result(snapshot.localX),
-        () => regionError(`chunk ${String(index)} has an invalid localX`),
-      ),
-      localZ: yield* Result.mapError(
-        toAnvilLocalCoordinate.result(snapshot.localZ),
-        () => regionError(`chunk ${String(index)} has an invalid localZ`),
-      ),
+      localX: Brand.nominal<AnvilLocalCoordinate>()(snapshot.localX),
+      localZ: Brand.nominal<AnvilLocalCoordinate>()(snapshot.localZ),
       timestamp,
       compression: snapshot.compression,
       payload,
@@ -344,9 +320,8 @@ export const decodeAnvilRegion = (
       const headerOffset = index * 4
       const sectorOffset = readUint24(view, headerOffset)
       const sectorLength = view.getUint8(headerOffset + 3)
-      const timestamp = yield* Result.mapError(
-        toAnvilTimestamp.result(view.getUint32(ANVIL_SECTOR_BYTES + headerOffset, false)),
-        () => regionError(`chunk slot ${String(index)} has an invalid timestamp`, ANVIL_SECTOR_BYTES + headerOffset),
+      const timestamp = Brand.nominal<AnvilTimestamp>()(
+        view.getUint32(ANVIL_SECTOR_BYTES + headerOffset, false),
       )
       timestamps.push(timestamp)
 
@@ -393,14 +368,8 @@ export const decodeAnvilRegion = (
             length - 1,
           ).slice()
       chunks[index] = {
-        localX: yield* Result.mapError(
-          toAnvilLocalCoordinate.result(index % ANVIL_REGION_CHUNK_SIDE),
-          () => regionError(`chunk slot ${String(index)} has an invalid localX`),
-        ),
-        localZ: yield* Result.mapError(
-          toAnvilLocalCoordinate.result(Math.floor(index / ANVIL_REGION_CHUNK_SIDE)),
-          () => regionError(`chunk slot ${String(index)} has an invalid localZ`),
-        ),
+        localX: Brand.nominal<AnvilLocalCoordinate>()(index % ANVIL_REGION_CHUNK_SIDE),
+        localZ: Brand.nominal<AnvilLocalCoordinate>()(Math.floor(index / ANVIL_REGION_CHUNK_SIDE)),
         timestamp,
         compression: compressionOption.value,
         payload,

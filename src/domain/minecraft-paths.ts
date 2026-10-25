@@ -106,10 +106,7 @@ const relativePath = (value: unknown, label: string): Result.Result<MinecraftRel
     for (const segment of segments) {
       yield* pathSegment(segment, label)
     }
-    return yield* Result.mapError(
-      MinecraftRelativePathBrand.result(value),
-      () => new TypeError(`${label} must be a safe relative path`),
-    )
+    return Brand.nominal<MinecraftRelativePath>()(value)
   })
 
 

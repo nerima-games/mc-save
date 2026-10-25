@@ -57,10 +57,15 @@ describe('Minecraft Java save error helpers', () => {
     }
     const reasonResult = minecraftJavaSaveError('encode', hostile)
     const pathResult = minecraftJavaSaveError('decode', 'bad input', hostile)
+    const malformedError = new Error()
+    Object.defineProperty(malformedError, 'message', { value: 42 })
+    const errorReasonResult = errorReason(malformedError)
 
     expect(Result.isFailure(reasonResult)).toBe(true)
     if (Result.isFailure(reasonResult)) expect(reasonResult.failure).toBeInstanceOf(TypeError)
     expect(Result.isFailure(pathResult)).toBe(true)
     if (Result.isFailure(pathResult)) expect(pathResult.failure).toBeInstanceOf(TypeError)
+    expect(Result.isFailure(errorReasonResult)).toBe(true)
+    if (Result.isFailure(errorReasonResult)) expect(errorReasonResult.failure).toBeInstanceOf(TypeError)
   })
 })

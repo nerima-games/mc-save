@@ -100,13 +100,18 @@ describe('resolveMinecraftJavaSaveOptions merge logic', () => {
 
   it('rejects out-of-range limits', () => {
     expectFailure(resolveMinecraftJavaSaveOptions({ maxFiles: -1 }), 'maxFiles')
+    expectFailure(resolveMinecraftJavaSaveOptions({ maxFiles: null }), 'maxFiles')
     expectFailure(resolveMinecraftJavaSaveOptions({ maxFiles: 1.5 }), 'maxFiles')
     expectFailure(resolveMinecraftJavaSaveOptions({ maxFileBytes: -1 }), 'maxFileBytes')
+    expectFailure(resolveMinecraftJavaSaveOptions({ maxFileBytes: null }), 'maxFileBytes')
+    expectFailure(resolveMinecraftJavaSaveOptions({ maxTotalBytes: null }), 'maxTotalBytes')
     expectFailure(resolveMinecraftJavaSaveOptions({ maxTotalBytes: Number.POSITIVE_INFINITY }), 'maxTotalBytes')
     expectFailure(
       resolveMinecraftJavaSaveOptions(JSON.parse('{"nbt":{"maxBytes":1.5}}')),
       'nbt.maxBytes must be a safe integer',
     )
+    expectFailure(resolveMinecraftJavaSaveOptions({ nbt: { maxBytes: null } }), 'nbt.maxBytes must be a safe integer')
+    expectFailure(resolveMinecraftJavaSaveOptions({ region: { maxRegionBytes: null } }), 'region.maxRegionBytes')
   })
 
   it('rejects option getters without invoking them', () => {
@@ -193,6 +198,60 @@ describe('validateMinecraftJavaSave low-level boundary', () => {
     expectValidateFailure(
       { ...baseSave(), dataFiles: [{ namespace: 'minecraft', name: 'state.dat', dimension: 1, document: level }] },
       'dataFiles 0 dimension is invalid',
+    )
+  })
+
+  it('keeps invalid nested path fields and explicit null dimensions as validation failures', () => {
+    expectValidateFailure(
+      { ...baseSave(), playerData: [{ playerId: null, document: level }] },
+      'playerData 0 playerId is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), playerData: [{ playerId: '../player', document: level }] },
+      'playerData 0 playerId is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), dataFiles: [{ namespace: null, name: 'state.dat', document: level }] },
+      'dataFiles 0 namespace or name is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), dataFiles: [{ namespace: 'minecraft', name: '../state.dat', document: level }] },
+      'dataFiles 0 namespace or name is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), dataFiles: [{ namespace: 'minecraft', name: 'state.dat', dimension: null, document: level }] },
+      'dataFiles 0 dimension is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), worldClocks: [{ namespace: '../clock', id: 'day', value: null }] },
+      'worldClocks 0 is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), worldClocks: [{ namespace: 'minecraft', id: '../day', value: null }] },
+      'worldClocks 0 is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), structures: [{ namespace: 'minecraft', name: '../house', document: level }] },
+      'structures 0 namespace or name is invalid',
+    )
+    expectValidateFailure(
+      { ...baseSave(), structures: [{ namespace: null, name: 'house', document: level }] },
+      'structures 0 namespace or name is invalid',
+    )
+
+    const chunks = fullChunks()
+    expectValidateFailure(
+      {
+        ...baseSave(),
+        regions: [{
+          dimension: 'example:../moon',
+          storage: 'region',
+          regionX: 0,
+          regionZ: 0,
+          region: { chunks, timestamps: fullTimestamps() },
+        }],
+      },
+      'regions 0 is invalid',
     )
   })
 

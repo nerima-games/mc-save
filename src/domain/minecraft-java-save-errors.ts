@@ -12,9 +12,6 @@ type MinecraftJavaSaveErrorFields = {
 
 export type MinecraftJavaSaveErrorPath = string & Brand.Brand<'MinecraftJavaSaveErrorPath'>
 
-const toMinecraftJavaSaveErrorPath = Brand.make<MinecraftJavaSaveErrorPath>(
-  (value) => typeof value === 'string' || 'error path must be a string',
-)
 
 const MinecraftJavaSaveErrorBase: new (
   args: MinecraftJavaSaveErrorFields,
@@ -38,20 +35,14 @@ export const minecraftJavaSaveError = (
       try: () => String(reason),
       catch: () => new TypeError('error reason could not be formatted'),
     })
-    const brandedReason = yield* Result.mapError(
-      ValidationMessage.result(reasonText),
-      () => new TypeError('error reason is not a valid validation message'),
-    )
+    const brandedReason = Brand.nominal<ValidationMessage>()(reasonText)
     if (path === undefined) return new MinecraftJavaSaveError({ operation, reason: brandedReason })
 
     const pathText = yield* Result.try({
       try: () => String(path),
       catch: () => new TypeError('error path could not be formatted'),
     })
-    const brandedPath = yield* Result.mapError(
-      toMinecraftJavaSaveErrorPath.result(pathText),
-      () => new TypeError('error path is not a valid string'),
-    )
+    const brandedPath = Brand.nominal<MinecraftJavaSaveErrorPath>()(pathText)
     return new MinecraftJavaSaveError({ operation, reason: brandedReason, path: brandedPath })
   })
 

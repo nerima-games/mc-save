@@ -12,9 +12,6 @@ export const MINECRAFT_COMPRESSION = {
 export type MinecraftCompression = keyof typeof MINECRAFT_COMPRESSION
 export type MinecraftCompressionByteLimit = number & Brand.Brand<'MinecraftCompressionByteLimit'>
 
-const toMinecraftCompressionByteLimit = Brand.make<MinecraftCompressionByteLimit>((value) =>
-  Number.isSafeInteger(value) && value >= 0 || 'compression byte limit must be a non-negative safe integer',
-)
 
 export const MINECRAFT_COMPRESSION_MAX_BYTES: number = 64 * 1024 * 1024
 
@@ -113,10 +110,7 @@ function assertCompression(value: unknown, operation: MinecraftCompressionError[
 const resolveLimit = (value: unknown, name: string, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<MinecraftCompressionByteLimit, MinecraftCompressionError> => {
   const resolved = value === undefined ? MINECRAFT_COMPRESSION_MAX_BYTES : value
   return typeof resolved === 'number' && Number.isSafeInteger(resolved) && resolved >= 0
-    ? Result.mapError(
-        toMinecraftCompressionByteLimit.result(resolved),
-        () => compressionError(operation, compression, `${name} must be a non-negative safe integer`),
-      )
+    ? Result.succeed(Brand.nominal<MinecraftCompressionByteLimit>()(resolved))
     : Result.fail(compressionError(operation, compression, `${name} must be a non-negative safe integer`))
 }
 

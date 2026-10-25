@@ -251,6 +251,7 @@ describe('Minecraft Anvil region codec', () => {
     )
     expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), { maxBytes: ANVIL_HEADER_BYTES - 1 }))
     expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), { maxBytes: ANVIL_MAX_REGION_BYTES + 1 }))
+    expectAnvilError(() => encodeAnvilRegion(anvilRegion(emptySlots()), { maxBytes: null }))
     expectAnvilError(() => encodeAnvilRegion(anvilRegion(slotsWith(0, valid), timestamps()), { maxBytes: ANVIL_HEADER_BYTES }))
 
     const mutatedRegion = anvilRegion(slotsWith(0, valid), timestamps())
@@ -270,6 +271,7 @@ describe('Minecraft Anvil region codec', () => {
     expectAnvilError(() => decodeAnvilRegion(new Uint8Array(3 * ANVIL_SECTOR_BYTES), { maxBytes: ANVIL_HEADER_BYTES }))
     expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), { maxBytes: ANVIL_HEADER_BYTES - 1 }))
     expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), { maxBytes: ANVIL_MAX_REGION_BYTES + 1 }))
+    expectAnvilError(() => decodeAnvilRegion(new Uint8Array(ANVIL_HEADER_BYTES), { maxBytes: null }))
     // A typed array backed by a SharedArrayBuffer passes every size/shape check above
     // (it is still `instanceof Uint8Array`) but its `.buffer` is not an `ArrayBuffer`,
     // which `DataView`'s constructor requires.

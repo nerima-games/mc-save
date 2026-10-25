@@ -49,9 +49,15 @@ const minecraftWorldGenSettingsPath = (...args: Parameters<typeof api.minecraftW
 describe('Minecraft Anvil path calculations', () => {
   it('returns Result failures for invalid branded inputs', () => {
     expect(Result.isFailure(api.parseMinecraftPathSegment('../escape'))).toBe(true)
+    expect(Result.isFailure(api.parseMinecraftPathSegment(null))).toBe(true)
     expect(Result.isFailure(api.parseMinecraftRelativePath('village//house'))).toBe(true)
+    expect(Result.isFailure(api.parseMinecraftRelativePath(null))).toBe(true)
     expect(Result.isFailure(api.parseMinecraftDimension('example:../path'))).toBe(true)
+    expect(Result.isFailure(api.parseMinecraftDimension('example:one:two'))).toBe(true)
+    expect(Result.isFailure(api.parseMinecraftDimension(null))).toBe(true)
     expect(Result.isFailure(api.parseMinecraftMapId(-1))).toBe(true)
+    expect(Result.isFailure(api.parseMinecraftMapId(null))).toBe(true)
+    expect(Result.isFailure(api.minecraftDimensionDirectory(null))).toBe(true)
   })
 
   it('maps the three official dimension names to save directories', () => {

@@ -25,7 +25,7 @@ import {
   isMinecraftNbtDocument,
 } from '../src/domain/minecraft-nbt.js'
 import { assertLong, tagId } from '../src/domain/minecraft-nbt-codec-support.js'
-import { resolveNbtCodecOptions, type ResolvedNbtCodecOptions } from '../src/domain/minecraft-nbt-codec-options.js'
+import { nbtError, resolveNbtCodecOptions, type ResolvedNbtCodecOptions } from '../src/domain/minecraft-nbt-codec-options.js'
 import { decodeNbtBytes } from '../src/domain/minecraft-nbt-decoding.js'
 import { encodeNbtDocument } from '../src/domain/minecraft-nbt-encoding.js'
 import { isMinecraftNbtTag } from '../src/domain/minecraft-nbt-validation.js'
@@ -309,6 +309,7 @@ describe('Minecraft NBT factories and codec', () => {
     expect(new NbtFormatError({ reason: 'payload', offset: 4 }).message).toBe(
       'NBT data is invalid at byte offset 4: payload',
     )
+    expect(nbtError({ toString: () => 'formatted reason' }).reason).toBe('formatted reason')
   })
 
   it('decodes a SharedArrayBuffer-backed input after copying it', () => {

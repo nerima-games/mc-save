@@ -34,6 +34,8 @@ describe('Minecraft modified UTF-8 codec', () => {
   })
 
   it('maps unreadable input and empty iterator elements to TypeError results', () => {
+    expect(Result.isFailure(encodeModifiedUtf8(null))).toBe(true)
+
     const unreadableInput = new Uint8Array([0x61])
     Object.defineProperty(unreadableInput, 'slice', {
       value: () => {

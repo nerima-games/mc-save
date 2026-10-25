@@ -132,6 +132,8 @@ describe('Minecraft compression API', () => {
     await expectCompressionError(decompressMinecraft(input, 'none', { maxInputBytes: 2 }))
     await expectCompressionError(decompressMinecraft(input, 'none', { maxOutputBytes: 2 }))
     await expectCompressionError(compressMinecraft(input, 'none', { maxInputBytes: -1 }))
+    await expectCompressionError(compressMinecraft(input, 'none', { maxInputBytes: null }))
+    await expectCompressionError(decompressMinecraft(input, 'none', { maxOutputBytes: null }))
     await expectCompressionError(compressMinecraft(input, 'none', { maxOutputBytes: Number.NaN }))
     await expectCompressionError(decompressMinecraft(input, 'none', { maxInputBytes: Number.MAX_SAFE_INTEGER + 1 }))
   })

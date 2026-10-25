@@ -5,11 +5,6 @@ import { nbtError } from './minecraft-nbt-codec-options.js'
 
 export type NbtPayloadTagType = Exclude<NbtTagType, 'end'>
 
-const nbtTagId = Brand.make<NbtTagId>((value) =>
-  Number.isInteger(value) && value >= 0 && value <= 12 || 'NBT tag id is out of range',
-)
-const nbtInteger = Brand.make<NbtInteger>((value) => Number.isSafeInteger(value) || 'NBT integer must be safe')
-
 export const tagTypeFromId = (id: unknown): Option.Option<NbtTagType> => {
   switch (id) {
     case NBT_TAG_IDS.end:
@@ -45,7 +40,7 @@ export const tagTypeFromId = (id: unknown): Option.Option<NbtTagType> => {
 
 export const tagId = (type: NbtTagType): Result.Result<NbtTagId, NbtFormatError> =>
   Object.prototype.hasOwnProperty.call(NBT_TAG_IDS, type)
-    ? Result.mapError(nbtTagId.result(NBT_TAG_IDS[type]), () => nbtError(`unknown NBT tag type ${String(type)}`))
+    ? Result.succeed(Brand.nominal<NbtTagId>()(NBT_TAG_IDS[type]))
     : Result.fail(nbtError(`unknown NBT tag type ${String(type)}`))
 
 export const assertInteger = (
@@ -68,7 +63,7 @@ export const assertInteger = (
   ) {
     return Result.fail(nbtError(`${String(name)} must be an integer in [${String(minimum)}, ${String(maximum)}]`))
   }
-  return Result.mapError(nbtInteger.result(value), () => nbtError(`${name} must be a safe integer`))
+  return Result.succeed(Brand.nominal<NbtInteger>()(value))
 }
 
 export const assertLong = (value: bigint): Result.Result<bigint, NbtFormatError> =>

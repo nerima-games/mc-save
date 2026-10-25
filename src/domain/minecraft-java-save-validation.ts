@@ -9,7 +9,6 @@ import {
 } from './anvil-region.js'
 import { isMinecraftJsonValue } from './minecraft-java-save-json.js'
 import { isMinecraftNbtDocument } from './minecraft-nbt-validation.js'
-import { parseMinecraftJavaSaveFilePath } from './minecraft-java-save-paths.js'
 import type {
   MinecraftJavaDataFile,
   MinecraftJavaPlayerDataFile,
@@ -32,12 +31,8 @@ import type { MinecraftRegionStorage } from './minecraft-paths.js'
 
 export type MinecraftJavaSaveFileCountLimit = number & Brand.Brand<'MinecraftJavaSaveFileCountLimit'>
 
-const toMinecraftJavaSaveFileCountLimit = Brand.make<MinecraftJavaSaveFileCountLimit>(
-  (value) => Number.isSafeInteger(value) && value >= 0 || 'file count limit must be a non-negative safe integer',
-)
-
 export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES: MinecraftJavaSaveFileCountLimit =
-  toMinecraftJavaSaveFileCountLimit(100_000)
+  Brand.nominal<MinecraftJavaSaveFileCountLimit>()(100_000)
 export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES: SaveMaxBytes = SaveMaxBytes(64 * 1024 * 1024)
 export const MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES: SaveMaxBytes = SaveMaxBytes(512 * 1024 * 1024)
 
@@ -129,10 +124,8 @@ const snapshotValue = (value: unknown, ancestors: WeakSet<object>): SnapshotOutc
   return { ok: true, value: output }
 }
 
-const checkedValidationError = (reason: string, path?: string): MinecraftJavaSaveValidationError => {
-  const error = minecraftJavaSaveError('validate', reason, path)
-  return Result.isSuccess(error) ? error.success : error.failure
-}
+const checkedValidationError = (reason: string, path?: string): MinecraftJavaSaveValidationError =>
+  Result.merge(minecraftJavaSaveError('validate', reason, path))
 
 const snapshotUntrusted = (value: unknown, label: string): Result.Result<unknown, MinecraftJavaSaveValidationError> =>
   Result.gen(function* () {
@@ -196,10 +189,7 @@ const requireRelativePath = (value: unknown, label: string): Result.Result<Minec
   if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) {
     return failValidation(`${label} contains an unsafe path segment`, value)
   }
-  return Result.mapError(
-    parseMinecraftJavaSaveFilePath(value),
-    () => checkedValidationError(`${label} contains an unsafe path segment`),
-  )
+  return Result.succeed(Brand.nominal<MinecraftJavaSaveFilePath>()(value))
 }
 
 const optionalSafeInteger = (
@@ -277,13 +267,13 @@ const assertOptionLimit = <Limit extends number>(
   name: string,
   value: unknown,
   fallback: Limit,
-  make: (value: number) => Result.Result<Limit, unknown>,
+  make: (value: number) => Limit,
 ): Result.Result<Limit, MinecraftJavaSaveValidationError> => {
   const resolved = value === undefined ? fallback : value
   if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < 0) {
     return failValidation(`${name} must be a non-negative safe integer`)
   }
-  return Result.mapError(make(resolved), () => checkedValidationError(`${name} must be a non-negative safe integer`))
+  return Result.succeed(make(resolved))
 }
 
 export const resolveMinecraftJavaSaveOptions = (
@@ -309,19 +299,19 @@ export const resolveMinecraftJavaSaveOptions = (
         'maxFiles',
         record?.['maxFiles'],
         MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES,
-        (value) => toMinecraftJavaSaveFileCountLimit.result(value),
+        (value) => Brand.nominal<MinecraftJavaSaveFileCountLimit>()(value),
       ),
       maxFileBytes: yield* assertOptionLimit(
         'maxFileBytes',
         record?.['maxFileBytes'],
         MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES,
-        (value) => SaveMaxBytes.result(value),
+        (value) => Brand.nominal<SaveMaxBytes>()(value),
       ),
       maxTotalBytes: yield* assertOptionLimit(
         'maxTotalBytes',
         record?.['maxTotalBytes'],
         MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES,
-        (value) => SaveMaxBytes.result(value),
+        (value) => Brand.nominal<SaveMaxBytes>()(value),
       ),
       ...(nbt === undefined ? {} : { nbt }),
       compressedNbt,
@@ -572,19 +562,19 @@ const readFileLimits = (value: unknown): Result.Result<FileLimits, MinecraftJava
       'maxFiles',
       record['maxFiles'],
       MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILES,
-      (limit) => toMinecraftJavaSaveFileCountLimit.result(limit),
+      (limit) => Brand.nominal<MinecraftJavaSaveFileCountLimit>()(limit),
     )
     const maxFileBytes = yield* assertOptionLimit(
       'maxFileBytes',
       record['maxFileBytes'],
       MINECRAFT_JAVA_SAVE_DEFAULT_MAX_FILE_BYTES,
-      (limit) => SaveMaxBytes.result(limit),
+      (limit) => Brand.nominal<SaveMaxBytes>()(limit),
     )
     const maxTotalBytes = yield* assertOptionLimit(
       'maxTotalBytes',
       record['maxTotalBytes'],
       MINECRAFT_JAVA_SAVE_DEFAULT_MAX_TOTAL_BYTES,
-      (limit) => SaveMaxBytes.result(limit),
+      (limit) => Brand.nominal<SaveMaxBytes>()(limit),
     )
     return { maxFiles, maxFileBytes, maxTotalBytes }
   })

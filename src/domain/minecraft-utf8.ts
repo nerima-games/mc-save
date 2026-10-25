@@ -4,13 +4,9 @@ import { Brand, Result } from 'effect'
 
 export type JavaModifiedUtf8String = string & Brand.Brand<'JavaModifiedUtf8String'>
 
-const toJavaModifiedUtf8String = Brand.make<JavaModifiedUtf8String>(
-  (value) => typeof value === 'string' || 'modified UTF-8 text must be a string',
-)
-
 export const parseModifiedUtf8String = (value: unknown): Result.Result<JavaModifiedUtf8String, TypeError> =>
   typeof value === 'string'
-    ? Result.mapError(toJavaModifiedUtf8String.result(value), () => new TypeError('modified UTF-8 text must be a string'))
+    ? Result.succeed(Brand.nominal<JavaModifiedUtf8String>()(value))
     : Result.fail(new TypeError('modified UTF-8 text must be a string'))
 
 const CONTINUATION_MASK = 0xc0

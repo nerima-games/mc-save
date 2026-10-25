@@ -16,13 +16,6 @@ import {
 export const MINECRAFT_EXTERNAL_CHUNK_DEFAULT_MAX_BYTES: number = 64 * 1024 * 1024
 export type MinecraftExternalChunkByteLimit = number & Brand.Brand<'MinecraftExternalChunkByteLimit'>
 
-const toMinecraftExternalChunkByteLimit = Brand.make<MinecraftExternalChunkByteLimit>((value) =>
-  Number.isSafeInteger(value) && value >= 0 || 'external chunk byte limit must be a non-negative safe integer',
-)
-const toAnvilLocalCoordinate = Brand.make<AnvilLocalCoordinate>((value) =>
-  Number.isInteger(value) && value >= 0 && value < ANVIL_REGION_CHUNK_SIDE || 'Anvil local coordinate is out of range',
-)
-
 type MinecraftRegionFilesErrorFields = { readonly reason: string }
 
 const MinecraftRegionFilesErrorBase: new (args: MinecraftRegionFilesErrorFields) =>
@@ -62,10 +55,7 @@ const regionFilesError = (reason: string): MinecraftRegionFilesError => new Mine
 const resolveExternalMaxBytes = (maxBytes: unknown): Result.Result<MinecraftExternalChunkByteLimit, MinecraftRegionFilesError> => {
   const resolved = maxBytes === undefined ? MINECRAFT_EXTERNAL_CHUNK_DEFAULT_MAX_BYTES : maxBytes
   return typeof resolved === 'number' && Number.isSafeInteger(resolved) && resolved >= 0
-    ? Result.mapError(
-        toMinecraftExternalChunkByteLimit.result(resolved),
-        () => regionFilesError('maxExternalBytes must be a non-negative safe integer'),
-      )
+    ? Result.succeed(Brand.nominal<MinecraftExternalChunkByteLimit>()(resolved))
     : Result.fail(regionFilesError('maxExternalBytes must be a non-negative safe integer'))
 }
 
@@ -76,10 +66,7 @@ const assertLocalCoordinate = (
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value >= ANVIL_REGION_CHUNK_SIDE) {
     return Result.fail(regionFilesError(`${name} must be an integer between 0 and 31`))
   }
-  return Result.mapError(
-    toAnvilLocalCoordinate.result(value),
-    () => regionFilesError(`${name} must be an integer between 0 and 31`),
-  )
+  return Result.succeed(Brand.nominal<AnvilLocalCoordinate>()(value))
 }
 
 const assertPayload = (payload: Uint8Array): Result.Result<void, MinecraftRegionFilesError> =>
@@ -236,14 +223,11 @@ export const decodeMinecraftRegionFiles = (
     const records = new Map<number, Uint8Array>()
     for (const file of externalSnapshot) {
       if (file === null || typeof file !== 'object') return yield* Result.fail(regionFilesError('external chunk file must be an object'))
-      const fields = yield* Result.try({
-        try: () => ({
-          localX: Reflect.get(file, 'localX'),
-          localZ: Reflect.get(file, 'localZ'),
-          bytes: Reflect.get(file, 'bytes'),
-        }),
-        catch: () => regionFilesError('external chunk file must be readable'),
-      })
+      const fields = {
+        localX: Reflect.get(file, 'localX'),
+        localZ: Reflect.get(file, 'localZ'),
+        bytes: Reflect.get(file, 'bytes'),
+      }
       const { localX, localZ, bytes } = fields
       const key = yield* externalFileKey(localX, localZ)
       if (records.has(key)) {

@@ -108,6 +108,7 @@ describe('Minecraft external region file codec', () => {
     expectRegionFilesError(() =>
       encodeMinecraftExternalChunkFile(payload, { maxBytes: Number.MAX_SAFE_INTEGER + 1 }),
     )
+    expectRegionFilesError(() => encodeMinecraftExternalChunkFile(payload, { maxBytes: null }))
     expect(() => encodeMinecraftExternalChunkFile(payload, { maxBytes: Number.MAX_SAFE_INTEGER })).not.toThrow()
 
     expectRegionFilesError(() => {
@@ -117,6 +118,7 @@ describe('Minecraft external region file codec', () => {
     expect(decodeMinecraftExternalChunkFile(valid)).toStrictEqual(new Uint8Array())
     expectRegionFilesError(() => decodeMinecraftExternalChunkFile(validPayloadFile, { maxBytes: 2 }))
     expectRegionFilesError(() => decodeMinecraftExternalChunkFile(validPayloadFile, { maxBytes: -1 }))
+    expectRegionFilesError(() => decodeMinecraftExternalChunkFile(validPayloadFile, { maxBytes: null }))
   })
 
   it('maps external option and byte-copy failures to the public error type', () => {
@@ -215,12 +217,17 @@ describe('Minecraft external region file codec', () => {
       // @ts-expect-error -- deliberately not an AnvilRegion (chunks is not an array)
       encodeMinecraftRegionFiles({ chunks: null, timestamps: [] })
     })
+    expectRegionFilesError(() => encodeMinecraftRegionFiles(emptyRegion(), null))
+    expectRegionFilesError(() => decodeMinecraftRegionFiles(emptyBytes, [], null))
     expectRegionFilesError(() => {
       decodeMinecraftRegionFiles(emptyBytes, null)
     })
     expectRegionFilesError(() => {
       decodeMinecraftRegionFiles(files.region, [null])
     })
+    expectRegionFilesError(() =>
+      decodeMinecraftRegionFiles(emptyBytes, [{ localX: 0, localZ: 0, bytes: [1] }]),
+    )
     expectRegionFilesError(() =>
       decodeMinecraftRegionFiles(files.region, [{ ...externalFile, localX: -1 }]),
     )

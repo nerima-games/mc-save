@@ -1,6 +1,6 @@
 import { Brand, Data, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
-import { encodeModifiedUtf8, parseModifiedUtf8String } from './minecraft-utf8.js'
+import { encodeModifiedUtf8 } from './minecraft-utf8.js'
 import type { JavaModifiedUtf8String } from './minecraft-utf8.js'
 import { isMinecraftNbtTag } from './minecraft-nbt-validation.js'
 
@@ -31,18 +31,6 @@ export type NbtInteger = number & Brand.Brand<'NbtInteger'>
 export type NbtTagId = number & Brand.Brand<'NbtTagId'>
 export type NbtStringValue = JavaModifiedUtf8String
 export type NbtName = JavaModifiedUtf8String
-
-const toNbtByteValue = Brand.make<NbtByteValue>((value) =>
-  Number.isInteger(value) && value >= -0x80 && value <= 0x7f || 'NBT byte is out of range',
-)
-const toNbtShortValue = Brand.make<NbtShortValue>((value) =>
-  Number.isInteger(value) && value >= -0x8000 && value <= 0x7fff || 'NBT short is out of range',
-)
-const toNbtIntValue = Brand.make<NbtIntValue>((value) =>
-  Number.isInteger(value) && value >= -0x80000000 && value <= 0x7fffffff || 'NBT int is out of range',
-)
-const toNbtFloatValue = Brand.make<NbtFloatValue>(() => true)
-const toNbtDoubleValue = Brand.make<NbtDoubleValue>(() => true)
 
 type NbtFormatErrorFields = {
   readonly reason: string
@@ -172,7 +160,7 @@ export const nbtEnd = (): NbtEnd => ({ type: 'end' })
 export const nbtByte = (value: unknown): Result.Result<NbtByte, NbtFormatError> =>
   Result.map(
     Result.flatMap(integerInRange('byte', value, -0x80, 0x7f), (checked) =>
-      Result.mapError(toNbtByteValue.result(checked), () => nbtError('byte value is out of range')),
+      Result.succeed(Brand.nominal<NbtByteValue>()(checked)),
     ),
     (checked) => ({ type: 'byte', value: checked }),
   )
@@ -180,7 +168,7 @@ export const nbtByte = (value: unknown): Result.Result<NbtByte, NbtFormatError> 
 export const nbtShort = (value: unknown): Result.Result<NbtShort, NbtFormatError> =>
   Result.map(
     Result.flatMap(integerInRange('short', value, -0x8000, 0x7fff), (checked) =>
-      Result.mapError(toNbtShortValue.result(checked), () => nbtError('short value is out of range')),
+      Result.succeed(Brand.nominal<NbtShortValue>()(checked)),
     ),
     (checked) => ({ type: 'short', value: checked }),
   )
@@ -188,7 +176,7 @@ export const nbtShort = (value: unknown): Result.Result<NbtShort, NbtFormatError
 export const nbtInt = (value: unknown): Result.Result<NbtInt, NbtFormatError> =>
   Result.map(
     Result.flatMap(integerInRange('int', value, -0x80000000, 0x7fffffff), (checked) =>
-      Result.mapError(toNbtIntValue.result(checked), () => nbtError('int value is out of range')),
+      Result.succeed(Brand.nominal<NbtIntValue>()(checked)),
     ),
     (checked) => ({ type: 'int', value: checked }),
   )
@@ -203,18 +191,12 @@ export const nbtLong = (value: bigint): Result.Result<NbtLong, NbtFormatError> =
 
 export const nbtFloat = (value: unknown): Result.Result<NbtFloat, NbtFormatError> =>
   typeof value === 'number'
-    ? Result.map(
-        Result.mapError(toNbtFloatValue.result(value), () => nbtError('float value must be a number')),
-        (checked) => ({ type: 'float', value: checked }),
-      )
+    ? Result.succeed({ type: 'float', value: Brand.nominal<NbtFloatValue>()(value) })
     : Result.fail(nbtError('float value must be a number'))
 
 export const nbtDouble = (value: unknown): Result.Result<NbtDouble, NbtFormatError> =>
   typeof value === 'number'
-    ? Result.map(
-        Result.mapError(toNbtDoubleValue.result(value), () => nbtError('double value must be a number')),
-        (checked) => ({ type: 'double', value: checked }),
-      )
+    ? Result.succeed({ type: 'double', value: Brand.nominal<NbtDoubleValue>()(value) })
     : Result.fail(nbtError('double value must be a number'))
 
 export const nbtByteArray = (value: Uint8Array): Result.Result<NbtByteArray, NbtFormatError> =>
@@ -234,7 +216,7 @@ export const nbtString = (value: unknown): Result.Result<NbtString, NbtFormatErr
     }
     return {
       type: 'string',
-      value: yield* Result.mapError(parseModifiedUtf8String(value), () => nbtError('string value must be a string')),
+      value: Brand.nominal<NbtStringValue>()(value),
     }
   })
 
@@ -297,7 +279,7 @@ export const nbtCompound = (
         return yield* Result.fail(nbtError('compound name exceeds the 65535-byte Java modified UTF-8 limit'))
       }
       copied.push([
-        yield* Result.mapError(parseModifiedUtf8String(name), () => nbtError('compound names must be strings')),
+        Brand.nominal<NbtName>()(name),
         snapshot,
       ])
     }
@@ -316,7 +298,7 @@ export const nbtIntArray = (
       }
       const checked = yield* integerInRange('intArray', entry, -0x80000000, 0x7fffffff)
       copied.push(
-        yield* Result.mapError(toNbtIntValue.result(checked), () => nbtError('intArray value must be an integer')),
+        Brand.nominal<NbtIntValue>()(checked),
       )
     }
     return { type: 'intArray', value: copied }
@@ -354,7 +336,7 @@ export const nbtDocument = (name: unknown, root: unknown): Result.Result<NbtDocu
       return yield* Result.fail(nbtError('document name exceeds the 65535-byte Java modified UTF-8 limit'))
     }
     return {
-      name: yield* Result.mapError(parseModifiedUtf8String(name), () => nbtError('document name must be a string')),
+      name: Brand.nominal<NbtName>()(name),
       root: snapshot,
     }
   })

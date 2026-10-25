@@ -105,10 +105,7 @@ const coordinate = (
   if (!isSafeCoordinateText(value)) {
     return Result.fail(new TypeError(`${label} must be a canonical safe integer`))
   }
-  return Result.mapError(
-    ChunkAxis.result(Number(value)),
-    () => new TypeError(`${label} must be a canonical safe integer`),
-  )
+  return Result.succeed(Brand.nominal<ReturnType<typeof ChunkAxis>>()(Number(value)))
 }
 
 const dimensionFromDirectory = (
@@ -120,9 +117,7 @@ const dimensionFromDirectory = (
   if (namespace === undefined || path.length === 0 || !isSafeDimensionPart(namespace)) return Result.succeed(undefined)
   if (path.some((part) => !isSafeDimensionPart(part))) return Result.succeed(undefined)
   const identifier: `${string}:${string}` = `${namespace}:${path.join('/')}`
-  return Result.map(
-    Result.mapError(parseMinecraftDimension(identifier), () => new TypeError('dimension path is invalid')),
-    (dimension) => {
+  return Result.map(parseMinecraftDimension(identifier), (dimension) => {
       switch (dimension) {
         case 'minecraft:overworld':
           return 'overworld'

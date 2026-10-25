@@ -24,19 +24,9 @@ export type Lz4ByteLimit = number & Brand.Brand<'Lz4ByteLimit'>
 export type Lz4UInt32 = number & Brand.Brand<'Lz4UInt32'>
 type Lz4ErrorReason = string & Brand.Brand<'Lz4ErrorReason'>
 
-const toLz4ByteOffset = Brand.make<Lz4ByteOffset>((value) =>
-  Number.isSafeInteger(value) && value >= 0 || 'LZ4 byte offset must be a non-negative safe integer',
-)
-const toLz4ByteLength = Brand.make<Lz4ByteLength>((value) =>
-  Number.isSafeInteger(value) && value >= 0 || 'LZ4 byte length must be a non-negative safe integer',
-)
-const toLz4ByteLimit = Brand.make<Lz4ByteLimit>((value) =>
-  Number.isSafeInteger(value) && value >= 0 || 'LZ4 byte limit must be a non-negative safe integer',
-)
 const toLz4UInt32 = Brand.make<Lz4UInt32>((value) =>
   Number.isInteger(value) && value >= 0 && value <= 0xffffffff || 'value must be an unsigned 32-bit integer',
 )
-const toLz4ErrorReason = Brand.make<Lz4ErrorReason>(() => true)
 
 const PRIME_1 = 0x9e3779b1
 const PRIME_2 = 0x85ebca77
@@ -70,15 +60,16 @@ export type Lz4Operation = MinecraftLz4Error['operation']
 
 export const lz4Error = (operation: Lz4Operation, reason: unknown, offset?: unknown): MinecraftLz4Error => {
   const message = typeof reason === 'string' ? reason : String(reason)
-  const brandedReason = toLz4ErrorReason(message)
+  const brandedReason = Brand.nominal<Lz4ErrorReason>()(message)
   if (offset === undefined) return new MinecraftLz4Error({ operation, reason: brandedReason })
   if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
-    return new MinecraftLz4Error({ operation, reason: toLz4ErrorReason(`${message} (invalid error offset)` ) })
+    return new MinecraftLz4Error({ operation, reason: Brand.nominal<Lz4ErrorReason>()(`${message} (invalid error offset)`) })
   }
-  const brandedOffset = toLz4ByteOffset.result(offset)
-  return Result.isSuccess(brandedOffset)
-    ? new MinecraftLz4Error({ operation, reason: brandedReason, offset: brandedOffset.success })
-    : new MinecraftLz4Error({ operation, reason: toLz4ErrorReason(`${message} (invalid error offset)`) })
+  return new MinecraftLz4Error({
+    operation,
+    reason: brandedReason,
+    offset: Brand.nominal<Lz4ByteOffset>()(offset),
+  })
 }
 
 export const resolveMaxBytes = (operation: Lz4Operation, maxBytes: unknown): Result.Result<Lz4ByteLimit, MinecraftLz4Error> => {
@@ -86,7 +77,7 @@ export const resolveMaxBytes = (operation: Lz4Operation, maxBytes: unknown): Res
   if (typeof resolved !== 'number' || !Number.isSafeInteger(resolved) || resolved < 0) {
     return Result.fail(lz4Error(operation, 'maxBytes must be a non-negative safe integer'))
   }
-  return Result.mapError(toLz4ByteLimit.result(resolved), () => lz4Error(operation, 'maxBytes must be a non-negative safe integer'))
+  return Result.succeed(Brand.nominal<Lz4ByteLimit>()(resolved))
 }
 
 export const assertInput = (operation: Lz4Operation, input: Uint8Array): Result.Result<void, MinecraftLz4Error> =>
@@ -107,16 +98,13 @@ export const readUint32LittleEndian = (bytes: Uint8Array, offset: unknown): Resu
     if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
       return yield* Result.fail(lz4Error('decode', 'readUint32LittleEndian: offset must be a non-negative safe integer'))
     }
-    const checkedOffset = yield* Result.mapError(
-      toLz4ByteOffset.result(offset),
-      () => lz4Error('decode', 'readUint32LittleEndian: offset must be a non-negative safe integer'),
-    )
+    const checkedOffset = Brand.nominal<Lz4ByteOffset>()(offset)
     const first = yield* assertByte(bytes[checkedOffset], checkedOffset)
     const second = yield* assertByte(bytes[checkedOffset + 1], checkedOffset + 1)
     const third = yield* assertByte(bytes[checkedOffset + 2], checkedOffset + 2)
     const fourth = yield* assertByte(bytes[checkedOffset + 3], checkedOffset + 3)
     const value = (first | (second << 8) | (third << 16) | (fourth << 24)) >>> 0
-    return yield* Result.mapError(toLz4UInt32.result(value), () => lz4Error('decode', 'decoded integer is out of range'))
+    return Brand.nominal<Lz4UInt32>()(value)
   })
 
 const writeUint32LittleEndian = (bytes: Uint8Array, offset: number, value: number): void => {
@@ -135,10 +123,7 @@ export const xxHash32 = (bytes: Uint8Array, seed: unknown): Result.Result<Lz4UIn
     if (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
       return yield* Result.fail(lz4Error('encode', 'seed must be an unsigned 32-bit integer'))
     }
-    const checkedSeed = yield* Result.mapError(
-      toLz4UInt32.result(seed),
-      () => lz4Error('encode', 'seed must be an unsigned 32-bit integer'),
-    )
+    const checkedSeed = Brand.nominal<Lz4UInt32>()(seed)
     let offset = 0
     let accumulator: number
 
@@ -178,7 +163,7 @@ export const xxHash32 = (bytes: Uint8Array, seed: unknown): Result.Result<Lz4UIn
     accumulator ^= accumulator >>> 13
     accumulator = Math.imul(accumulator, PRIME_3) >>> 0
     accumulator ^= accumulator >>> 16
-    return yield* Result.mapError(toLz4UInt32.result(accumulator >>> 0), () => lz4Error('encode', 'hash is out of range'))
+    return Brand.nominal<Lz4UInt32>()(accumulator >>> 0)
   })
 
 export class ByteWriter {
@@ -244,24 +229,13 @@ export const writeLength = (
   length: unknown,
 ): Result.Result<void, MinecraftLz4Error> =>
   Result.gen(function* () {
-    if (typeof length !== 'number') {
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length < 0) {
       return yield* Result.fail(lz4Error('encode', 'LZ4 length must be a non-negative safe integer'))
     }
-    let remaining = yield* Result.mapError(
-      toLz4ByteLength.result(length),
-      () => lz4Error('encode', 'LZ4 length must be a non-negative safe integer'),
-    )
+    let remaining = Brand.nominal<Lz4ByteLength>()(length)
     while (remaining >= 255) {
-      const byte = yield* Result.mapError(ByteValue.result(255), () => lz4Error('encode', 'invalid LZ4 length byte'))
-      yield* writer.writeByte(byte)
-      remaining = yield* Result.mapError(
-        toLz4ByteLength.result(remaining - 255),
-        () => lz4Error('encode', 'LZ4 length must be a non-negative safe integer'),
-      )
+      yield* writer.writeByte(Brand.nominal<ByteValue>()(255))
+      remaining = Brand.nominal<Lz4ByteLength>()(remaining - 255)
     }
-    const finalByte = yield* Result.mapError(
-      ByteValue.result(remaining),
-      () => lz4Error('encode', 'invalid LZ4 length byte'),
-    )
-    yield* writer.writeByte(finalByte)
+    yield* writer.writeByte(Brand.nominal<ByteValue>()(remaining))
   })

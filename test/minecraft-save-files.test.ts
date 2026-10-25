@@ -40,9 +40,11 @@ describe('Minecraft save files', () => {
     expect(MINECRAFT_NBT_FILE_COMPRESSION).toBe('gzip')
 
     const encoded = await encodeMinecraftNbtFile(original)
+    const encodedWithEmptyOptions = await encodeMinecraftNbtFile(original, {})
 
     expect(encoded.byteLength).toBeGreaterThan(0)
     expect(await decodeMinecraftNbtFile(encoded)).toStrictEqual(original)
+    expect(await decodeMinecraftNbtFile(encodedWithEmptyOptions, {})).toStrictEqual(original)
   })
 
   it('passes explicit compression and limits to the shared NBT codec', async () => {
@@ -76,6 +78,20 @@ describe('Minecraft save files', () => {
     await expect(encodeMinecraftNbtFile(original, { compression: null })).rejects.toThrow('Minecraft NBT file compression is invalid')
     // @ts-expect-error -- explicit null compression must not select the gzip default
     await expect(decodeMinecraftNbtFile(new Uint8Array(), { compression: null })).rejects.toThrow('Minecraft NBT file compression is invalid')
+    // @ts-expect-error -- explicit null NBT options must not be treated as omitted
+    await expect(encodeMinecraftNbtFile(original, { compression: 'none', nbt: null })).rejects.toThrow(
+      'Minecraft NBT codec options must be an object',
+    )
+    // @ts-expect-error -- explicit null NBT options must not be treated as omitted
+    await expect(decodeMinecraftNbtFile(new Uint8Array(), { compression: 'none', nbt: null })).rejects.toThrow(
+      'Minecraft NBT codec options must be an object',
+    )
+    await expect(encodeMinecraftNbtFile(original, { compression: 'none', nbt: { maxBytes: null } })).rejects.toThrow(
+      'maxBytes must be a safe integer',
+    )
+    await expect(decodeMinecraftNbtFile(new Uint8Array(), { compression: 'none', nbt: { maxBytes: null } })).rejects.toThrow(
+      'maxBytes must be a safe integer',
+    )
   })
 
   it('maps unreadable NBT file options to typed failures', async () => {

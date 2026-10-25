@@ -219,6 +219,44 @@ describe('fixedUint8Array', () => {
       expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(byteLength(1)))([256]))).toBe(true)
     }),
   )
+
+  effect('keeps invalid wire arrays and unreadable byte snapshots as schema failures', () =>
+    Effect.sync(() => {
+      const schema = fixedUint8Array(byteLength(2))
+
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(null))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)([1]))).toBe(true)
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(null))).toBe(true)
+
+      const unreadableWireArray = new Proxy([1, 2], {
+        get: (target, key, receiver) => {
+          if (key === '0') throw new Error('wire byte is unreadable')
+          return Reflect.get(target, key, receiver)
+        },
+      })
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)(unreadableWireArray))).toBe(true)
+
+      const wrongLengthBytes = new Uint8Array([1])
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(wrongLengthBytes))).toBe(true)
+
+      const unreadableBytes = new Uint8Array([1, 2])
+      Object.defineProperty(unreadableBytes, Symbol.iterator, {
+        get: () => {
+          throw new Error('byte iterator is unreadable')
+        },
+      })
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(unreadableBytes))).toBe(true)
+
+      const invalidIteratorBytes = new Uint8Array([1, 2])
+      Object.defineProperty(invalidIteratorBytes, Symbol.iterator, {
+        value: function* () {
+          yield 256
+          yield 2
+        },
+      })
+      expect(Result.isFailure(Schema.encodeUnknownResult(schema)(invalidIteratorBytes))).toBe(true)
+    }),
+  )
 })
 
 /**

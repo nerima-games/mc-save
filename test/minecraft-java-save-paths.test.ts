@@ -19,8 +19,10 @@ describe('Minecraft Java save path parsing', () => {
 
   it('rejects unsafe file paths before classifying otherwise unknown files', () => {
     for (const value of [
+      '',
       '../level.dat',
       '/level.dat',
+      'a'.repeat(4097),
       'data//minecraft/raids.dat',
       'data/minecraft/',
       'data\\minecraft\\raids.dat',
@@ -28,6 +30,8 @@ describe('Minecraft Java save path parsing', () => {
     ]) {
       expect(() => parseMinecraftJavaSavePath(value)).toThrow(TypeError)
     }
+
+    expect(() => parseMinecraftJavaSavePath(null)).toThrow(TypeError)
   })
 
   it('parses player data and json paths and rejects malformed shapes', () => {
@@ -104,6 +108,8 @@ describe('Minecraft Java save path parsing', () => {
     expect(parseMinecraftJavaSavePath('region/r.0.0.mca').kind).toBe('extra')
     // enough segments, but the directory prefix does not start with 'dimensions'
     expect(parseMinecraftJavaSavePath('notdimensions/example/moon/region/r.0.0.mca').kind).toBe('extra')
+    // Dimension path components are lowercase identifiers; an otherwise safe uppercase namespace stays unclassified.
+    expect(parseMinecraftJavaSavePath('dimensions/Example/moon/region/r.0.0.mca').kind).toBe('extra')
     // traversal in a dimension directory is rejected before the unknown-path fallback
     expect(() => parseMinecraftJavaSavePath('dimensions/../moon/region/r.0.0.mca')).toThrow(TypeError)
     // unknown storage directory
@@ -185,6 +191,7 @@ describe('Minecraft Java save path parsing', () => {
       name: 'world_clock/..json',
       path: 'data/minecraft/world_clock/..json',
     })
+    expect(parseMinecraftJavaSavePath('data/minecraft/bad name.dat').kind).toBe('extra')
     // world clock: wrong top-level directory or missing marker segment
     expect(parseMinecraftJavaSavePath('other/minecraft/world_clock/day.json').kind).toBe('extra')
     // world clock traversal is rejected before the data-path fallback
@@ -209,5 +216,13 @@ describe('Minecraft Java save path parsing', () => {
       path: 'datapacks/example/pack.mcmeta',
     })
     expect(parseMinecraftJavaSavePath('unknown.bin')).toStrictEqual({ kind: 'extra', path: 'unknown.bin' })
+  })
+
+  it('keeps safe file paths with unsupported directory identifiers as extra files', () => {
+    expect(parseMinecraftJavaSavePath('dimensions/example/Bad/region/r.0.0.mca').kind).toBe('extra')
+    expect(parseMinecraftJavaSavePath('dimensions/example/Bad/data/minecraft/state.dat').kind).toBe('extra')
+    expect(parseMinecraftJavaSavePath('data/bad namespace/state.dat').kind).toBe('extra')
+    expect(parseMinecraftJavaSavePath('data/bad namespace/world_clock/day.json').kind).toBe('extra')
+    expect(parseMinecraftJavaSavePath('generated/bad namespace/structure/house.nbt').kind).toBe('extra')
   })
 })
