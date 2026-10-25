@@ -26,11 +26,7 @@ const encodeSegment = (
           try: () => encodeURIComponent(checkedSegment),
           catch: () => ValidationMessage('save key segment could not be encoded'),
         }),
-        (encoded) =>
-          Result.mapError(
-            EncodedSaveKeySegment.result(encoded),
-            () => ValidationMessage('encoded save key segment must be a string'),
-          ),
+        (value) => Result.succeed(Brand.nominal<EncodedSaveKeySegment>()(value)),
       ),
   )
 
@@ -67,8 +63,5 @@ export const saveKeyForWorld = (
     encodedSegments.push(encoded.success)
   }
 
-  return Result.mapError(
-    SaveKey.result(encodedSegments.join('/')),
-    () => ValidationMessage('save key must be non-blank'),
-  )
+  return Result.succeed(SaveKey(encodedSegments.join('/')))
 }

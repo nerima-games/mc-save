@@ -135,7 +135,7 @@ describe('save slice bundles', () => {
         ),
       )
 
-      expect(error).toBeDefined()
+      expect(error).toBeInstanceOf(Schema.SchemaError)
       expect(restored).toEqual([])
     }),
   )
@@ -228,7 +228,21 @@ describe('save slice bundles', () => {
     Effect.gen(function* () {
       const error = yield* Effect.flip(decodeSaveBundle({ '': { version: version(1), data: {} } }))
 
-      expect(error).toBeDefined()
+      expect(error).toBeInstanceOf(Schema.SchemaError)
+    }),
+  )
+
+  effect('rejects an explicit null version and an omitted data field', () =>
+    Effect.gen(function* () {
+      const malformedEntries: ReadonlyArray<unknown> = [
+        { inventory: { version: null, data: {} } },
+        { inventory: { version: version(1) } },
+      ]
+
+      for (const input of malformedEntries) {
+        const error = yield* Effect.flip(decodeSaveBundle(input))
+        expect(error).toBeInstanceOf(Schema.SchemaError)
+      }
     }),
   )
 
@@ -236,7 +250,7 @@ describe('save slice bundles', () => {
     Effect.gen(function* () {
       for (const input of [null, 'not a bundle', []]) {
         const error = yield* Effect.flip(decodeSaveBundle(input))
-        expect(error).toBeDefined()
+        expect(error).toBeInstanceOf(Schema.SchemaError)
       }
     }),
   )

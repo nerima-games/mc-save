@@ -3,7 +3,14 @@ import { effect } from './support/effect-test.js'
 import { Effect, Result, Schema, SchemaGetter, SchemaTransformation } from 'effect'
 import { SaveEnvelopeSchema, type SaveEnvelope } from '../src/domain/envelope.js'
 import { SaveMaxBytes } from '../src/domain/brand-types.js'
-import { sealAndValidateSaveEnvelope, sealSaveEnvelope, validateSaveEnvelope } from '../src/domain/integrity.js'
+import {
+  DEFAULT_MAX_SAVE_BYTES,
+  resolveSaveMaxBytes,
+  sealAndValidateSaveEnvelope,
+  sealSaveEnvelope,
+  validateSaveEnvelope,
+  validateSaveExtensions,
+} from '../src/domain/integrity.js'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
 import { saveEnvelope } from './support/save-envelope.js'
 
@@ -261,6 +268,53 @@ describe('migrating a save written by an earlier build', () => {
       const formatError = yield* Effect.flip(decodeSave(LEGACY_V3_FORMAT, wrongFormat))
       expect(formatError._tag).toBe('SaveDecodeError')
       expect(formatError.reason).toContain('belongs to format')
+    }),
+  )
+})
+
+describe('save boundary defaults', () => {
+  effect('uses the max-byte default only when the input is omitted', () =>
+    Effect.sync(() => {
+      const omitted = resolveSaveMaxBytes(undefined, CURRENT_CHUNK_FORMAT.name, CURRENT_CHUNK_FORMAT.version)
+      const explicitNull = resolveSaveMaxBytes(null, CURRENT_CHUNK_FORMAT.name, CURRENT_CHUNK_FORMAT.version)
+
+      expect(omitted).toEqual(Result.succeed(DEFAULT_MAX_SAVE_BYTES))
+      expect(Result.isFailure(explicitNull)).toBe(true)
+      if (Result.isFailure(explicitNull)) {
+        expect(explicitNull.failure.reason).toBe('maxBytes must be a non-negative safe integer')
+      }
+    }),
+  )
+
+  effect('rejects explicit null maxBytes at the envelope validation boundary', () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(
+        validateSaveEnvelope(oldFixtureEnvelope, null as unknown as SaveMaxBytes),
+      )
+
+      expect(error._tag).toBe('SaveDecodeError')
+      expect(error.reason).toBe('maxBytes must be a non-negative safe integer')
+    }),
+  )
+
+  effect('treats omitted extensions as absent and explicit null as malformed', () =>
+    Effect.sync(() => {
+      const omitted = validateSaveExtensions(
+        CURRENT_CHUNK_FORMAT.name,
+        CURRENT_CHUNK_FORMAT.version,
+        undefined,
+      )
+      const explicitNull = validateSaveExtensions(
+        CURRENT_CHUNK_FORMAT.name,
+        CURRENT_CHUNK_FORMAT.version,
+        null,
+      )
+
+      expect(omitted).toEqual(Result.succeed(undefined))
+      expect(Result.isFailure(explicitNull)).toBe(true)
+      if (Result.isFailure(explicitNull)) {
+        expect(explicitNull.failure.reason).toBe('save envelope extensions must be a plain string-keyed object')
+      }
     }),
   )
 })

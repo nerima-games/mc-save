@@ -2,7 +2,7 @@ import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
 import { Effect, Result, Schema } from 'effect'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
-import { JsonFieldName } from '../src/domain/brand-types.js'
+import { JsonFieldName, type JsonFieldName as JsonFieldNameType } from '../src/domain/brand-types.js'
 import {
   encodeUndefinedAsNull,
   restoreNullAsUndefined,
@@ -73,6 +73,39 @@ describe('undefinedFieldsAsNull', () => {
 
       expect(Result.isFailure(Schema.decodeUnknownResult(OptionalUnknownSchema)(value))).toBe(true)
       expect(Result.isFailure(Schema.encodeUnknownResult(OptionalUnknownSchema)(value))).toBe(true)
+    }),
+  )
+
+  effect('rejects field names that fail brand validation in both schema directions', () =>
+    Effect.sync(() => {
+      const invalidFields = [null as unknown as JsonFieldNameType]
+
+      expect(Result.isFailure(restoreNullAsUndefined(invalidFields)({ note: null }))).toBe(true)
+      expect(Result.isFailure(encodeUndefinedAsNull(invalidFields)({ note: undefined }))).toBe(true)
+    }),
+  )
+
+  effect('returns a schema issue when the field-name iterable cannot be read', () =>
+    Effect.sync(() => {
+      const unreadableFields = {
+        [Symbol.iterator]: () => {
+          throw new Error('unreadable field names')
+        },
+      } as unknown as ReadonlyArray<JsonFieldNameType>
+
+      const decoded = restoreNullAsUndefined(unreadableFields)({ note: null })
+      const encoded = encodeUndefinedAsNull(unreadableFields)({ note: undefined })
+
+      expect(Result.isFailure(decoded)).toBe(true)
+      expect(Result.isFailure(encoded)).toBe(true)
+    }),
+  )
+
+  effect('rejects explicit null in a domain field typed as string or undefined', () =>
+    Effect.sync(() => {
+      const result = Schema.encodeUnknownResult(WidgetSchema)({ id: 'a', note: null, tags: [] })
+
+      expect(Result.isFailure(result)).toBe(true)
     }),
   )
 })
