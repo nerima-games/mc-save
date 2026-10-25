@@ -2,7 +2,7 @@
 
 This inventory compares the base and head package declaration entry points, using the TypeScript compiler checker over each packaged `dist/index.d.ts` and its referenced declaration files. It records root exports, callable and constructor signatures (including parameter names, optional/rest status, parameter and return types, generic bounds, and overload additions/removals), class/interface heritage, type-alias definitions, effective public members, static class members, index signatures, field optionality, readonly status, exported constant types, and discriminated-union variant fields. Overloads are compared as sets; unmatched overloads are listed separately, and order-only changes are identified separately.
 
-Base declarations: `origin/main` at `81a84f2d9cc435da711bf04288e71bd764325dad`. Head declarations: source snapshot `a459f859a73b5831b198fc350df7d632219951ec`, emitted by `pnpm build`.
+Base declarations: `origin/main` at `81a84f2d9cc435da711bf04288e71bd764325dad`. Head declarations: source snapshot `43fefd14963ecde90652bdf28e682ebcb0537d7c`, emitted by `pnpm build`.
 Base: 227 root export names. Head: 312. Added: 86. Removed: 1.
 Changed common-export callable sets: 99 exports. Changed constructor sets: 3 exports. Changed effective members: 92. Changed static members: 2. Changed alias definitions: 44. Changed heritage: 1. Changed index signatures: 0. Changed exported constant types: 12. Changed union variant fields: 42.
 
