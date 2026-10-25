@@ -93,6 +93,19 @@ describe('undefinedFieldsAsNull', () => {
     }),
   )
 
+  effect('maps a throwing prototype trap to typed failures in both directions', () =>
+    Effect.sync(() => {
+      const unreadablePrototype = new Proxy({}, {
+        getPrototypeOf: () => {
+          throw new Error('prototype cannot be read')
+        },
+      })
+
+      expect(Result.isFailure(Schema.decodeUnknownResult(OptionalUnknownSchema)(unreadablePrototype))).toBe(true)
+      expect(Result.isFailure(Schema.encodeUnknownResult(OptionalUnknownSchema)(unreadablePrototype))).toBe(true)
+    }),
+  )
+
   effect('rejects field names that fail brand validation in both schema directions', () =>
     Effect.sync(() => {
       const invalidFields = [null]
