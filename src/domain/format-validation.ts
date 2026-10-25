@@ -1,21 +1,33 @@
-import { FIRST_VERSION } from './envelope.js'
+import { Result } from 'effect'
+import { SaveFormatName, SaveFormatVersion, ValidationMessage } from './brand-types.js'
+
+export type SaveFormatIdentity = Readonly<{
+  name: SaveFormatName
+  version: SaveFormatVersion
+}>
 
 export const validateFormatDefinition = (spec: {
-  readonly name: string
-  readonly version: number
-}): ReadonlyArray<string> => {
-  const problems: Array<string> = []
-
-  if (!Number.isSafeInteger(spec.version) || spec.version < FIRST_VERSION) {
-    problems.push(
-      `version must be a safe integer >= ${FIRST_VERSION}, received ${spec.version}`,
-    )
-    return problems
+  readonly name: unknown
+  readonly version: unknown
+}): Result.Result<SaveFormatIdentity, ReadonlyArray<ValidationMessage>> => {
+  if (typeof spec.name !== 'string' || typeof spec.version !== 'number') {
+    return Result.fail([
+      ValidationMessage('format name and version have invalid types'),
+    ])
   }
 
-  if (spec.name.trim().length === 0) {
-    problems.push('name must be a non-blank string')
+  const name = SaveFormatName.result(spec.name)
+  const version = SaveFormatVersion.result(spec.version)
+  const problems: Array<ValidationMessage> = []
+
+  if (Result.isFailure(name)) {
+    problems.push(ValidationMessage('name must be a non-blank string'))
+  }
+  if (Result.isFailure(version)) {
+    problems.push(ValidationMessage('version must be a safe integer >= 1'))
   }
 
-  return problems
+  return Result.isFailure(name) || Result.isFailure(version)
+    ? Result.fail(problems)
+    : Result.succeed({ name: name.success, version: version.success })
 }

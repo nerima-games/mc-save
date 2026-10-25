@@ -3,6 +3,7 @@ import { effect } from './support/effect-test.js'
 import { Effect, Option, Result, Schema } from 'effect'
 import { DuplicateFormatError } from '../src/domain/errors.js'
 import { defineFormat as defineFormatResult } from '../src/domain/format.js'
+import { SaveFormatName } from '../src/domain/brand-types.js'
 import {
   describeRegistry,
   emptyRegistry,
@@ -14,10 +15,12 @@ import {
 
 const formatNamed = (name: string, version = 1): RegisteredSaveFormat =>
   Result.getOrThrow(defineFormatResult({
-    name,
+    name: Result.getOrThrow(SaveFormatName.result(name)),
     version,
     schema: Schema.Unknown,
   }))
+
+const formatName = (name: string) => Result.getOrThrow(SaveFormatName.result(name))
 
 describe('registerFormat', () => {
   effect('adds a format to an empty registry, findable by name afterwards', () =>
@@ -27,7 +30,7 @@ describe('registerFormat', () => {
 
       expect(Result.isSuccess(result)).toBe(true)
       if (Result.isSuccess(result)) {
-        expect(lookupFormat(result.success, 'mc-save/test/alpha')).toStrictEqual(Option.some(alpha))
+        expect(lookupFormat(result.success, formatName('mc-save/test/alpha'))).toStrictEqual(Option.some(alpha))
       }
     }),
   )
@@ -69,8 +72,8 @@ describe('registerFormats', () => {
 
       expect(Result.isSuccess(result)).toBe(true)
       if (Result.isSuccess(result)) {
-        expect(lookupFormat(result.success, 'mc-save/test/alpha')).toStrictEqual(Option.some(alpha))
-        expect(lookupFormat(result.success, 'mc-save/test/beta')).toStrictEqual(Option.some(beta))
+        expect(lookupFormat(result.success, formatName('mc-save/test/alpha'))).toStrictEqual(Option.some(alpha))
+        expect(lookupFormat(result.success, formatName('mc-save/test/beta'))).toStrictEqual(Option.some(beta))
       }
     }),
   )
@@ -97,13 +100,13 @@ describe('lookupFormat', () => {
       const registry = registerFormat(emptyRegistry, alpha)
       if (Result.isFailure(registry)) throw new Error('setup: registration unexpectedly failed')
 
-      expect(lookupFormat(registry.success, 'mc-save/test/alpha')).toStrictEqual(Option.some(alpha))
+      expect(lookupFormat(registry.success, formatName('mc-save/test/alpha'))).toStrictEqual(Option.some(alpha))
     }),
   )
 
   effect('reports an unregistered name as none', () =>
     Effect.sync(() => {
-      expect(lookupFormat(emptyRegistry, 'mc-save/test/never-registered')).toStrictEqual(Option.none())
+      expect(lookupFormat(emptyRegistry, formatName('mc-save/test/never-registered'))).toStrictEqual(Option.none())
     }),
   )
 })
@@ -143,12 +146,12 @@ describe('describeRegistry', () => {
       // opaque type, so `describeRegistry` still has to behave sensibly if a
       // caller builds one another way (e.g. composing two registries' entries
       // under fresh keys), and that is exactly what this constructs.
-      const tiedName = 'mc-save/test/tied'
+      const tiedName = formatName('mc-save/test/tied')
       const first = formatNamed(tiedName, 1)
       const second = formatNamed(tiedName, 1)
-      const tied = new Map([
-        ['slot-a', first],
-        ['slot-b', second],
+      const tied = new Map<SaveFormatName, RegisteredSaveFormat>([
+        [formatName('mc-save/test/slot-a'), first],
+        [formatName('mc-save/test/slot-b'), second],
       ])
 
       const described = describeRegistry(tied)

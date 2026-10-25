@@ -12,8 +12,10 @@ import { effect } from './support/effect-test.js'
 import {
   decodeSaveBundle,
   encodeSaveBundle,
+  resolveSaveMigrationPath,
   restoreSaveBundle,
   SaveBundleSnapshotError,
+  SaveMigrationPathMissing,
   SaveSliceBundleEntryMissing,
   SaveSliceNotRegistered,
 } from '../src/domain/save-slices.js'
@@ -33,6 +35,27 @@ const upgrade = defineSaveMigration(
 )
 
 describe('save slice bundles', () => {
+  effect('keeps an identity migration path empty and fails when no forward path exists', () =>
+    Effect.gen(function* () {
+      const id = sliceId('inventory')
+      const sameVersionPath = yield* resolveSaveMigrationPath({
+        id,
+        migrations: [],
+        fromVersion: version(2),
+        toVersion: version(2),
+      })
+      expect(sameVersionPath).toEqual([])
+
+      const missingPath = yield* Effect.flip(resolveSaveMigrationPath({
+        id,
+        migrations: [],
+        fromVersion: version(1),
+        toVersion: version(2),
+      }))
+      expect(missingPath).toBeInstanceOf(SaveMigrationPathMissing)
+    }),
+  )
+
   effect('snapshots and encodes each registered slice', () =>
     Effect.gen(function* () {
       const registration: SaveSliceRegistration<typeof CurrentSchema, never, never> = {

@@ -1,9 +1,11 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
 import { Effect, Result, Schema, SchemaGetter, SchemaTransformation } from 'effect'
-import { SaveEnvelopeSchema, saveEnvelope, type SaveEnvelope } from '../src/domain/envelope.js'
+import { SaveEnvelopeSchema, type SaveEnvelope } from '../src/domain/envelope.js'
+import { SaveMaxBytes } from '../src/domain/brand-types.js'
 import { sealAndValidateSaveEnvelope, sealSaveEnvelope, validateSaveEnvelope } from '../src/domain/integrity.js'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
+import { saveEnvelope } from './support/save-envelope.js'
 
 /**
  * `decodeSave` accepts only the declared format version. Consumers that need
@@ -168,7 +170,7 @@ describe('migrating a save written by an earlier build', () => {
 
       // Step 4: re-encode under the CURRENT format and seal for storage.
       const draft = yield* encodeSave(CURRENT_CHUNK_FORMAT, migrated)
-      const sealed = yield* sealAndValidateSaveEnvelope(draft, undefined, 16 * 1024 * 1024)
+      const sealed = yield* sealAndValidateSaveEnvelope(draft, undefined, SaveMaxBytes(16 * 1024 * 1024))
       expect(sealed.version).toBe(2)
 
       // Step 5: the current code reads the migrated envelope back correctly.

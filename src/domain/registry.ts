@@ -15,6 +15,7 @@
  * tests have to reset global state between cases.
  */
 import { Option, Result } from 'effect'
+import type { SaveFormatName, SaveFormatVersion } from './brand-types.js'
 import { DuplicateFormatError } from './errors.js'
 
 /**
@@ -25,12 +26,12 @@ import { DuplicateFormatError } from './errors.js'
  * typed `SaveFormat` value they defined when they need to encode or decode.
  */
 export type RegisteredSaveFormat = {
-  readonly name: string
-  readonly version: number
+  readonly name: SaveFormatName
+  readonly version: SaveFormatVersion
   readonly schema: unknown
 }
 
-export type FormatRegistry = ReadonlyMap<string, RegisteredSaveFormat>
+export type FormatRegistry = ReadonlyMap<SaveFormatName, RegisteredSaveFormat>
 
 export const emptyRegistry: FormatRegistry = new Map()
 
@@ -56,7 +57,7 @@ export const registerFormats = (
     Result.succeed(registry),
   )
 
-export const lookupFormat = (registry: FormatRegistry, name: string): Option.Option<RegisteredSaveFormat> =>
+export const lookupFormat = (registry: FormatRegistry, name: SaveFormatName): Option.Option<RegisteredSaveFormat> =>
   Option.fromUndefinedOr(registry.get(name))
 
 /**
@@ -67,7 +68,7 @@ export const lookupFormat = (registry: FormatRegistry, name: string): Option.Opt
  */
 export const describeRegistry = (
   registry: FormatRegistry,
-): ReadonlyArray<{ readonly name: string; readonly version: number }> =>
+): ReadonlyArray<{ readonly name: SaveFormatName; readonly version: SaveFormatVersion }> =>
   [...registry.values()]
     .map((format) => ({ name: format.name, version: format.version }))
     .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))

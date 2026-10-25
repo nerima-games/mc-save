@@ -1,10 +1,12 @@
 import { describe, expect } from 'vitest'
 import { Effect, Option, Result, Schema } from 'effect'
+import { StorageOperation } from '../src/domain/brand-types.js'
 import { effect } from './support/effect-test.js'
 import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import { loadFrom } from '../src/domain/persistence.js'
 import { saveBatch, saveBatchEntry } from '../src/domain/batch-save.js'
 import { InMemoryStorageLayer, SaveKey, StoragePort, failingStorageLayer } from '../src/domain/storage-port.js'
+import { jsonExtensions } from './support/save-envelope.js'
 
 const defineFormat = <A, I>(spec: {
   readonly name: string
@@ -41,7 +43,12 @@ describe('saveBatch', () => {
     Effect.gen(function* () {
       yield* saveBatch([
         saveBatchEntry(World, WORLD_KEY, { seed: 42, name: 'overworld' }),
-        saveBatchEntry(Settings, SETTINGS_KEY, { difficulty: 'hard' as const }, { extensions: { source: 'test' } }),
+        saveBatchEntry(
+          Settings,
+          SETTINGS_KEY,
+          { difficulty: 'hard' as const },
+          { extensions: jsonExtensions({ source: 'test' }) },
+        ),
       ])
 
       const world = yield* loadFrom(World, WORLD_KEY)
@@ -82,6 +89,8 @@ describe('saveBatch', () => {
       if (error._tag !== 'StorageError') throw error
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('unavailable')
-    }).pipe(Effect.provide(failingStorageLayer('unavailable'))),
+    }).pipe(
+      Effect.provide(failingStorageLayer(Result.getOrThrow(StorageOperation.result('unavailable')))),
+    ),
   )
 })
