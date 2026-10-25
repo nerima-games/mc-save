@@ -10,6 +10,7 @@ import {
 } from '../src/domain/indexeddb-storage.js'
 import { loadFrom, saveTo } from '../src/domain/persistence.js'
 import { SaveKey, StoragePort } from '../src/domain/storage-port.js'
+import { makeIdbDatabaseName } from '../src/domain/indexeddb-surface.js'
 import { makeFakeIndexedDb } from './fake-indexeddb.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
@@ -18,7 +19,7 @@ const defineFormat = <A, I>(spec: {
   readonly version: number
   readonly schema: Schema.Codec<A, I>
 }) => Result.getOrThrow(defineFormatResult(spec))
-const DATABASE = 'mc-save/test/worlds'
+const DATABASE = makeIdbDatabaseName('mc-save/test/worlds')
 const A = SaveKey('alpha')
 const B = SaveKey('beta')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/idb', 1, payload)

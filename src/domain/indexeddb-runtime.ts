@@ -1,5 +1,10 @@
 import { Effect, Result } from 'effect'
 import {
+  IndexedDbDatabaseName,
+  StorageOperation,
+  type IndexedDbDatabaseName as IndexedDbDatabaseNameType,
+} from './brand-types.js'
+import {
   INSERTION_INDEX_NAME,
   isQuotaExceededCause,
   QUOTA_EXCEEDED_MARKER,
@@ -9,26 +14,51 @@ import {
 } from './indexeddb-layout.js'
 import type { IdbDatabase, IdbObjectStore, IdbRequest } from './indexeddb-surface.js'
 import { StorageError } from './errors.js'
+import { SaveKey, type SaveKey as SaveKeyType } from './save-key.js'
 
-const storageError = (operation: string, key: string | undefined, cause: unknown): StorageError =>
+type IndexedDbOperation = StorageOperation | `indexeddb.${string}`
+type IndexedDbErrorKey = IndexedDbDatabaseNameType | SaveKeyType
+
+const OPEN_OPERATION = StorageOperation('indexeddb.open')
+const TRANSACTION_OPERATION = StorageOperation('indexeddb.transaction')
+const operationWithSuffix = (
+  operation: StorageOperation,
+  suffix: ':blocked' | ':incomplete' | typeof QUOTA_EXCEEDED_MARKER,
+): StorageOperation => StorageOperation(`${operation}${suffix}`)
+
+const storageError = (
+  operation: StorageOperation,
+  key: IndexedDbErrorKey | undefined,
+  cause: unknown,
+): StorageError =>
   new StorageError({
     operation,
     ...(key === undefined ? {} : { key }),
     ...(cause === undefined ? {} : { cause }),
   })
 
-const failureFor = (operation: string, key: string | undefined, cause: unknown): StorageError =>
+const failureFor = (
+  operation: StorageOperation,
+  key: IndexedDbErrorKey | undefined,
+  cause: unknown,
+): StorageError =>
   cause instanceof StorageError
     ? cause
     : storageError(
-        isQuotaExceededCause(cause) ? `${operation}${QUOTA_EXCEEDED_MARKER}` : operation,
+        isQuotaExceededCause(cause) ? operationWithSuffix(operation, QUOTA_EXCEEDED_MARKER) : operation,
         key,
         cause,
       )
 
 export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<IdbDatabase, StorageError> =>
   Effect.callback<IdbDatabase, StorageError>((resume) => {
-    const operation = 'indexeddb.open'
+    const operation = OPEN_OPERATION
+    const checkedName = IndexedDbDatabaseName.result(options.databaseName)
+    if (Result.isFailure(checkedName)) {
+      resume(Effect.fail(storageError(operation, undefined, checkedName.failure)))
+      return
+    }
+    const databaseName = checkedName.success
     let settled = false
     const settle = (outcome: Effect.Effect<IdbDatabase, StorageError>): void => {
       if (settled) return
@@ -36,11 +66,11 @@ export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<Id
       resume(outcome)
     }
     const opened = Result.try({
-      try: () => options.factory.open(options.databaseName, STORE_LAYOUT_VERSION),
+      try: () => options.factory.open(databaseName, STORE_LAYOUT_VERSION),
       catch: (cause) => cause,
     })
     if (Result.isFailure(opened)) {
-      settle(Effect.fail(failureFor(operation, options.databaseName, opened.failure)))
+      settle(Effect.fail(failureFor(operation, databaseName, opened.failure)))
       return
     }
     const request = opened.success
@@ -67,15 +97,15 @@ export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<Id
               try: () => request.transaction?.abort(),
               catch: () => undefined,
             })
-            settle(Effect.fail(failureFor(operation, options.databaseName, cause)))
+            settle(Effect.fail(failureFor(operation, databaseName, cause)))
           }
         }
         request.onblocked = () => {
           settle(
             Effect.fail(
               storageError(
-                `${operation}:blocked`,
-                options.databaseName,
+                operationWithSuffix(operation, ':blocked'),
+                databaseName,
                 'another connection is holding an older version of this database open',
               ),
             ),
@@ -86,7 +116,7 @@ export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<Id
             try: () => request.error,
             catch: (cause) => cause,
           })
-          settle(Effect.fail(failureFor(operation, options.databaseName, Result.isFailure(error) ? error.failure : error.success)))
+          settle(Effect.fail(failureFor(operation, databaseName, Result.isFailure(error) ? error.failure : error.success)))
         }
         request.onsuccess = () => {
           const openedDatabase = Result.try({
@@ -94,7 +124,7 @@ export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<Id
             catch: (cause) => cause,
           })
           if (Result.isFailure(openedDatabase)) {
-            settle(Effect.fail(failureFor(operation, options.databaseName, openedDatabase.failure)))
+            settle(Effect.fail(failureFor(operation, databaseName, openedDatabase.failure)))
             return
           }
           const database = openedDatabase.success
@@ -112,7 +142,7 @@ export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<Id
           })
           if (Result.isFailure(versionChange)) {
             Result.try({ try: () => database.close(), catch: () => undefined })
-            settle(Effect.fail(failureFor(operation, options.databaseName, versionChange.failure)))
+            settle(Effect.fail(failureFor(operation, databaseName, versionChange.failure)))
             return
           }
           settle(Effect.succeed(database))
@@ -121,15 +151,15 @@ export const openDatabase = (options: IndexedDbStorageOptions): Effect.Effect<Id
       catch: (cause) => cause,
     })
     if (Result.isFailure(handlers)) {
-      settle(Effect.fail(failureFor(operation, options.databaseName, handlers.failure)))
+      settle(Effect.fail(failureFor(operation, databaseName, handlers.failure)))
     }
   })
 
 export const runTransaction = <A>(
   database: IdbDatabase,
   mode: 'readonly' | 'readwrite',
-  operation: string,
-  key: string | undefined,
+  operation: IndexedDbOperation,
+  key: SaveKeyType | undefined,
   start: (
     store: IdbObjectStore,
     deliver: (value: A) => void,
@@ -138,6 +168,18 @@ export const runTransaction = <A>(
   ) => void,
 ): Effect.Effect<A, StorageError> =>
   Effect.callback<A, StorageError>((resume) => {
+    const checkedKey = key === undefined ? Result.succeed(undefined) : SaveKey.result(key)
+    if (Result.isFailure(checkedKey)) {
+      resume(Effect.fail(storageError(TRANSACTION_OPERATION, undefined, checkedKey.failure)))
+      return
+    }
+    const validKey = checkedKey.success
+    const checkedOperation = StorageOperation.result(operation)
+    if (Result.isFailure(checkedOperation)) {
+      resume(Effect.fail(storageError(TRANSACTION_OPERATION, validKey, checkedOperation.failure)))
+      return
+    }
+    const validOperation = checkedOperation.success
     let settled = false
     let delivered: { readonly value: A } | undefined
     let pendingFailure: { readonly cause: unknown } | undefined
@@ -148,7 +190,7 @@ export const runTransaction = <A>(
     }
     const settleFailure = (cause: unknown): void => {
       pendingFailure ??= { cause }
-      settle(Effect.fail(failureFor(operation, key, pendingFailure.cause)))
+      settle(Effect.fail(failureFor(validOperation, validKey, pendingFailure.cause)))
     }
     let abort: (cause: unknown) => void = settleFailure
     const fail = (cause: unknown): void => {
@@ -195,8 +237,8 @@ export const runTransaction = <A>(
             settle(
               Effect.fail(
                 storageError(
-                  `${operation}:incomplete`,
-                  key,
+                  operationWithSuffix(validOperation, ':incomplete'),
+                  validKey,
                   'the transaction committed without producing a result',
                 ),
               ),

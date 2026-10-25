@@ -1,6 +1,7 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
-import { Effect } from 'effect'
+import { Effect, Option, Result } from 'effect'
+import { StorageOperation } from '../src/domain/brand-types.js'
 import { StorageError } from '../src/domain/errors.js'
 import { failingStorageLayer, InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { storagePortContract } from './storage-port-contract.js'
@@ -24,7 +25,46 @@ import { sealedTestEnvelope } from './support/save-envelope.js'
 const A = SaveKey('alpha')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/contract', 1, payload)
 
+const applyUntrustedArgument = <This, Args extends ReadonlyArray<unknown>, A, E, R>(
+  method: (this: This, ...args: Args) => Effect.Effect<A, E, R>,
+  receiver: This,
+  argumentsList: ReadonlyArray<unknown>,
+): Effect.Effect<A, E, R> => Reflect.apply(method, receiver, argumentsList)
+
 storagePortContract('in-memory', () => InMemoryStorageLayer)
+
+describe('in-memory runtime inputs', () => {
+  effect('rejects an undefined envelope before it can be stored as an absent value', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      const error = yield* Effect.flip(applyUntrustedArgument(storage.put, storage, [A, undefined]))
+
+      expect(error).toMatchObject({ _tag: 'StorageError', operation: 'in-memory.put' })
+      expect(yield* storage.get(A)).toStrictEqual(Option.none())
+      expect(yield* storage.keys).toStrictEqual([])
+    }).pipe(Effect.provide(InMemoryStorageLayer)),
+  )
+
+  effect('rejects sparse and undefined batch arrays without changing stored values', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(A, envelope({ original: true }))
+      const malformedInputs: ReadonlyArray<unknown> = [new Array<unknown>(1), [undefined]]
+
+      for (const input of malformedInputs) {
+        const commitError = yield* Effect.flip(applyUntrustedArgument(storage.commitBatch, storage, [input]))
+        expect(commitError).toMatchObject({ _tag: 'StorageError', operation: 'in-memory.commitBatch' })
+
+        const readError = yield* Effect.flip(applyUntrustedArgument(storage.readBatch, storage, [input]))
+        expect(readError).toMatchObject({ _tag: 'StorageError', operation: 'in-memory.readBatch' })
+      }
+
+      expect(yield* storage.get(A)).toStrictEqual(Option.some(envelope({ original: true })))
+      expect(yield* storage.get(SaveKey('missing'))).toStrictEqual(Option.none())
+      expect(yield* storage.keys).toStrictEqual([A])
+    }).pipe(Effect.provide(InMemoryStorageLayer)),
+  )
+})
 
 describe('SaveKey', () => {
   effect('rejects a blank key, which several backends accept and then cannot enumerate', () =>
@@ -45,7 +85,9 @@ describe('failingStorageLayer', () => {
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('quota-exceeded')
       expect(error.message).toContain('alpha')
-    }).pipe(Effect.provide(failingStorageLayer('quota-exceeded'))),
+    }).pipe(
+      Effect.provide(failingStorageLayer(Result.getOrThrow(StorageOperation.result('quota-exceeded')))),
+    ),
   )
 
   effect('fails every other method the same way, each naming the operation', () =>
@@ -67,7 +109,9 @@ describe('failingStorageLayer', () => {
       expect(remove.key).toBe('alpha')
       expect(commitBatch.key).toBeUndefined()
       expect(readBatch.key).toBeUndefined()
-    }).pipe(Effect.provide(failingStorageLayer('unavailable'))),
+    }).pipe(
+      Effect.provide(failingStorageLayer(Result.getOrThrow(StorageOperation.result('unavailable')))),
+    ),
   )
 })
 

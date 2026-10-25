@@ -8,10 +8,11 @@ import {
   STORE_LAYOUT_VERSION,
 } from '../src/domain/indexeddb-storage.js'
 import { SaveKey, StoragePort } from '../src/domain/storage-port.js'
+import { makeIdbDatabaseName } from '../src/domain/indexeddb-surface.js'
 import { makeFakeIndexedDb, type FakeIndexedDb } from './fake-indexeddb.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
-const DATABASE = 'mc-save/test/worlds'
+const DATABASE = makeIdbDatabaseName('mc-save/test/worlds')
 const A = SaveKey('alpha')
 const B = SaveKey('beta')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/idb', 1, payload)
@@ -27,7 +28,7 @@ describe('the IndexedDB adapter owns its database and layout', () => {
       yield* Effect.gen(function* () {
         const storage = yield* StoragePort
         yield* storage.put(A, envelope({ world: 1 }))
-      }).pipe(Effect.provide(layerFor(factory, 'a-name-mc-save-did-not-choose')))
+      }).pipe(Effect.provide(layerFor(factory, makeIdbDatabaseName('a-name-mc-save-did-not-choose'))))
 
       expect(factory.databaseNames()).toStrictEqual(['a-name-mc-save-did-not-choose'])
     }),

@@ -20,17 +20,25 @@
  * because it names DOM types those projects deliberately cannot see. It is
  * still linted (`pnpm lint` scans all of `test`).
  */
-import type {
-  IdbDatabase,
-  IdbDomException,
-  IdbFactory,
-  IdbIndex,
-  IdbObjectStore,
-  IdbOpenRequest,
-  IdbRequest,
-  IdbStringList,
-  IdbTransaction,
+import { Option, Result } from 'effect'
+import {
+  makeIdbDatabaseName,
+  makeIdbIndexName,
+  makeIdbKeyPath,
+  makeIdbStoreName,
+  makeIdbVersion,
+  type IdbDatabaseName,
+  type IdbDatabase,
+  type IdbDomException,
+  type IdbFactory,
+  type IdbIndex,
+  type IdbObjectStore,
+  type IdbOpenRequest,
+  type IdbRequest,
+  type IdbStringList,
+  type IdbTransaction,
 } from '../../src/domain/indexeddb-surface.js'
+import { SaveKey } from '../../src/domain/save-key.js'
 
 declare const browserIndexedDb: IDBFactory
 declare const browserOpenRequest: IDBOpenDBRequest
@@ -100,20 +108,22 @@ export const installsHandlersOnTheRealThing = (): void => {
  */
 export const drivesTheRealApiThroughTheNarrowTypes = (): void => {
   const factory: IdbFactory = browserIndexedDb
-  const request = factory.open('mc-save/fixture', 2)
+  const request = factory.open(makeIdbDatabaseName('mc-save/fixture'), makeIdbVersion(2))
 
   request.onupgradeneeded = () => {
     // The upgrade path: the event is UNREADABLE here, on purpose. See the
     // header of `domain/indexeddb-surface.ts`.
     const database = request.result
-    const store = database.objectStoreNames.contains('saves')
-      ? request.transaction?.objectStore('saves')
-      : database.createObjectStore('saves', { keyPath: 'key' })
+    const storeName = makeIdbStoreName('saves')
+    const store = database.objectStoreNames.contains(storeName)
+      ? request.transaction?.objectStore(storeName)
+      : database.createObjectStore(storeName, { keyPath: makeIdbKeyPath('key') })
     if (store === undefined) {
       throw new TypeError('IndexedDB upgrade transaction is unavailable')
     }
-    if (!store.indexNames.contains('by-insertion')) {
-      store.createIndex('by-insertion', 'seq')
+    const indexName = makeIdbIndexName('by-insertion')
+    if (!store.indexNames.contains(indexName)) {
+      store.createIndex(indexName, makeIdbKeyPath('seq'))
     }
   }
 
@@ -123,14 +133,16 @@ export const drivesTheRealApiThroughTheNarrowTypes = (): void => {
       database.close()
     }
 
-    const transaction = database.transaction('saves', 'readwrite')
-    const store = transaction.objectStore('saves')
+    const storeName = makeIdbStoreName('saves')
+    const transaction = database.transaction(storeName, 'readwrite')
+    const store = transaction.objectStore(storeName)
 
-    store.put({ key: 'a', seq: 0, envelope: { format: 'f', version: 1, payload: null } })
-    store.get('a').onsuccess = () => undefined
-    store.delete('a')
+    const key = SaveKey('a')
+    store.put({ key, seq: 0, envelope: { format: 'f', version: 1, payload: null } })
+    store.get(key).onsuccess = () => undefined
+    store.delete(key)
 
-    const index = store.index('by-insertion')
+    const index = store.index(makeIdbIndexName('by-insertion'))
     index.getAllKeys().onsuccess = () => undefined
     index.openCursor(null, 'prev').onsuccess = () => undefined
 
@@ -157,8 +169,19 @@ export const drivesTheRealApiThroughTheNarrowTypes = (): void => {
  * would break if the return type were spelled more tightly than
  * `IDBDatabaseInfo[]`.
  */
-export const enumeratesDatabases = async (): Promise<ReadonlyArray<string>> => {
+export const enumeratesDatabases = async (): Promise<
+  Result.Result<Option.Option<ReadonlyArray<IdbDatabaseName>>, string>
+> => {
   const factory: IdbFactory = browserIndexedDb
-  const listed = (await factory.databases?.()) ?? []
-  return listed.flatMap((entry) => (entry.name === undefined ? [] : [entry.name]))
+  const listed = await factory.databases?.()
+  if (listed === undefined) return Result.succeed(Option.none())
+  const names: Array<IdbDatabaseName> = []
+  for (const entry of listed) {
+    if (entry.name === undefined) continue
+    if (typeof entry.name !== 'string') return Result.fail('IndexedDB database name must be a string')
+    const name = makeIdbDatabaseName.result(entry.name)
+    if (Result.isFailure(name)) return Result.fail(name.failure.message)
+    names.push(name.success)
+  }
+  return Result.succeed(Option.some(names))
 }

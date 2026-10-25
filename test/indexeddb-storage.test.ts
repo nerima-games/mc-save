@@ -17,15 +17,17 @@ import {
   SAVE_STORE_NAME,
   STORE_LAYOUT_VERSION,
 } from '../src/domain/indexeddb-storage.js'
-import type {
-  IdbDatabase,
-  IdbDomException,
-  IdbFactory,
-  IdbObjectStore,
-  IdbOpenRequest,
-  IdbRequest,
-  IdbStringList,
-  IdbTransaction,
+import {
+  makeIdbDatabaseName,
+  makeIdbVersion,
+  type IdbDatabase,
+  type IdbDomException,
+  type IdbFactory,
+  type IdbObjectStore,
+  type IdbOpenRequest,
+  type IdbRequest,
+  type IdbStringList,
+  type IdbTransaction,
 } from '../src/domain/indexeddb-surface.js'
 import { openDatabase, runTransaction } from '../src/domain/indexeddb-runtime.js'
 import { readEnvelope, readKeys, readSequence } from '../src/domain/indexeddb-records.js'
@@ -40,12 +42,18 @@ const defineFormat = <A, I>(spec: {
   readonly version: number
   readonly schema: Schema.Codec<A, I>
 }) => Result.getOrThrow(defineFormatResult(spec))
-const DATABASE = 'mc-save/test/worlds'
+const DATABASE = makeIdbDatabaseName('mc-save/test/worlds')
 const A = SaveKey('alpha')
 const B = SaveKey('beta')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/idb', 1, payload)
 const unsealedEnvelope = (payload: unknown): SaveEnvelope =>
   unsealedTestEnvelope('mc-save/test/idb', 1, payload)
+
+const applyUntrustedArgument = <This, Args extends ReadonlyArray<unknown>, A, E, R>(
+  method: (this: This, ...args: Args) => Effect.Effect<A, E, R>,
+  receiver: This,
+  argumentsList: ReadonlyArray<unknown>,
+): Effect.Effect<A, E, R> => Reflect.apply(method, receiver, argumentsList)
 
 const layerFor = (factory: IdbFactory, databaseName = DATABASE) =>
   indexedDbStorageLayer({ factory, databaseName })
@@ -335,6 +343,37 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('commitBatch and readBatch reject sparse and undefined runtime arrays', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const malformedInputs: ReadonlyArray<unknown> = [new Array<unknown>(1), [undefined]]
+
+      const result = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({ original: true }))
+
+        for (const input of malformedInputs) {
+          const commitError = yield* Effect.flip(applyUntrustedArgument(storage.commitBatch, storage, [input]))
+          expect([commitError._tag, commitError.operation]).toStrictEqual([
+            'StorageError',
+            'indexeddb.commitBatch',
+          ])
+          const readError = yield* Effect.flip(applyUntrustedArgument(storage.readBatch, storage, [input]))
+          expect([readError._tag, readError.operation]).toStrictEqual([
+            'StorageError',
+            'indexeddb.readBatch',
+          ])
+        }
+
+        return factory.recordsOf(DATABASE, SAVE_STORE_NAME)
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(result).toStrictEqual([
+        { key: 'alpha', seq: 0, envelope: envelope({ original: true }) },
+      ])
+    }),
+  )
+
   effect('commitBatch reports a browser abort and rolls the whole checkpoint back', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
@@ -421,7 +460,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
                 close: () => undefined,
                 onversionchange: null,
               }
-              let failure: { readonly name: string; readonly message: string } | null = null
+              let failure: IdbDomException | null = null
               const request: IdbOpenRequest = {
                 result: database,
                 get error() {
@@ -458,7 +497,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     Effect.gen(function* () {
       const openWithAbort = (abort: () => void) =>
         openDatabase({
-          databaseName: `${DATABASE}/upgrade-failure`,
+          databaseName: makeIdbDatabaseName(`${DATABASE}/upgrade-failure`),
           factory: {
             open: () => {
               const names: IdbStringList = {
@@ -538,7 +577,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       yield* first.put(A, envelope({ n: 1 }))
 
       const outcome = yield* Effect.callback<'success' | 'blocked' | 'error'>((resume) => {
-        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION + 1)
+        const request = factory.open(DATABASE, makeIdbVersion(STORE_LAYOUT_VERSION + 1))
         request.onupgradeneeded = () => undefined
         request.onsuccess = () => {
           resume(Effect.succeed('success'))
@@ -580,7 +619,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       const reports: Array<'blocked' | 'success'> = []
       const second = yield* Effect.callback<'success'>((resume) => {
-        const request = factory.open(DATABASE, STORE_LAYOUT_VERSION + 1)
+        const request = factory.open(DATABASE, makeIdbVersion(STORE_LAYOUT_VERSION + 1))
         request.onupgradeneeded = () => undefined
         request.onblocked = () => {
           reports.push('blocked')
@@ -615,7 +654,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       // for `STORE_LAYOUT_VERSION` — is genuinely blocked rather than won
       // outright.
       const blocker = yield* Effect.callback<IdbDatabase>((resume) => {
-        const request = factory.open(DATABASE, 0)
+        const request = factory.open(DATABASE, makeIdbVersion(1))
         request.onupgradeneeded = () => undefined
         request.onsuccess = () => {
           resume(Effect.succeed(request.result))
@@ -707,7 +746,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  effect('a malformed record makes compare-and-set fail as a conflict', () =>
+  effect('a malformed record makes compare-and-set fail with the decode cause', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
       factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
@@ -728,8 +767,9 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       }).pipe(Effect.provide(layerFor(factory)))
 
       expect(error._tag).toBe('StorageError')
-      expect(error.operation).toBe('indexeddb.commitBatch:conflict')
+      expect(error.operation).toBe('indexeddb.commitBatch')
       expect(error.key).toBe('alpha')
+      expect(error.cause).toMatchObject({ _tag: 'SaveDecodeError' })
       expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toHaveLength(1)
     }),
   )
@@ -1501,7 +1541,7 @@ describe('what the medium can do wrong, and what the caller is told', () => {
       }
       const callbackFailure = new Error('transaction start failed')
       const callbackError = yield* Effect.flip(
-        runTransaction(callbackDatabase, 'readwrite', 'indexeddb.test', 'alpha', () => {
+        runTransaction(callbackDatabase, 'readwrite', 'indexeddb.test', SaveKey('alpha'), () => {
           throw callbackFailure
         }),
       )

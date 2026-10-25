@@ -400,7 +400,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           // `IdbDomException` is a plain `{ name, message }` shape (see
           // `indexeddb-surface.ts`), not an `Error`; a real `abort()` throws
           // an actual `DOMException` instance, so wrap it the same way here.
-          throw new DOMException(failure.message, failure.name)
+          const message = typeof failure.message === 'string' ? failure.message : ''
+          const name = typeof failure.name === 'string' ? failure.name : 'UnknownError'
+          throw new DOMException(message, name)
         }
         abortWith(null)
       },

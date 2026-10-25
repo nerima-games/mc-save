@@ -1,6 +1,7 @@
 import { Effect, Option, Result } from 'effect'
 import { expect } from 'vitest'
 import { indexedDbStorageLayer, makeIndexedDbStorage } from '../../src/domain/indexeddb-storage.js'
+import { makeIdbDatabaseName } from '../../src/domain/indexeddb-surface.js'
 import { SaveKey } from '../../src/domain/save-key.js'
 import { storagePortContract } from '../storage-port-contract.js'
 import { effect } from '../support/effect-test.js'
@@ -14,7 +15,7 @@ const hasNumericValue = (payload: unknown): payload is { readonly value: number 
 
 storagePortContract('IndexedDB (Chromium)', () =>
   indexedDbStorageLayer({
-    databaseName: `mc-save/browser/${databaseSequence++}`,
+    databaseName: makeIdbDatabaseName(`mc-save/browser/${databaseSequence++}`),
     factory: indexedDB,
   }),
 )
@@ -22,7 +23,7 @@ storagePortContract('IndexedDB (Chromium)', () =>
 effect('serializes compare-and-set commits across independent IndexedDB connections', () =>
   Effect.scoped(
     Effect.gen(function* () {
-      const databaseName = `mc-save/browser/concurrency/${databaseSequence++}`
+      const databaseName = makeIdbDatabaseName(`mc-save/browser/concurrency/${databaseSequence++}`)
       const first = yield* makeIndexedDbStorage({ databaseName, factory: indexedDB })
       const second = yield* makeIndexedDbStorage({ databaseName, factory: indexedDB })
       const key = SaveKey('concurrency')

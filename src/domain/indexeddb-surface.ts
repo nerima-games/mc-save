@@ -1,3 +1,36 @@
+import { Brand } from 'effect'
+import { IndexedDbDatabaseName, IndexedDbDatabaseVersion } from './brand-types.js'
+import type { SaveKey } from './save-key.js'
+
+export type IdbDatabaseName = IndexedDbDatabaseName
+export type IdbStoreName = string & Brand.Brand<'IdbStoreName'>
+export type IdbIndexName = string & Brand.Brand<'IdbIndexName'>
+export type IdbKeyPath = string & Brand.Brand<'IdbKeyPath'>
+export type IdbExceptionName = string & Brand.Brand<'IdbExceptionName'>
+export type IdbVersion = IndexedDbDatabaseVersion
+export type IdbStringListIndex = number & Brand.Brand<'IdbStringListIndex'>
+export type IdbKeyCount = number & Brand.Brand<'IdbKeyCount'>
+
+export const makeIdbDatabaseName: Brand.Constructor<IdbDatabaseName> = IndexedDbDatabaseName
+export const makeIdbStoreName: Brand.Constructor<IdbStoreName> = Brand.make<IdbStoreName>(
+  (value) => typeof value === 'string' || 'IndexedDB object store name must be a string',
+)
+export const makeIdbIndexName: Brand.Constructor<IdbIndexName> = Brand.make<IdbIndexName>(
+  (value) => typeof value === 'string' || 'IndexedDB index name must be a string',
+)
+export const makeIdbKeyPath: Brand.Constructor<IdbKeyPath> = Brand.make<IdbKeyPath>(
+  (value) => typeof value === 'string' || 'IndexedDB key path must be a string',
+)
+export const makeIdbExceptionName: Brand.Constructor<IdbExceptionName> = Brand.make<IdbExceptionName>(
+  (value) => typeof value === 'string' || 'IndexedDB exception name must be a string',
+)
+export const makeIdbVersion: Brand.Constructor<IdbVersion> = IndexedDbDatabaseVersion
+export const makeIdbStringListIndex: Brand.Constructor<IdbStringListIndex> = Brand.make<IdbStringListIndex>(
+  (value) => Number.isSafeInteger(value) && value >= 0 && value <= 0xffff_ffff || 'IndexedDB list index must be an unsigned long',
+)
+export const makeIdbKeyCount: Brand.Constructor<IdbKeyCount> = Brand.make<IdbKeyCount>(
+  (value) => Number.isSafeInteger(value) && value >= 0 && value <= 0xffff_ffff || 'IndexedDB key count must be an unsigned long',
+)
 /**
  * THE ENTIRE INDEXEDDB SURFACE THIS REPOSITORY DEPENDS ON, IN ONE FILE.
  *
@@ -111,8 +144,8 @@
  * spelling of a question `name` already answers.
  */
 export type IdbDomException = {
-  readonly name: string
-  readonly message: string
+  readonly name: unknown
+  readonly message: unknown
 }
 
 /**
@@ -166,9 +199,9 @@ export type IdbOpenRequest = IdbRequest & {
  * fixture would have caught it.
  */
 export type IdbStringList = {
-  readonly length: number
-  readonly contains: (name: string) => boolean
-  readonly item: (index: number) => string | null
+  readonly length: unknown
+  readonly contains: (name: IdbStoreName | IdbIndexName) => boolean
+  readonly item: (index: IdbStringListIndex) => unknown
 }
 
 /** An index over an object store. Used for one thing; see `INSERTION_INDEX`. */
@@ -179,7 +212,7 @@ export type IdbIndex = {
    * Not the index keys — the primary ones. That is what makes a single request
    * enough to answer `StoragePort.keys` in insertion order.
    */
-  readonly getAllKeys: (query?: null, count?: number) => IdbRequest
+  readonly getAllKeys: (query?: null, count?: IdbKeyCount) => IdbRequest
   /**
    * A cursor, used only in the `'prev'` direction to find the largest key.
    *
@@ -193,21 +226,20 @@ export type IdbIndex = {
 /**
  * One object store.
  *
- * `get`, `put` and `delete` are keyed by `string` only, because `SaveKey` is a
- * branded string and this adapter has no other kind of key. The real signatures
- * accept `IDBValidKey | IDBKeyRange`; a narrower parameter is fine (and proved
- * fine by the fixture), and it keeps the fake from having to implement key
- * ranges it would never be asked for.
+ * `get` and `delete` are keyed by `SaveKey`, and `put` is keyed by its record's
+ * `key` field. The real signatures accept `IDBValidKey | IDBKeyRange`; a narrower
+ * parameter is fine (as the fixture proves) and keeps the fake from having to
+ * implement key ranges it would never be asked for.
  */
 export type IdbObjectStore = {
   /** The indexes currently present; used to repair an older structural layout. */
   readonly indexNames: IdbStringList
-  readonly get: (key: string) => IdbRequest
+  readonly get: (key: SaveKey) => IdbRequest
   /** In-line keys: the record carries its own key at `keyPath`, so no second argument. */
   readonly put: (value: unknown) => IdbRequest
-  readonly delete: (key: string) => IdbRequest
-  readonly index: (name: string) => IdbIndex
-  readonly createIndex: (name: string, keyPath: string) => unknown
+  readonly delete: (key: SaveKey) => IdbRequest
+  readonly index: (name: IdbIndexName) => IdbIndex
+  readonly createIndex: (name: IdbIndexName, keyPath: IdbKeyPath | 'key' | 'seq') => unknown
 }
 
 /**
@@ -225,7 +257,7 @@ export type IdbObjectStore = {
  *     under storage pressure and possibly with `error` null.
  */
 export type IdbTransaction = {
-  readonly objectStore: (name: string) => IdbObjectStore
+  readonly objectStore: (name: IdbStoreName) => IdbObjectStore
   readonly abort: () => void
   readonly error: IdbDomException | null
   oncomplete: ((event: never) => void) | null
@@ -234,14 +266,14 @@ export type IdbTransaction = {
 }
 
 export type IdbDatabase = {
-  readonly name: string
-  readonly version: number
+  readonly name: unknown
+  readonly version: unknown
   readonly objectStoreNames: IdbStringList
   readonly createObjectStore: (
-    name: string,
-    options?: { readonly keyPath?: string },
+    name: IdbStoreName,
+    options?: { readonly keyPath?: IdbKeyPath | 'key' | 'seq' },
   ) => IdbObjectStore
-  readonly transaction: (storeNames: string, mode?: 'readonly' | 'readwrite') => IdbTransaction
+  readonly transaction: (storeNames: IdbStoreName, mode?: 'readonly' | 'readwrite') => IdbTransaction
   readonly close: () => void
   /**
    * Fires when ANOTHER connection wants to upgrade this database.
@@ -264,6 +296,6 @@ export type IdbDatabase = {
  * repository depends on has to include what the tests depend on too.
  */
 export type IdbFactory = {
-  readonly open: (name: string, version?: number) => IdbOpenRequest
-  readonly databases?: () => Promise<ReadonlyArray<{ readonly name?: string; readonly version?: number }>>
+  readonly open: (name: IdbDatabaseName, version?: IdbVersion) => IdbOpenRequest
+  readonly databases?: () => PromiseLike<ReadonlyArray<{ readonly name?: unknown; readonly version?: unknown }>>
 }

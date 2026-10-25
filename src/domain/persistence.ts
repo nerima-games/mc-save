@@ -8,11 +8,19 @@
  * adapter code.
  */
 import { Effect, Option, Result, Schema } from 'effect'
+import {
+  SaveErrorFormatLabel,
+  SaveErrorVersion,
+  ValidationMessage,
+  type SaveErrorFormatLabel as SaveErrorFormatLabelType,
+  type SaveErrorVersion as SaveErrorVersionType,
+  type SaveMaxBytes,
+} from './brand-types.js'
 import { SaveEnvelopeSchema } from './envelope.js'
 import { SaveDecodeError, StorageError } from './errors.js'
 import { decodeSave, type SaveFormat } from './format.js'
 import { isDurablePreviousKey } from './durable-key.js'
-import { DEFAULT_MAX_SAVE_BYTES, validateSaveEnvelope } from './integrity.js'
+import { resolveSaveMaxBytes, validateSaveEnvelope } from './integrity.js'
 import { prepareSave, type SaveWriteOptions } from './save-preparation.js'
 import type { SaveKey } from './save-key.js'
 import { StoragePort } from './storage-port.js'
@@ -28,9 +36,9 @@ export type ListedSaveFailure =
   | {
       readonly _tag: 'SaveDecodeError'
       readonly key: SaveKey
-      readonly format: string
-      readonly version: number
-      readonly reason: string
+      readonly format: SaveErrorFormatLabelType
+      readonly version: SaveErrorVersionType
+      readonly reason: ValidationMessage
     }
 
 export type SaveListing<A> = {
@@ -39,36 +47,38 @@ export type SaveListing<A> = {
 }
 
 export type SaveReadOptions = {
-  readonly maxBytes?: number
+  readonly maxBytes?: SaveMaxBytes
 }
 
-/** Encode `value` with `format` and write it under `key`. */
-export const saveTo = <A, I>(
+const resolveReadMaxBytes = <A, I>(
   format: SaveFormat<A, I>,
-  key: SaveKey,
-  value: A,
-  options?: SaveWriteOptions,
-): Effect.Effect<void, StorageError | SaveDecodeError, StoragePort> =>
+  options?: SaveReadOptions,
+): Effect.Effect<SaveMaxBytes, SaveDecodeError> =>
   Effect.gen(function* () {
-    const storage = yield* StoragePort
-    const envelope = yield* prepareSave(format, value, options)
-    yield* storage.put(key, envelope)
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Effect.fail(new SaveDecodeError({
+        format: format.name,
+        version: format.version,
+        reason: 'save read options could not be read',
+        cause: new TypeError('options must be an object'),
+      }))
+    }
+    const maxBytesValue = yield* Effect.try({
+      try: () => options === undefined ? undefined : Reflect.get(options, 'maxBytes'),
+      catch: (cause) => new SaveDecodeError({
+        format: format.name,
+        version: format.version,
+        reason: 'save read options could not be read',
+        cause,
+      }),
+    })
+    return yield* Effect.fromResult(resolveSaveMaxBytes(maxBytesValue, format.name, format.version))
   })
 
-/**
- * Read `key`, require `format`'s current version, and decode it.
- *
- * Returns `Option.none()` when the key is absent — a missing save is not an
- * error, it is a new world. Everything else is.
- *
- * Note that the envelope is re-validated before it is opened, even though
- * `StoragePort` is typed as returning one. The bytes came from outside this
- * process, and a type annotation is not a runtime guarantee.
- */
-export const loadFrom = <A, I>(
+const loadFromWithMaxBytes = <A, I>(
   format: SaveFormat<A, I>,
   key: SaveKey,
-  options?: SaveReadOptions,
+  maxBytes: SaveMaxBytes,
 ): Effect.Effect<Option.Option<A>, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
     const storage = yield* StoragePort
@@ -102,24 +112,57 @@ export const loadFrom = <A, I>(
       ),
     )
 
-    const maxBytes = options?.maxBytes ?? DEFAULT_MAX_SAVE_BYTES
     const validated = yield* validateSaveEnvelope(envelope, maxBytes)
     return Option.some(yield* decodeSave(format, validated))
+  })
+
+/** Encode `value` with `format` and write it under `key`. */
+export const saveTo = <A, I>(
+  format: SaveFormat<A, I>,
+  key: SaveKey,
+  value: A,
+  options?: SaveWriteOptions,
+): Effect.Effect<void, StorageError | SaveDecodeError, StoragePort> =>
+  Effect.gen(function* () {
+    const storage = yield* StoragePort
+    const envelope = yield* prepareSave(format, value, options)
+    yield* storage.put(key, envelope)
+  })
+
+/**
+ * Read `key`, require `format`'s current version, and decode it.
+ *
+ * Returns `Option.none()` when the key is absent — a missing save is not an
+ * error, it is a new world. Everything else is.
+ *
+ * Note that the envelope is re-validated before it is opened, even though
+ * `StoragePort` is typed as returning one. The bytes came from outside this
+ * process, and a type annotation is not a runtime guarantee.
+ */
+export const loadFrom = <A, I>(
+  format: SaveFormat<A, I>,
+  key: SaveKey,
+  options?: SaveReadOptions,
+): Effect.Effect<Option.Option<A>, StorageError | SaveDecodeError, StoragePort> =>
+  Effect.gen(function* () {
+    const maxBytes = yield* resolveReadMaxBytes(format, options)
+    return yield* loadFromWithMaxBytes(format, key, maxBytes)
   })
 
 /**
  * Decode every stored record without allowing one bad save to hide the rest.
  *
- * Record-level decode errors are returned as data. Storage
- * failures still fail the Effect because no complete listing can be claimed
- * when the medium itself could not be read. Failure entries intentionally omit
- * the underlying cause, which may contain the stored payload.
+ * Record-level decode errors are returned as data. Read-option and storage
+ * failures still fail the Effect because the requested listing could not be
+ * completed. Failure entries intentionally omit the underlying cause, which may
+ * contain the stored payload.
  */
 export const listFrom = <A, I>(
   format: SaveFormat<A, I>,
   options?: SaveReadOptions,
-): Effect.Effect<SaveListing<A>, StorageError, StoragePort> =>
+): Effect.Effect<SaveListing<A>, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
+    const maxBytes = yield* resolveReadMaxBytes(format, options)
     const storage = yield* StoragePort
     const keys = (yield* storage.keys).filter((key) => !isDurablePreviousKey(key))
     const valid: Array<ListedSave<A>> = []
@@ -128,19 +171,28 @@ export const listFrom = <A, I>(
     yield* Effect.forEach(
       keys,
       (key) =>
-        loadFrom(format, key, options).pipe(
+        loadFromWithMaxBytes(format, key, maxBytes).pipe(
           Effect.catchTags({
-            SaveDecodeError: (error) =>
-              Effect.sync(() => {
+          SaveDecodeError: (error) => {
+            const formatLabel = SaveErrorFormatLabel.result(error.format)
+            const version = SaveErrorVersion.result(error.version)
+            const reason = ValidationMessage.result(error.reason)
+            if (Result.isFailure(formatLabel) || Result.isFailure(version) || Result.isFailure(reason)) {
+              return Effect.fail(
+                new StorageError({ operation: 'persistence.listFrom', key, cause: 'save decode error fields are malformed' }),
+              )
+            }
+            return Effect.sync(() => {
                 corrupt.push({
                   _tag: error._tag,
                   key,
-                  format: error.format,
-                  version: error.version,
-                  reason: error.reason,
+                  format: formatLabel.success,
+                  version: version.success,
+                  reason: reason.success,
                 })
                 return Option.none<A>()
-              }),
+            })
+          },
           }),
           Effect.map((value) => {
             if (Option.isSome(value)) {
