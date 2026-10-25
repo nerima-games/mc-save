@@ -1,9 +1,10 @@
 import { describe, expect, vi } from 'vitest'
 import { effect } from './support/effect-test.js'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { Effect, Result, Schema } from 'effect'
 import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
-import { ByteBuffer, CanonicalJson } from '../src/domain/brand-types.js'
+import { CanonicalJson } from '../src/domain/brand-types.js'
 import { checksumOf, utf8Bytes } from '../src/domain/integrity-canonical.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
@@ -355,8 +356,8 @@ describe('format definition', () => {
 describe('canonical integrity inputs', () => {
   effect('returns Result failures for values that do not satisfy their brands', () =>
     Effect.sync(() => {
-      const canonicalError = utf8Bytes(null as unknown as CanonicalJson)
-      const byteBufferError = checksumOf(null as unknown as ByteBuffer)
+      const canonicalError = applyUntrustedArgument(utf8Bytes, undefined, [null])
+      const byteBufferError = applyUntrustedArgument(checksumOf, undefined, [null])
 
       expect(Result.isFailure(canonicalError) && canonicalError.failure).toBe('canonical JSON must be a string')
       expect(Result.isFailure(byteBufferError) && byteBufferError.failure).toBe('checksum input must be a Uint8Array')
@@ -387,9 +388,9 @@ describe('canonical integrity inputs', () => {
           if (property === Symbol.iterator) throw new Error('unreadable bytes')
           return Reflect.get(target, property, receiver)
         },
-      }) as unknown as ByteBuffer
+      })
 
-      const result = checksumOf(unreadableBytes)
+      const result = applyUntrustedArgument(checksumOf, undefined, [unreadableBytes])
 
       expect(Result.isFailure(result) && result.failure).toBe('checksum bytes could not be read')
     }),

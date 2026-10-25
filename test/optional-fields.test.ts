@@ -1,8 +1,9 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { Effect, Result, Schema } from 'effect'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
-import { JsonFieldName, type JsonFieldName as JsonFieldNameType } from '../src/domain/brand-types.js'
+import { JsonFieldName } from '../src/domain/brand-types.js'
 import {
   encodeUndefinedAsNull,
   restoreNullAsUndefined,
@@ -78,10 +79,20 @@ describe('undefinedFieldsAsNull', () => {
 
   effect('rejects field names that fail brand validation in both schema directions', () =>
     Effect.sync(() => {
-      const invalidFields = [null as unknown as JsonFieldNameType]
+      const invalidFields = [null]
+      const restoreInvalidFields = applyUntrustedArgument(
+        restoreNullAsUndefined,
+        undefined,
+        [invalidFields],
+      )
+      const encodeInvalidFields = applyUntrustedArgument(
+        encodeUndefinedAsNull,
+        undefined,
+        [invalidFields],
+      )
 
-      expect(Result.isFailure(restoreNullAsUndefined(invalidFields)({ note: null }))).toBe(true)
-      expect(Result.isFailure(encodeUndefinedAsNull(invalidFields)({ note: undefined }))).toBe(true)
+      expect(Result.isFailure(restoreInvalidFields({ note: null }))).toBe(true)
+      expect(Result.isFailure(encodeInvalidFields({ note: undefined }))).toBe(true)
     }),
   )
 
@@ -91,10 +102,20 @@ describe('undefinedFieldsAsNull', () => {
         [Symbol.iterator]: () => {
           throw new Error('unreadable field names')
         },
-      } as unknown as ReadonlyArray<JsonFieldNameType>
+      }
+      const restoreUnreadableFields = applyUntrustedArgument(
+        restoreNullAsUndefined,
+        undefined,
+        [unreadableFields],
+      )
+      const encodeUnreadableFields = applyUntrustedArgument(
+        encodeUndefinedAsNull,
+        undefined,
+        [unreadableFields],
+      )
 
-      const decoded = restoreNullAsUndefined(unreadableFields)({ note: null })
-      const encoded = encodeUndefinedAsNull(unreadableFields)({ note: undefined })
+      const decoded = restoreUnreadableFields({ note: null })
+      const encoded = encodeUnreadableFields({ note: undefined })
 
       expect(Result.isFailure(decoded)).toBe(true)
       expect(Result.isFailure(encoded)).toBe(true)

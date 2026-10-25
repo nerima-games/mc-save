@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { Result } from 'effect'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import {
   CanonicalizationIssue,
   EncodedByteSequence,
@@ -19,8 +20,8 @@ const expectFailure = <Success, Failure>(result: Result.Result<Success, Failure>
 
 describe('branded save values', () => {
   it('rejects non-string error labels and validation messages through Result', () => {
-    expectFailure(SaveErrorFormatLabel.result(null as unknown as string))
-    expectFailure(ValidationMessage.result(null as unknown as string))
+    expectFailure(applyUntrustedArgument(SaveErrorFormatLabel.result, SaveErrorFormatLabel, [null]))
+    expectFailure(applyUntrustedArgument(ValidationMessage.result, ValidationMessage, [null]))
   })
 
   it('rejects invalid save error versions', () => {
@@ -29,7 +30,7 @@ describe('branded save values', () => {
   })
 
   it('rejects non-string encoded save-key segments', () => {
-    expectFailure(EncodedSaveKeySegment.result(null as unknown as string))
+    expectFailure(applyUntrustedArgument(EncodedSaveKeySegment.result, EncodedSaveKeySegment, [null]))
   })
 
   it('rejects blank storage operations', () => {
@@ -43,16 +44,16 @@ describe('branded save values', () => {
   })
 
   it('rejects non-string IndexedDB field names', () => {
-    expectFailure(IndexedDbFieldName.result(null as unknown as string))
+    expectFailure(applyUntrustedArgument(IndexedDbFieldName.result, IndexedDbFieldName, [null]))
   })
 
   it('rejects non-arrays and invalid values in encoded byte sequences', () => {
-    expectFailure(EncodedByteSequence.result('not bytes' as unknown as ReadonlyArray<number>))
+    expectFailure(applyUntrustedArgument(EncodedByteSequence.result, EncodedByteSequence, ['not bytes']))
     expectFailure(EncodedByteSequence.result([256]))
   })
 
   it('returns a brand failure when an encoded byte sequence cannot be read', () => {
-    const unreadable = new Proxy([] as Array<number>, {
+    const unreadable = new Proxy<Array<number>>([], {
       get(target, property, receiver) {
         if (property === 'length') throw new Error('unreadable byte sequence')
         return Reflect.get(target, property, receiver)
@@ -63,6 +64,6 @@ describe('branded save values', () => {
   })
 
   it('rejects non-string canonicalization issues', () => {
-    expectFailure(CanonicalizationIssue.result(null as unknown as string))
+    expectFailure(applyUntrustedArgument(CanonicalizationIssue.result, CanonicalizationIssue, [null]))
   })
 })

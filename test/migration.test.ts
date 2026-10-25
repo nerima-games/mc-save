@@ -1,5 +1,6 @@
 import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { Effect, Result, Schema, SchemaGetter, SchemaTransformation } from 'effect'
 import { SaveEnvelopeSchema, type SaveEnvelope } from '../src/domain/envelope.js'
 import { SaveMaxBytes } from '../src/domain/brand-types.js'
@@ -289,7 +290,7 @@ describe('save boundary defaults', () => {
   effect('rejects explicit null maxBytes at the envelope validation boundary', () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
-        validateSaveEnvelope(oldFixtureEnvelope, null as unknown as SaveMaxBytes),
+        applyUntrustedArgument(validateSaveEnvelope, undefined, [oldFixtureEnvelope, null]),
       )
 
       expect(error._tag).toBe('SaveDecodeError')

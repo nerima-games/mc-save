@@ -34,6 +34,7 @@ import { readEnvelope, readKeys, readSequence } from '../src/domain/indexeddb-re
 import { loadFrom, saveTo } from '../src/domain/persistence.js'
 import { SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { domException, makeFakeIndexedDb, QUOTA_EXCEEDED_ERROR } from './fake-indexeddb.js'
+import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { storagePortContract } from './storage-port-contract.js'
 import { sealedTestEnvelope, unsealedTestEnvelope } from './support/save-envelope.js'
 
@@ -48,12 +49,6 @@ const B = SaveKey('beta')
 const envelope = (payload: unknown) => sealedTestEnvelope('mc-save/test/idb', 1, payload)
 const unsealedEnvelope = (payload: unknown): SaveEnvelope =>
   unsealedTestEnvelope('mc-save/test/idb', 1, payload)
-
-const applyUntrustedArgument = <This, Args extends ReadonlyArray<unknown>, A, E, R>(
-  method: (this: This, ...args: Args) => Effect.Effect<A, E, R>,
-  receiver: This,
-  argumentsList: ReadonlyArray<unknown>,
-): Effect.Effect<A, E, R> => Reflect.apply(method, receiver, argumentsList)
 
 const layerFor = (factory: IdbFactory, databaseName = DATABASE) =>
   indexedDbStorageLayer({ factory, databaseName })
@@ -509,15 +504,17 @@ describe('what the medium can do wrong, and what the caller is told', () => {
   effect('rejects an invalid database name before opening the factory', () =>
     Effect.gen(function* () {
       let openCalls = 0
-      const error = yield* Effect.flip(openDatabase({
-        databaseName: '' as unknown as ReturnType<typeof makeIdbDatabaseName>,
-        factory: {
-          open: () => {
-            openCalls += 1
-            throw new Error('factory must not receive an invalid database name')
+      const error = yield* Effect.flip(
+        applyUntrustedArgument(openDatabase, undefined, [{
+          databaseName: '',
+          factory: {
+            open: () => {
+              openCalls += 1
+              throw new Error('factory must not receive an invalid database name')
+            },
           },
-        },
-      }))
+        }]),
+      )
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.open')
@@ -1315,8 +1312,11 @@ describe('what the medium can do wrong, and what the caller is told', () => {
           operation: 'indexeddb.put',
           key: A,
         })
-        expect(outcome.result.failure.cause).toBeInstanceOf(Error)
-        expect((outcome.result.failure.cause as Error).message).toBe('Result adapter can only return schema issues')
+        const cause = outcome.result.failure.cause
+        expect(cause).toBeInstanceOf(Error)
+        if (cause instanceof Error) {
+          expect(cause.message).toBe('Result adapter can only return schema issues')
+        }
       }
       expect(outcome.records).toStrictEqual([])
     }),
