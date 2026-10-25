@@ -1,4 +1,4 @@
-import { Clock, Effect, Option, Result, Schedule, Schema } from 'effect'
+import { Brand, Clock, Effect, Option, Result, Schedule, Schema } from 'effect'
 import { fileURLToPath } from 'node:url'
 import {
   decodeSave,
@@ -94,6 +94,11 @@ type BenchmarkResult = {
   readonly speedup: number
 }
 
+export type DurableSaveBenchmarkIterations = number & Brand.Brand<'DurableSaveBenchmarkIterations'>
+export const DurableSaveBenchmarkIterations: Brand.Constructor<DurableSaveBenchmarkIterations> = Brand.make(
+  (value) => Number.isSafeInteger(value) && value > 0 || 'benchmark iterations must be a positive safe integer',
+)
+
 const benchmark = <A, I>(
   format: SaveFormat<A, I>,
   value: A,
@@ -119,12 +124,12 @@ export const runDurableSaveBenchmark = <A, I>(
   format: SaveFormat<A, I>,
   value: A,
   summary: Pick<BenchmarkResult, 'chunks' | 'blocks'>,
-  iterations: number,
+  iterations: DurableSaveBenchmarkIterations,
 ): Effect.Effect<void, unknown, never> => {
-  if (!shouldRun) return Effect.void
-
   return Effect.gen(function* () {
-    const result = yield* benchmark(format, value, summary, iterations)
+    const checkedIterations = yield* Effect.fromResult(DurableSaveBenchmarkIterations.result(iterations))
+    if (!shouldRun) return
+    const result = yield* benchmark(format, value, summary, checkedIterations)
     // Benchmark output is consumed directly by release verification.
     yield* Effect.sync(() => {
       // eslint-disable-next-line no-console
@@ -138,5 +143,5 @@ await Effect.runPromise(
   runDurableSaveBenchmark(invokedDirectly, World, world, {
     chunks: world.chunks.length,
     blocks: 64 * 16_384,
-  }, 5),
+  }, DurableSaveBenchmarkIterations(5)),
 )

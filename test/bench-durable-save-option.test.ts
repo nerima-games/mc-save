@@ -21,18 +21,20 @@ vi.doMock('../src/index.js', async () => {
   return { ...actual, makeInMemoryStorage: Effect.succeed(malformedStorage) }
 })
 
-const { runDurableSaveBenchmark } = await import('../src/entrypoints/bench-durable-save.js')
+const { DurableSaveBenchmarkIterations, runDurableSaveBenchmark } =
+  await import('../src/entrypoints/bench-durable-save.js')
 
 const Format = Result.getOrThrow((await import('../src/index.js')).defineFormat({
   name: 'mc-save/test/benchmark-checkpoint',
   version: 1,
   schema: Schema.Struct({ value: Schema.Number }),
 }))
+const iterations = (value: number) => Result.getOrThrow(DurableSaveBenchmarkIterations.result(value))
 
 describe('durable-save benchmark checkpoint boundary', () => {
   it('fails when storage returns a malformed Option instead of treating it as absent', async () => {
     await expect(
-      Effect.runPromise(runDurableSaveBenchmark(true, Format, { value: 1 }, { chunks: 1, blocks: 1 }, 1)),
+      Effect.runPromise(runDurableSaveBenchmark(true, Format, { value: 1 }, { chunks: 1, blocks: 1 }, iterations(1))),
     ).rejects.toThrow('storage returned an invalid checkpoint option')
   })
 
@@ -40,7 +42,18 @@ describe('durable-save benchmark checkpoint boundary', () => {
     faultMode.shortBatch = true
 
     await expect(
-      Effect.runPromise(runDurableSaveBenchmark(true, Format, { value: 1 }, { chunks: 1, blocks: 1 }, 1)),
+      Effect.runPromise(runDurableSaveBenchmark(true, Format, { value: 1 }, { chunks: 1, blocks: 1 }, iterations(1))),
     ).rejects.toThrow('storage returned an incomplete checkpoint batch')
+  })
+
+  it('returns branded iteration validation failures through the Effect error channel', async () => {
+    const invalid = Reflect.apply(runDurableSaveBenchmark, undefined, [
+      true,
+      Format,
+      { value: 1 },
+      { chunks: 1, blocks: 1 },
+      0,
+    ])
+    await expect(Effect.runPromise(invalid)).rejects.toThrow('benchmark iterations must be a positive safe integer')
   })
 })
