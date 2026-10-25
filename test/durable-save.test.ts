@@ -72,6 +72,22 @@ describe('durable save checkpoints', () => {
   effect('fails invalid save options instead of applying defaults', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
+      const invalidOptions = yield* Effect.result(
+        saveDurably(
+          State,
+          key,
+          { score: 1, label: 'invalid options' },
+          widen<Parameters<typeof saveDurably>[3]>(null),
+        ).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(invalidOptions._tag).toBe('Failure')
+      if (invalidOptions._tag === 'Failure') {
+        expect(invalidOptions.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'durable save options must be an object',
+        })
+      }
+
       const invalidLimit = yield* Effect.result(
         saveDurably(
           State,
@@ -100,6 +116,30 @@ describe('durable save checkpoints', () => {
       if (invalidExtensions._tag === 'Failure') {
         expect(invalidExtensions.failure).toMatchObject({ _tag: 'SaveDecodeError' })
         expect(invalidExtensions.failure.message).toContain('extensions must be a plain string-keyed object')
+      }
+
+      const getterFailure = new Error('save options could not be read')
+      const unreadableOptions = new Proxy({}, {
+        get: (_target, property) => {
+          if (property === 'extensions') throw getterFailure
+          return undefined
+        },
+      })
+      const unreadable = yield* Effect.result(
+        saveDurably(
+          State,
+          key,
+          { score: 1, label: 'unreadable options' },
+          widen<Parameters<typeof saveDurably>[3]>(unreadableOptions),
+        ).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(unreadable._tag).toBe('Failure')
+      if (unreadable._tag === 'Failure') {
+        expect(unreadable.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'durable save options could not be read',
+          cause: getterFailure,
+        })
       }
     }),
   )
@@ -461,6 +501,37 @@ effect('fails when storage returns an incomplete durable checkpoint batch', () =
             expect(result.failure.operation).toBe('durable.readBatch')
           }
         }
+      }
+
+      for (const malformedBatch of [[null, Option.none()], [Option.none(), null]]) {
+        let commitCount = 0
+        const malformedOptionStorage = {
+          ...storage,
+          readBatch: () => Effect.succeed(widen<ReadonlyArray<Option.Option<SaveEnvelope>>>(malformedBatch)),
+          commitBatch: () => {
+            commitCount += 1
+            return Effect.void
+          },
+        }
+
+        const loaded = yield* Effect.result(
+          loadDurably(State, key).pipe(Effect.provideService(StoragePort, malformedOptionStorage)),
+        )
+        expect(loaded._tag).toBe('Failure')
+        if (loaded._tag === 'Failure') {
+          expect(loaded.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
+        }
+
+        const saved = yield* Effect.result(
+          saveDurably(State, key, { score: 1, label: 'must not overwrite malformed checkpoints' }).pipe(
+            Effect.provideService(StoragePort, malformedOptionStorage),
+          ),
+        )
+        expect(saved._tag).toBe('Failure')
+        if (saved._tag === 'Failure') {
+          expect(saved.failure).toMatchObject({ _tag: 'StorageError', operation: 'durable.readBatch' })
+        }
+        expect(commitCount).toBe(0)
       }
 
       const nonArrayStorage = { ...storage }
@@ -978,6 +1049,64 @@ describe('save integrity', () => {
         sealAndValidateSaveEnvelope(unsupportedEnvelope, undefined, DEFAULT_MAX_SAVE_BYTES),
       )
       expect(unsupportedSealing.reason).toContain('only plain objects')
+    }),
+  )
+
+  effect('fails closed when UTF-8 encoding or checksum generation fails', () =>
+    Effect.gen(function* () {
+      const draft = saveEnvelope(State.name, 1, { score: 1, label: 'view failure' })
+      const valid = sealEnvelopeForTest(draft)
+      const subarrayDescriptor = Object.getOwnPropertyDescriptor(Uint8Array.prototype, 'subarray')
+
+      Object.defineProperty(Uint8Array.prototype, 'subarray', {
+        configurable: true,
+        writable: true,
+        value: () => {
+          throw new Error('UTF-8 view could not be created')
+        },
+      })
+      try {
+        const sealed = sealSaveEnvelopeResult(draft)
+        expect(Result.isFailure(sealed) && sealed.failure.reason).toBe('save could not be encoded as UTF-8')
+
+        const validated = yield* Effect.result(validateSaveEnvelope(valid))
+        expect(validated._tag).toBe('Failure')
+        if (validated._tag === 'Failure') {
+          expect(validated.failure.reason).toBe('save could not be encoded as UTF-8')
+        }
+      } finally {
+        if (subarrayDescriptor === undefined) {
+          Reflect.deleteProperty(Uint8Array.prototype, 'subarray')
+        } else {
+          Object.defineProperty(Uint8Array.prototype, 'subarray', subarrayDescriptor)
+        }
+      }
+
+      const iteratorDescriptor = Object.getOwnPropertyDescriptor(Uint8Array.prototype, Symbol.iterator)
+      const checksumFailure = new Error('byte iterator failed')
+      Object.defineProperty(Uint8Array.prototype, Symbol.iterator, {
+        configurable: true,
+        writable: true,
+        value: () => {
+          throw checksumFailure
+        },
+      })
+      try {
+        const sealed = sealSaveEnvelopeResult(draft)
+        expect(Result.isFailure(sealed) && sealed.failure.reason).toBe('save checksum could not be computed')
+
+        const validated = yield* Effect.result(validateSaveEnvelope(valid))
+        expect(validated._tag).toBe('Failure')
+        if (validated._tag === 'Failure') {
+          expect(validated.failure.reason).toBe('save checksum could not be computed')
+        }
+      } finally {
+        if (iteratorDescriptor === undefined) {
+          Reflect.deleteProperty(Uint8Array.prototype, Symbol.iterator)
+        } else {
+          Object.defineProperty(Uint8Array.prototype, Symbol.iterator, iteratorDescriptor)
+        }
+      }
     }),
   )
 })

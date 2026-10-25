@@ -58,13 +58,10 @@ export const validateSaveExtensions = (
   ) {
     return Result.fail(saveDecodeError(format, version, 'save envelope extensions must be a plain string-keyed object'))
   }
-  const record = Object.fromEntries(snapshot.entries)
-  const fieldSchema = Schema.fromBrand('JsonFieldName', JsonFieldName)(Schema.String)
-  const extensionsSchema = Schema.Record(fieldSchema, Schema.Unknown)
-  const decoded = Schema.decodeUnknownResult(extensionsSchema)(record)
-  return Result.isFailure(decoded)
-    ? Result.fail(saveDecodeError(format, version, 'save envelope extensions have invalid field names', decoded.failure))
-    : Result.succeed(decoded.success)
+  const record: Record<JsonFieldNameType, unknown> = Object.fromEntries(
+    snapshot.entries.map(([key, entryValue]) => [JsonFieldName(key), entryValue] as const),
+  )
+  return Result.succeed(record)
 }
 
 const snapshotIntegrity = (
@@ -212,17 +209,14 @@ export const sealSaveEnvelope = (
   if (Result.isFailure(bytes)) {
     return Result.fail(saveDecodeError(source.format, source.version, 'save could not be encoded as UTF-8', bytes.failure))
   }
-  const byteLength = SaveByteLength.result(bytes.success.byteLength)
-  if (Result.isFailure(byteLength)) {
-    return Result.fail(saveDecodeError(source.format, source.version, 'save byte length is invalid', byteLength.failure))
-  }
+  const byteLength = SaveByteLength(bytes.success.byteLength)
   const checksum = checksumOf(bytes.success)
   if (Result.isFailure(checksum)) {
     return Result.fail(saveDecodeError(source.format, source.version, 'save checksum could not be computed', checksum.failure))
   }
   const integrity: SaveIntegrity = {
     algorithm: 'fnv1a32',
-    byteLength: byteLength.success,
+    byteLength,
     checksum: checksum.success,
   }
   if (
@@ -261,16 +255,13 @@ export const validateSaveEnvelope = (
   if (Result.isFailure(bytes)) {
     return Effect.fail(saveDecodeError(source.format, source.version, 'save could not be encoded as UTF-8', bytes.failure))
   }
-  const byteLength = SaveByteLength.result(bytes.success.byteLength)
-  if (Result.isFailure(byteLength)) {
-    return Effect.fail(saveDecodeError(source.format, source.version, 'save byte length is invalid', byteLength.failure))
-  }
+  const byteLength = SaveByteLength(bytes.success.byteLength)
   const checksum = checksumOf(bytes.success)
   if (Result.isFailure(checksum)) {
     return Effect.fail(saveDecodeError(source.format, source.version, 'save checksum could not be computed', checksum.failure))
   }
   const invalidNumber = canonical.success.containsInvalidNumber
-  const invalidSize = byteLength.success > maxByteLimit.success
+  const invalidSize = byteLength > maxByteLimit.success
   if (invalidNumber || invalidSize) {
     const reason = invalidNumber
       ? 'save contains a non-finite number'
@@ -280,7 +271,7 @@ export const validateSaveEnvelope = (
   const integrity = source.integrity
   if (
     integrity === undefined ||
-    integrity.byteLength !== byteLength.success ||
+    integrity.byteLength !== byteLength ||
     integrity.checksum !== checksum.success
   ) {
     return Effect.fail(

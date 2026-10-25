@@ -16,10 +16,7 @@ const makeCanonicalized = (
   text: string,
   containsInvalidNumber: boolean,
 ): Result.Result<Canonicalized, CanonicalizationIssue> =>
-  Result.mapError(
-    Result.map(CanonicalJson.result(text), (canonicalText) => ({ text: canonicalText, containsInvalidNumber })),
-    () => CanonicalizationIssue('canonical JSON text could not be constructed'),
-  )
+  Result.succeed({ text: CanonicalJson(text), containsInvalidNumber })
 
 export const utf8Bytes = (value: CanonicalJson): Result.Result<ByteBuffer, ValidationMessage> => {
   const canonicalValue = Result.mapError(
@@ -66,10 +63,7 @@ export const utf8Bytes = (value: CanonicalJson): Result.Result<ByteBuffer, Valid
   })
   if (Result.isFailure(encoded)) return Result.fail(encoded.failure)
 
-  return Result.mapError(
-    ByteBuffer.result(encoded.success),
-    () => ValidationMessage('UTF-8 encoder did not produce a byte buffer'),
-  )
+  return Result.succeed(ByteBuffer(encoded.success))
 }
 
 const unsupportedValue = (description: string): Result.Result<Canonicalized, CanonicalizationIssue> =>
@@ -173,10 +167,7 @@ export const checksumOf = (bytes: ByteBuffer): Result.Result<SaveChecksum, Valid
   })
   if (Result.isFailure(checksum)) return Result.fail(checksum.failure)
 
-  return Result.mapError(
-    SaveChecksum.result(checksum.success),
-    () => ValidationMessage('checksum output must be eight lowercase hexadecimal characters'),
-  )
+  return Result.succeed(SaveChecksum(checksum.success))
 }
 
 const envelopeIdentityInput = (envelope: SaveEnvelope): unknown => ({

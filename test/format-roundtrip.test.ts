@@ -3,6 +3,8 @@ import { effect } from './support/effect-test.js'
 import { Effect, Result, Schema } from 'effect'
 import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
+import { ByteBuffer, CanonicalJson } from '../src/domain/brand-types.js'
+import { checksumOf, utf8Bytes } from '../src/domain/integrity-canonical.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
 
 /**
@@ -346,6 +348,57 @@ describe('format definition', () => {
       if (Result.isFailure(result)) {
         expect(result.failure).toStrictEqual(['format definition fields could not be read'])
       }
+    }),
+  )
+})
+
+describe('canonical integrity inputs', () => {
+  effect('returns Result failures for values that do not satisfy their brands', () =>
+    Effect.sync(() => {
+      const canonicalError = utf8Bytes(null as unknown as CanonicalJson)
+      const byteBufferError = checksumOf(null as unknown as ByteBuffer)
+
+      expect(Result.isFailure(canonicalError) && canonicalError.failure).toBe('canonical JSON must be a string')
+      expect(Result.isFailure(byteBufferError) && byteBufferError.failure).toBe('checksum input must be a Uint8Array')
+    }),
+  )
+
+  effect('returns a Result failure when the UTF-8 view operation throws', () =>
+    Effect.sync(() => {
+      const originalSubarray = Object.getOwnPropertyDescriptor(Uint8Array.prototype, 'subarray')
+
+      Object.defineProperty(Uint8Array.prototype, 'subarray', {
+        configurable: true,
+        writable: true,
+        value: () => {
+          throw new Error('UTF-8 view could not be created')
+        },
+      })
+      try {
+        const result = utf8Bytes(CanonicalJson('{"value":1}'))
+        expect(Result.isFailure(result) && result.failure).toBe('canonical JSON could not be encoded as UTF-8')
+      } finally {
+        if (originalSubarray === undefined) {
+          Reflect.deleteProperty(Uint8Array.prototype, 'subarray')
+        } else {
+          Object.defineProperty(Uint8Array.prototype, 'subarray', originalSubarray)
+        }
+      }
+    }),
+  )
+
+  effect('returns a Result failure when a branded byte buffer cannot be read', () =>
+    Effect.sync(() => {
+      const unreadableBytes = new Proxy(new Uint8Array([1]), {
+        get(target, property, receiver) {
+          if (property === Symbol.iterator) throw new Error('unreadable bytes')
+          return Reflect.get(target, property, receiver)
+        },
+      }) as unknown as ByteBuffer
+
+      const result = checksumOf(unreadableBytes)
+
+      expect(Result.isFailure(result) && result.failure).toBe('checksum bytes could not be read')
     }),
   )
 })
