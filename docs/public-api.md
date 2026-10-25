@@ -65,4 +65,4 @@ The codecs validate byte, file-count, and total-size limits. They preserve suppo
 
 ## 0.6 declaration comparison
 
-The exhaustive packaged declaration comparison is in [`docs/api-migration-0.6.0.md`](./api-migration-0.6.0.md). It includes all changed callable and constructor signatures; exported interface, type alias, and class members; field presence and mutability; class heritage; index signatures; and checked construction paths for the new brands.
+The exhaustive packaged declaration comparison is in [`docs/api-migration-0.6.0.md`](./api-migration-0.6.0.md). It includes all changed callable and constructor signatures; exported interface, type alias, and class members; union variant fields; exported constant types; field presence and mutability; class heritage; index signatures; and checked construction paths for the new brands.

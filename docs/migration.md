@@ -33,7 +33,7 @@ Handle a failed `Result` as an ordinary validation outcome. Do not call a throwi
 
 ## Public API and branded inputs
 
-This minor release changes public call signatures and the fields of exported types. The complete base-to-head declaration inventory, including removed and added exports, every changed callable signature, constructor, field, optionality and readonly state, type alias, class heritage, index signature, and brand construction path, is in [`docs/api-migration-0.6.0.md`](./api-migration-0.6.0.md). It is generated from the packaged declarations at `origin/main` and this release branch.
+This minor release changes public call signatures and the fields of exported types. The complete base-to-head declaration inventory, including removed and added exports, every changed callable signature, constructor, field, union variant field, exported constant type, optionality and readonly state, type alias, class heritage, index signature, and brand construction path, is in [`docs/api-migration-0.6.0.md`](./api-migration-0.6.0.md). It is generated from the packaged declarations at `origin/main` and this release branch.
 
 The comparison includes the following migration rules:
 
