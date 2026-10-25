@@ -47,7 +47,7 @@
   ],
   "scripts": {
     "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.release.json --pretty false",
-    "bench:durable-save": "tsx scripts/bench-durable-save.ts",
+    "bench:durable-save": "tsx src/entrypoints/bench-durable-save.ts",
     "check:source-policy": "node scripts/check-source-policy.mjs",
     "lint": "oxlint --deny-warnings src scripts test && ast-grep scan",
     "lint:fix": "oxlint --fix src scripts test",

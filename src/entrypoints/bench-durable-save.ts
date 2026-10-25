@@ -11,7 +11,7 @@ import {
   validateSaveEnvelope,
   type SaveEnvelope,
   type SaveFormat,
-} from '../src/index.js'
+} from '../index.js'
 
 const Chunk = Schema.Struct({
   x: Schema.Number,
