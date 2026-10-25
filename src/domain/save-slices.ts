@@ -22,7 +22,7 @@ const EncodedSaveBundleEntriesSchema = Schema.Record(Schema.String, EncodedSaveS
 const decodeSaveBundleSnapshot = (snapshot: unknown): Effect.Effect<EncodedSaveBundle, Schema.SchemaError> =>
   Effect.gen(function* () {
     const entries = yield* Schema.decodeUnknownEffect(EncodedSaveBundleEntriesSchema)(snapshot)
-    const bundle = Object.create(null) as Record<SaveSliceId, EncodedSaveSlice>
+    const bundle: Record<SaveSliceId, EncodedSaveSlice> = Object.create(null)
     for (const [key, value] of Object.entries(entries)) {
       const id = yield* Schema.decodeUnknownEffect(SaveSliceIdSchema)(key)
       bundle[id] = value
@@ -209,7 +209,7 @@ export const encodeSaveBundle = <
   Effect.map(
     Effect.forEach(registrations, encodeSaveSlice, { concurrency: 1 }),
     (entries): EncodedSaveBundle => {
-      const bundle = Object.create(null) as Record<SaveSliceId, EncodedSaveSlice>
+      const bundle: Record<SaveSliceId, EncodedSaveSlice> = Object.create(null)
       for (const [id, entry] of entries) bundle[id] = entry
       return bundle
     },

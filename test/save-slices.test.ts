@@ -245,7 +245,7 @@ describe('save slice bundles', () => {
         Object.fromEntries([['__proto__', { version: version(2), data: { count: '7', label: 'prototype key' } }]]),
       )
 
-      const persisted = JSON.parse(JSON.stringify(encoded)) as unknown
+      const persisted: unknown = JSON.parse(JSON.stringify(encoded))
       const decoded = yield* decodeSaveBundle(persisted)
       expect(Object.hasOwn(decoded, '__proto__')).toBe(true)
       expect(Object.keys(decoded)).toEqual(['__proto__'])
