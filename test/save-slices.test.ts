@@ -224,6 +224,37 @@ describe('save slice bundles', () => {
     }),
   )
 
+  effect('encodes, decodes, and restores the __proto__ slice id as an own bundle key', () =>
+    Effect.gen(function* () {
+      const restored: Array<Schema.Schema.Type<typeof CurrentSchema>> = []
+      const registration: SaveSliceRegistration<typeof CurrentSchema, never, never> = {
+        id: sliceId('__proto__'),
+        version: version(2),
+        schema: CurrentSchema,
+        snapshot: Effect.succeed({ count: 7, label: 'prototype key' }),
+        restore: (state) => {
+          restored.push(state)
+          return Effect.void
+        },
+        migrations: [],
+      }
+
+      const encoded = yield* encodeSaveBundle([registration])
+      expect(Object.hasOwn(encoded, '__proto__')).toBe(true)
+      expect(JSON.parse(JSON.stringify(encoded))).toStrictEqual(
+        Object.fromEntries([['__proto__', { version: version(2), data: { count: '7', label: 'prototype key' } }]]),
+      )
+
+      const persisted = JSON.parse(JSON.stringify(encoded)) as unknown
+      const decoded = yield* decodeSaveBundle(persisted)
+      expect(Object.hasOwn(decoded, '__proto__')).toBe(true)
+      expect(Object.keys(decoded)).toEqual(['__proto__'])
+
+      yield* restoreSaveBundle(persisted, [registration])
+      expect(restored).toEqual([{ count: 7, label: 'prototype key' }])
+    }),
+  )
+
   effect('rejects an empty slice id while decoding an encoded bundle', () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(decodeSaveBundle({ '': { version: version(1), data: {} } }))
