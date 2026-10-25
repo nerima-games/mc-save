@@ -14,8 +14,11 @@
 import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
 import { JsonFieldName } from './brand-types.js'
 
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === 'object' && value !== null
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> => {
+  if (typeof value !== 'object' || value === null) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
 
 
 const validateFields = (
@@ -49,16 +52,22 @@ export const restoreNullAsUndefined =
   (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
     const checkedFields = validateFields(fields, value)
     if (Result.isFailure(checkedFields)) return Result.fail(checkedFields.failure)
-    if (!isRecord(value)) return Result.succeed(value)
+    const record = Result.try({
+      try: () => isRecord(value) ? value : undefined,
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(record)) return Result.fail(record.failure)
+    const recordValue = record.success
+    if (recordValue === undefined) return Result.succeed(value)
     const captured = Result.try({
       try: () => {
-        const keys = new Set(Object.keys(value))
+        const keys = new Set(Object.keys(recordValue))
         for (const field of checkedFields.success) {
-          if (!keys.has(field) && Object.getOwnPropertyDescriptor(value, field) !== undefined) keys.add(field)
+          if (!keys.has(field) && Object.getOwnPropertyDescriptor(recordValue, field) !== undefined) keys.add(field)
         }
         return {
-          hasSymbolKeys: Object.getOwnPropertySymbols(value).length > 0,
-          output: Object.fromEntries([...keys].map((key) => [key, value[key]] as const)),
+          hasSymbolKeys: Object.getOwnPropertySymbols(recordValue).length > 0,
+          output: Object.fromEntries([...keys].map((key) => [key, recordValue[key]] as const)),
         }
       },
       catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
@@ -84,16 +93,22 @@ export const encodeUndefinedAsNull =
   (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
     const checkedFields = validateFields(fields, value)
     if (Result.isFailure(checkedFields)) return Result.fail(checkedFields.failure)
-    if (!isRecord(value)) return Result.succeed(value)
+    const record = Result.try({
+      try: () => isRecord(value) ? value : undefined,
+      catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),
+    })
+    if (Result.isFailure(record)) return Result.fail(record.failure)
+    const recordValue = record.success
+    if (recordValue === undefined) return Result.succeed(value)
     const captured = Result.try({
       try: () => {
-        const keys = new Set(Object.keys(value))
+        const keys = new Set(Object.keys(recordValue))
         for (const field of checkedFields.success) {
-          if (!keys.has(field) && Object.getOwnPropertyDescriptor(value, field) !== undefined) keys.add(field)
+          if (!keys.has(field) && Object.getOwnPropertyDescriptor(recordValue, field) !== undefined) keys.add(field)
         }
         return {
-          hasSymbolKeys: Object.getOwnPropertySymbols(value).length > 0,
-          output: Object.fromEntries([...keys].map((key) => [key, value[key]] as const)),
+          hasSymbolKeys: Object.getOwnPropertySymbols(recordValue).length > 0,
+          output: Object.fromEntries([...keys].map((key) => [key, recordValue[key]] as const)),
         }
       },
       catch: () => new SchemaIssue.InvalidValue({ message: 'Optional fields could not be read' }, value),

@@ -77,6 +77,22 @@ describe('undefinedFieldsAsNull', () => {
     }),
   )
 
+  effect('preserves array and Uint8Array codecs without converting them to records', () =>
+    Effect.sync(() => {
+      const values = [['item'], new Uint8Array([1, 2, 255])]
+
+      for (const value of values) {
+        const decoded = Schema.decodeUnknownResult(OptionalUnknownSchema)(value)
+        const encoded = Schema.encodeUnknownResult(OptionalUnknownSchema)(value)
+
+        expect(Result.isSuccess(decoded)).toBe(true)
+        expect(Result.isSuccess(encoded)).toBe(true)
+        if (Result.isSuccess(decoded)) expect(decoded.success).toBe(value)
+        if (Result.isSuccess(encoded)) expect(encoded.success).toBe(value)
+      }
+    }),
+  )
+
   effect('rejects field names that fail brand validation in both schema directions', () =>
     Effect.sync(() => {
       const invalidFields = [null]
