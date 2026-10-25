@@ -1,4 +1,4 @@
-import { Effect, Option, Result, Schedule, Schema } from 'effect'
+import { Clock, Effect, Option, Result, Schedule, Schema } from 'effect'
 import {
   decodeSave,
   defineFormat,
@@ -67,9 +67,10 @@ const baselineSave = <A, I>(format: SaveFormat<A, I>, value: A) =>
 
 const measure = (run: Effect.Effect<void, unknown, never>, iterations: number): Effect.Effect<number, unknown, never> =>
   Effect.gen(function* () {
-    const started = performance.now()
+    const started = yield* Clock.monotonicTimeNanos
     yield* Effect.repeat(run, Schedule.recurs(iterations - 1))
-    return (performance.now() - started) / iterations
+    const elapsedNanos = (yield* Clock.monotonicTimeNanos) - started
+    return Number(elapsedNanos) / 1_000_000 / iterations
   })
 
 const benchmark = Effect.gen(function* () {
