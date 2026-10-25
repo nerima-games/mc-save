@@ -22,6 +22,13 @@ import {
 import type { MinecraftLz4Options, MinecraftLz4Error } from './minecraft-lz4-format.js'
 import { Result } from 'effect'
 import { assertDefined } from './assert-defined.js'
+import { ValidationMessage } from './brand-types.js'
+
+const writeByte = (writer: ByteWriter, value: unknown): Result.Result<void, MinecraftLz4Error> =>
+  writer.writeByte(value)
+
+const writeWord = (writer: ByteWriter, value: unknown): Result.Result<void, MinecraftLz4Error> =>
+  writer.writeUint32LittleEndian(value)
 
 const hashSequence = (bytes: Uint8Array, offset: number): Result.Result<number, MinecraftLz4Error> =>
   Result.map(readUint32LittleEndian(bytes, offset), (value) => (Math.imul(value, 2654435761) >>> 0) >>> 16)
@@ -44,7 +51,7 @@ const encodeLz4Block = (input: Uint8Array): Result.Result<Uint8Array, MinecraftL
 
     while (offset <= matchFindLimit) {
       const hash = yield* hashSequence(input, offset)
-      const candidate = yield* assertDefined(table[hash], 'LZ4 hash table index was in range').pipe(
+      const candidate = yield* assertDefined(table[hash], ValidationMessage('LZ4 hash table index was in range')).pipe(
         Result.mapError(lz4Error.bind(undefined, 'encode')),
       )
       table[hash] = offset
@@ -68,20 +75,20 @@ const encodeLz4Block = (input: Uint8Array): Result.Result<Uint8Array, MinecraftL
       const literalLength = offset - anchor
       const literalToken = Math.min(literalLength, 15)
       const matchToken = Math.min(matchLength - 4, 15)
-      writer.writeByte((literalToken << 4) | matchToken)
-      if (literalLength >= 15) writeLength(writer, literalLength - 15)
+      yield* writeByte(writer, (literalToken << 4) | matchToken)
+      if (literalLength >= 15) yield* writeLength(writer, literalLength - 15)
       writer.writeBytes(input.slice(anchor, offset))
-      writer.writeByte((offset - candidate) & 0xff)
-      writer.writeByte((offset - candidate) >>> 8)
-      if (matchLength - 4 >= 15) writeLength(writer, matchLength - 4 - 15)
+      yield* writeByte(writer, (offset - candidate) & 0xff)
+      yield* writeByte(writer, (offset - candidate) >>> 8)
+      if (matchLength - 4 >= 15) yield* writeLength(writer, matchLength - 4 - 15)
 
       offset += matchLength
       anchor = offset
     }
 
     const literalLength = input.byteLength - anchor
-    writer.writeByte(Math.min(literalLength, 15) << 4)
-    if (literalLength >= 15) writeLength(writer, literalLength - 15)
+    yield* writeByte(writer, Math.min(literalLength, 15) << 4)
+    if (literalLength >= 15) yield* writeLength(writer, literalLength - 15)
     writer.writeBytes(input.slice(anchor))
     return writer.toUint8Array()
   })
@@ -92,18 +99,22 @@ const writeBlockHeader = (
   compressedLength: number,
   originalLength: number,
   checksum: number,
-): void => {
-  writer.writeBytes(LZ4_BLOCK_MAGIC)
-  writer.writeByte(method | LZ4_COMPRESSION_LEVEL)
-  writer.writeUint32LittleEndian(compressedLength)
-  writer.writeUint32LittleEndian(originalLength)
-  writer.writeUint32LittleEndian(checksum)
-}
+): Result.Result<void, MinecraftLz4Error> =>
+  Result.gen(function* () {
+    writer.writeBytes(LZ4_BLOCK_MAGIC)
+    yield* writeByte(writer, method | LZ4_COMPRESSION_LEVEL)
+    yield* writeWord(writer, compressedLength)
+    yield* writeWord(writer, originalLength)
+    yield* writeWord(writer, checksum)
+  })
 
 export const encodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Options): Result.Result<Uint8Array, MinecraftLz4Error> =>
   Result.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Result.fail(lz4Error('encode', 'options.maxBytes could not be read'))
+    }
     const maxBytesOption = yield* Result.try({
-      try: () => options?.maxBytes,
+      try: () => options === undefined ? undefined : Reflect.get(options, 'maxBytes'),
       catch: () => lz4Error('encode', 'options.maxBytes could not be read'),
     })
     const maxBytes = yield* resolveMaxBytes('encode', maxBytesOption)
@@ -116,7 +127,7 @@ export const encodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Op
       const compressed = yield* encodeLz4Block(block)
       const useCompressed = compressed.byteLength < block.byteLength
       const checksum = yield* xxHash32(block, LZ4_DEFAULT_SEED)
-      writeBlockHeader(
+      yield* writeBlockHeader(
         writer,
         useCompressed ? LZ4_COMPRESSION_METHOD_LZ4 : LZ4_COMPRESSION_METHOD_RAW,
         useCompressed ? compressed.byteLength : block.byteLength,
@@ -125,6 +136,6 @@ export const encodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Op
       )
       writer.writeBytes(useCompressed ? compressed : block)
     }
-    writeBlockHeader(writer, LZ4_COMPRESSION_METHOD_RAW, 0, 0, 0)
+    yield* writeBlockHeader(writer, LZ4_COMPRESSION_METHOD_RAW, 0, 0, 0)
     return writer.toUint8Array()
   })

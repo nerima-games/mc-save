@@ -86,6 +86,8 @@ describe('Minecraft compressed NBT codec', () => {
     const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable compressed NBT options') } })
     await expectNbtError(encodeCompressedNbt(original, 'none', unreadableOptions))
     await expectNbtError(decodeCompressedNbt(new Uint8Array([10, 0, 0]), 'none', unreadableOptions))
+    await expectNbtError(encodeCompressedNbt(original, 'none', widen(null)))
+    await expectNbtError(decodeCompressedNbt(new Uint8Array([10, 0, 0]), 'none', widen(null)))
   })
 
 })

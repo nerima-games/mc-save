@@ -200,6 +200,8 @@ describe('Minecraft compression API', () => {
     const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable options') } })
     await expectCompressionError(compressMinecraft(new Uint8Array([1]), 'none', unreadableOptions))
     await expectCompressionError(decompressMinecraft(new Uint8Array([1]), 'none', unreadableOptions))
+    await expectCompressionError(compressMinecraft(new Uint8Array([1]), 'none', widen(null)))
+    await expectCompressionError(decompressMinecraft(new Uint8Array([1]), 'none', widen(null)))
 
     const uncopiableInput = new Uint8Array([1])
     Object.defineProperty(uncopiableInput, 'slice', {

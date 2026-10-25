@@ -17,6 +17,7 @@ import {
 import type { MinecraftLz4Error, MinecraftLz4Options } from './minecraft-lz4-format.js'
 import { Result } from 'effect'
 import { assertDefined } from './assert-defined.js'
+import { ByteValue, ValidationMessage } from './brand-types.js'
 
 class RecentBytes {
   private readonly bytes = new Uint8Array(65536)
@@ -46,7 +47,7 @@ class RecentBytes {
 
 class DecodeOutput {
   private readonly chunks: Uint8Array[] = []
-  private readonly current = new ByteWriter()
+  private readonly current = new ByteWriter('decode')
   private readonly history = new RecentBytes()
   private total = 0
   private readonly maxBytes: number
@@ -66,10 +67,12 @@ class DecodeOutput {
 
   append(value: number): Result.Result<void, MinecraftLz4Error> {
     if (this.total >= this.maxBytes) return Result.fail(lz4Error('decode', `decompressed output exceeds maxBytes ${String(this.maxBytes)}`))
-    this.current.writeByte(value)
-    this.history.append(value)
-    this.total += 1
-    return Result.succeed(undefined)
+    return Result.gen(function* (this: DecodeOutput) {
+      const byte = yield* Result.mapError(ByteValue.result(value), (reason) => lz4Error('decode', reason))
+      yield* this.current.writeByte(byte)
+      this.history.append(byte)
+      this.total += 1
+    }.bind(this))
   }
 
   copyMatch(offset: number, length: number): Result.Result<void, MinecraftLz4Error> {
@@ -108,7 +111,7 @@ const readLength = (block: Uint8Array, state: { offset: number }, initial: numbe
     while (true) {
       if (state.offset >= block.byteLength) return yield* Result.fail(lz4Error('decode', 'length extension is truncated', state.offset))
       const value = yield* Result.mapError(
-        assertDefined(block[state.offset++], 'readLength: offset was within block.byteLength'),
+        assertDefined(block[state.offset++], ValidationMessage('readLength: offset was within block.byteLength')),
         (reason) => lz4Error('decode', reason, state.offset - 1),
       )
       length += value
@@ -121,14 +124,14 @@ const decodeLz4Block = (block: Uint8Array, output: DecodeOutput): Result.Result<
     const state = { offset: 0 }
     while (state.offset < block.byteLength) {
       const token = yield* Result.mapError(
-        assertDefined(block[state.offset++], 'decodeLz4Block: offset was within block.byteLength'),
+        assertDefined(block[state.offset++], ValidationMessage('decodeLz4Block: offset was within block.byteLength')),
         (reason) => lz4Error('decode', reason, state.offset - 1),
       )
       const literalLength = yield* readLength(block, state, token >>> 4)
       if (literalLength > block.byteLength - state.offset) return yield* Result.fail(lz4Error('decode', 'literal run exceeds the compressed block', state.offset))
       for (let index = 0; index < literalLength; index += 1) {
         const value = yield* Result.mapError(
-          assertDefined(block[state.offset++], 'decodeLz4Block: literal run offset out of range'),
+          assertDefined(block[state.offset++], ValidationMessage('decodeLz4Block: literal run offset out of range')),
           (reason) => lz4Error('decode', reason, state.offset - 1),
         )
         yield* output.append(value)
@@ -136,11 +139,11 @@ const decodeLz4Block = (block: Uint8Array, output: DecodeOutput): Result.Result<
       if (state.offset === block.byteLength) return undefined
       if (state.offset + 2 > block.byteLength) return yield* Result.fail(lz4Error('decode', 'match offset is truncated', state.offset))
       const matchOffsetLow = yield* Result.mapError(
-        assertDefined(block[state.offset], 'decodeLz4Block: missing match offset low byte'),
+        assertDefined(block[state.offset], ValidationMessage('decodeLz4Block: missing match offset low byte')),
         (reason) => lz4Error('decode', reason, state.offset),
       )
       const matchOffsetHigh = yield* Result.mapError(
-        assertDefined(block[state.offset + 1], 'decodeLz4Block: missing match offset high byte'),
+        assertDefined(block[state.offset + 1], ValidationMessage('decodeLz4Block: missing match offset high byte')),
         (reason) => lz4Error('decode', reason, state.offset + 1),
       )
       const matchOffset = matchOffsetLow | (matchOffsetHigh << 8)
@@ -168,8 +171,11 @@ const assertBlockMagic = (input: Uint8Array, offset: number): Result.Result<void
 
 export const decodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Options): Result.Result<Uint8Array, MinecraftLz4Error> =>
   Result.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Result.fail(lz4Error('decode', 'options.maxBytes could not be read'))
+    }
     const maxBytesOption = yield* Result.try({
-      try: () => options?.maxBytes,
+      try: () => options === undefined ? undefined : Reflect.get(options, 'maxBytes'),
       catch: () => lz4Error('decode', 'options.maxBytes could not be read'),
     })
     const maxBytes = yield* resolveMaxBytes('decode', maxBytesOption)
@@ -186,7 +192,7 @@ export const decodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Op
       const headerOffset = offset
       yield* assertBlockMagic(bytes, headerOffset)
       const token = yield* Result.mapError(
-        assertDefined(bytes[headerOffset + 8], 'decodeLz4BlockStream: offset was within input.byteLength'),
+        assertDefined(bytes[headerOffset + 8], ValidationMessage('decodeLz4BlockStream: offset was within input.byteLength')),
         (reason) => lz4Error('decode', reason, headerOffset + 8),
       )
       const compressionMethod = token & 0xf0

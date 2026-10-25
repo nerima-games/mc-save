@@ -13,13 +13,13 @@ import {
 import type { MinecraftLz4Error } from './minecraft-lz4-format.js'
 
 export type MinecraftCompressedNbtOptions = {
-  readonly maxCompressedBytes?: number
-  readonly maxDecompressedBytes?: number
+  readonly maxCompressedBytes?: unknown
+  readonly maxDecompressedBytes?: unknown
   readonly nbt?: NbtCodecOptions
 }
 
 const compressionOptions = (
-  values: { readonly maxCompressedBytes: number | undefined; readonly maxDecompressedBytes: number | undefined },
+  values: { readonly maxCompressedBytes: unknown; readonly maxDecompressedBytes: unknown },
   operation: 'encode' | 'decode',
 ): MinecraftCompressionOptions =>
   operation === 'encode'
@@ -38,8 +38,17 @@ export const encodeCompressedNbt = (
   options?: MinecraftCompressedNbtOptions,
 ): Effect.Effect<Uint8Array, NbtFormatError | MinecraftCompressionError | MinecraftLz4Error> =>
   Effect.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Effect.fail(nbtError('NBT compression options must be readable'))
+    }
     const values = yield* Effect.try({
-      try: () => ({ maxCompressedBytes: options?.maxCompressedBytes, maxDecompressedBytes: options?.maxDecompressedBytes, nbt: options?.nbt }),
+      try: () => options === undefined
+        ? { maxCompressedBytes: undefined, maxDecompressedBytes: undefined, nbt: undefined }
+        : {
+            maxCompressedBytes: Reflect.get(options, 'maxCompressedBytes'),
+            maxDecompressedBytes: Reflect.get(options, 'maxDecompressedBytes'),
+            nbt: Reflect.get(options, 'nbt'),
+          },
       catch: () => nbtError('NBT compression options must be readable'),
     })
     const encoded = yield* Effect.fromResult(encodeNbt(document, values.nbt))
@@ -52,8 +61,17 @@ export const decodeCompressedNbt = (
   options?: MinecraftCompressedNbtOptions,
 ): Effect.Effect<NbtDocument, NbtFormatError | MinecraftCompressionError | MinecraftLz4Error> =>
   Effect.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Effect.fail(nbtError('NBT compression options must be readable'))
+    }
     const values = yield* Effect.try({
-      try: () => ({ maxCompressedBytes: options?.maxCompressedBytes, maxDecompressedBytes: options?.maxDecompressedBytes, nbt: options?.nbt }),
+      try: () => options === undefined
+        ? { maxCompressedBytes: undefined, maxDecompressedBytes: undefined, nbt: undefined }
+        : {
+            maxCompressedBytes: Reflect.get(options, 'maxCompressedBytes'),
+            maxDecompressedBytes: Reflect.get(options, 'maxDecompressedBytes'),
+            nbt: Reflect.get(options, 'nbt'),
+          },
       catch: () => nbtError('NBT compression options must be readable'),
     })
     const decompressed = yield* decompressMinecraft(bytes, compression, compressionOptions(values, 'decode'))

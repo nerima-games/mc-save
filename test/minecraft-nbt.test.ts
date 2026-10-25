@@ -537,6 +537,8 @@ describe('Minecraft NBT factories and codec', () => {
     const unreadableOptions = new Proxy({}, { get: () => { throw new Error('unreadable NBT options') } })
     expectNbtError(() => encodeNbt(document, unreadableOptions))
     expectNbtError(() => decodeNbt(new Uint8Array([10, 0, 0, 0]), unreadableOptions))
+    expectNbtError(() => encodeNbt(document, asUnchecked(null)))
+    expectNbtError(() => decodeNbt(new Uint8Array([10, 0, 0, 0]), asUnchecked(null)))
 
     const uncloneableDocument = new Proxy(document, {})
     expectNbtError(() => encodeNbt(asUnchecked(uncloneableDocument)))

@@ -3,6 +3,7 @@
 import { Result } from 'effect'
 import { describe, expect, it } from 'vitest'
 import { decodeLz4BlockStream as decodeLz4BlockStreamResult, encodeLz4BlockStream as encodeLz4BlockStreamResult, MinecraftLz4Error } from '../src/domain/minecraft-lz4.js'
+import { ByteWriter, lz4Error } from '../src/domain/minecraft-lz4-format.js'
 
 const decodeLz4BlockStream = (...args: Parameters<typeof decodeLz4BlockStreamResult>) =>
   Result.getOrThrow(decodeLz4BlockStreamResult(...args))
@@ -170,6 +171,19 @@ const widen = <T,>(value: unknown): T => {
 }
 
 describe('Minecraft LZ4 block stream codec', () => {
+  it('rejects invalid byte and word writes through the public writer methods', () => {
+    const writer = new ByteWriter()
+    expect(Result.isFailure(writer.writeByte(-1))).toBe(true)
+    expect(Result.isFailure(writer.writeByte(256))).toBe(true)
+    expect(Result.isFailure(writer.writeUint32LittleEndian(-1))).toBe(true)
+    expect(Result.isFailure(writer.writeUint32LittleEndian(Number.NaN))).toBe(true)
+    expect(writer.toUint8Array()).toStrictEqual(new Uint8Array())
+
+    expect(Result.isSuccess(writer.writeByte(0x12))).toBe(true)
+    expect(Result.isSuccess(writer.writeUint32LittleEndian(0x01020304))).toBe(true)
+    expect(writer.toUint8Array()).toStrictEqual(Uint8Array.from([0x12, 0x04, 0x03, 0x02, 0x01]))
+  })
+
   it('round-trips empty, literal, repetitive, trailing, and multi-block data', () => {
     const trailingLiterals = Uint8Array.from([
       ...new Uint8Array(32).fill(7),
@@ -206,10 +220,10 @@ describe('Minecraft LZ4 block stream codec', () => {
   })
 
   it('formats errors with and without byte offsets', () => {
-    expect(new MinecraftLz4Error({ operation: 'encode', reason: 'bad input' }).message).toBe(
+    expect(lz4Error('encode', 'bad input').message).toBe(
       'Minecraft LZ4 encode failed: bad input',
     )
-    expect(new MinecraftLz4Error({ operation: 'decode', reason: 'bad block', offset: 12 }).message).toBe(
+    expect(lz4Error('decode', 'bad block', 12).message).toBe(
       'Minecraft LZ4 decode failed at byte offset 12: bad block',
     )
   })
@@ -251,6 +265,8 @@ describe('Minecraft LZ4 block stream codec', () => {
     expect(decodeLz4BlockStream(makeBlockStream([]), { maxBytes: 0 })).toStrictEqual(new Uint8Array())
     expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), { maxBytes: -1 }))
     expectLz4Error(() => decodeLz4BlockStream(new Uint8Array(), { maxBytes: Number.NaN }))
+    expectLz4Error(() => encodeLz4BlockStream(new Uint8Array(), widen(null)))
+    expectLz4Error(() => decodeLz4BlockStream(makeBlockStream([]), widen(null)))
     expectLz4Error(() => encodeLz4BlockStream(widen(null)))
     expectLz4Error(() => decodeLz4BlockStream(widen(null)))
   })

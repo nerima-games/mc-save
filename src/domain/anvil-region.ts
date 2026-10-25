@@ -1,6 +1,6 @@
 /* oxlint-disable no-bitwise -- Anvil location entries are three-byte big-endian values. */
 
-import { Data, Option, Result } from 'effect'
+import { Brand, Data, Option, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
 
 export const ANVIL_SECTOR_BYTES = 4096
@@ -24,6 +24,23 @@ export const ANVIL_COMPRESSION_IDS = {
 } as const
 
 export type AnvilCompression = keyof typeof ANVIL_COMPRESSION_IDS
+export type AnvilLocalCoordinate = number & Brand.Brand<'AnvilLocalCoordinate'>
+export type AnvilTimestamp = number & Brand.Brand<'AnvilTimestamp'>
+export type AnvilRegionByteLimit = number & Brand.Brand<'AnvilRegionByteLimit'>
+export type AnvilCompressionId = number & Brand.Brand<'AnvilCompressionId'>
+
+const toAnvilLocalCoordinate = Brand.make<AnvilLocalCoordinate>((value) =>
+  Number.isInteger(value) && value >= 0 && value < ANVIL_REGION_CHUNK_SIDE || 'local coordinate is out of range',
+)
+const toAnvilTimestamp = Brand.make<AnvilTimestamp>((value) =>
+  Number.isInteger(value) && value >= 0 && value <= 0xffffffff || 'timestamp is out of range',
+)
+const toAnvilRegionByteLimit = Brand.make<AnvilRegionByteLimit>((value) =>
+  Number.isSafeInteger(value) && value >= ANVIL_HEADER_BYTES && value <= ANVIL_MAX_REGION_BYTES || 'byte limit is out of range',
+)
+const toAnvilCompressionId = Brand.make<AnvilCompressionId>((value) =>
+  Number.isInteger(value) && value >= 0 && value <= 0xff || 'compression id is out of range',
+)
 
 type AnvilRegionErrorFields = {
   readonly reason: string
@@ -44,9 +61,9 @@ export class AnvilRegionError extends AnvilRegionErrorBase {
 }
 
 export type AnvilChunkRecord = {
-  readonly localX: number
-  readonly localZ: number
-  readonly timestamp: number
+  readonly localX: AnvilLocalCoordinate
+  readonly localZ: AnvilLocalCoordinate
+  readonly timestamp: AnvilTimestamp
   readonly compression: AnvilCompression
   readonly payload: Uint8Array
   readonly external?: boolean
@@ -54,11 +71,11 @@ export type AnvilChunkRecord = {
 
 export type AnvilRegion = {
   readonly chunks: ReadonlyArray<AnvilChunkRecord | null>
-  readonly timestamps: ReadonlyArray<number>
+  readonly timestamps: ReadonlyArray<AnvilTimestamp>
 }
 
 export type AnvilRegionOptions = {
-  readonly maxBytes?: number
+  readonly maxBytes?: unknown
 }
 
 const regionError = (reason: string, offset?: number): AnvilRegionError =>
@@ -69,22 +86,42 @@ const asArrayBuffer = (buffer: ArrayBufferLike): Result.Result<ArrayBuffer, Anvi
     ? Result.succeed(buffer)
     : Result.fail(regionError('expected an ArrayBuffer-backed Uint8Array'))
 
-const resolveMaxBytes = (maxBytes: number | undefined): Result.Result<number, AnvilRegionError> => {
-  const resolved = maxBytes ?? ANVIL_MAX_REGION_BYTES
-  if (!Number.isSafeInteger(resolved) || resolved < ANVIL_HEADER_BYTES || resolved > ANVIL_MAX_REGION_BYTES) {
+const resolveMaxBytes = (maxBytes: unknown): Result.Result<AnvilRegionByteLimit, AnvilRegionError> => {
+  const resolved = maxBytes === undefined ? ANVIL_MAX_REGION_BYTES : maxBytes
+  if (
+    typeof resolved !== 'number' ||
+    !Number.isSafeInteger(resolved) ||
+    resolved < ANVIL_HEADER_BYTES ||
+    resolved > ANVIL_MAX_REGION_BYTES
+  ) {
     return Result.fail(
       regionError(
         `maxBytes must be a safe integer between ${String(ANVIL_HEADER_BYTES)} and ${String(ANVIL_MAX_REGION_BYTES)}`,
       ),
     )
   }
-  return Result.succeed(resolved)
+  return Result.mapError(
+    toAnvilRegionByteLimit.result(resolved),
+    () => regionError('maxBytes must be a safe integer between the minimum and maximum region sizes'),
+  )
 }
+
+const readMaxBytesOption = (options: unknown): Result.Result<unknown, AnvilRegionError> =>
+  Result.gen(function* () {
+    if (options === undefined) return undefined
+    if (options === null || typeof options !== 'object') {
+      return yield* Result.fail(regionError('maxBytes option must be readable'))
+    }
+    return yield* Result.try({
+      try: () => Reflect.get(options, 'maxBytes'),
+      catch: () => regionError('maxBytes option must be readable'),
+    })
+  })
 
 const isCompression = (value: unknown): value is AnvilCompression =>
   typeof value === 'string' && Object.prototype.hasOwnProperty.call(ANVIL_COMPRESSION_IDS, value)
 
-export const anvilCompressionFromId = (id: number): Option.Option<AnvilCompression> => {
+export const anvilCompressionFromId = (id: unknown): Option.Option<AnvilCompression> => {
   switch (id) {
     case ANVIL_COMPRESSION_IDS.gzip:
       return Option.some('gzip')
@@ -103,37 +140,49 @@ export const anvilCompressionFromId = (id: number): Option.Option<AnvilCompressi
 
 export const anvilCompressionId = (
   compression: AnvilCompression,
-): Result.Result<number, AnvilRegionError> =>
+): Result.Result<AnvilCompressionId, AnvilRegionError> =>
   isCompression(compression)
-    ? Result.succeed(ANVIL_COMPRESSION_IDS[compression])
+    ? Result.mapError(
+        toAnvilCompressionId.result(ANVIL_COMPRESSION_IDS[compression]),
+        () => regionError('unknown compression type'),
+      )
     : Result.fail(regionError('unknown compression type'))
 
-const assertTimestamp = (timestamp: unknown): Result.Result<number, AnvilRegionError> =>
+const assertTimestamp = (timestamp: unknown): Result.Result<AnvilTimestamp, AnvilRegionError> =>
   typeof timestamp === 'number' && Number.isInteger(timestamp) && timestamp >= 0 && timestamp <= 0xffffffff
-    ? Result.succeed(timestamp)
+    ? Result.mapError(toAnvilTimestamp.result(timestamp), () => regionError('timestamp must be an unsigned 32-bit integer'))
     : Result.fail(regionError('timestamp must be an unsigned 32-bit integer'))
 
 const assertChunk = (value: unknown, index: number): Result.Result<AnvilChunkRecord, AnvilRegionError> => {
   if (value === null || typeof value !== 'object') return Result.fail(regionError(`chunk ${String(index)} must be an object`))
   return Result.gen(function* () {
-    const snapshot: {
-      localX: unknown
-      localZ: unknown
-      timestamp: unknown
-      compression: unknown
-      payload: unknown
-      external: unknown
-    } = yield* Result.try({
-      try: () => ({
-        localX: Reflect.get(value, 'localX'),
-        localZ: Reflect.get(value, 'localZ'),
-        timestamp: Reflect.get(value, 'timestamp'),
-        compression: Reflect.get(value, 'compression'),
-        payload: Reflect.get(value, 'payload'),
-        external: Reflect.get(value, 'external'),
-      }),
+    const inspected = yield* Result.try({
+      try: () => {
+        const keys = Reflect.ownKeys(value)
+        if (!keys.every((key) =>
+          typeof key === 'string' &&
+          ['localX', 'localZ', 'timestamp', 'compression', 'payload', 'external'].includes(key),
+        )) {
+          return { _tag: 'invalid' as const }
+        }
+        return {
+          _tag: 'valid' as const,
+          snapshot: {
+            localX: Reflect.get(value, 'localX'),
+            localZ: Reflect.get(value, 'localZ'),
+            timestamp: Reflect.get(value, 'timestamp'),
+            compression: Reflect.get(value, 'compression'),
+            payload: Reflect.get(value, 'payload'),
+            external: Reflect.get(value, 'external'),
+          },
+        }
+      },
       catch: () => regionError(`chunk ${String(index)} must be an object`),
     })
+    if (inspected._tag === 'invalid') {
+      return yield* Result.fail(regionError(`chunk ${String(index)} has unexpected fields`))
+    }
+    const snapshot = inspected.snapshot
     if (
       typeof snapshot.localX !== 'number' ||
       !Number.isInteger(snapshot.localX) ||
@@ -165,14 +214,15 @@ const assertChunk = (value: unknown, index: number): Result.Result<AnvilChunkRec
       try: () => payloadValue.slice(),
       catch: () => regionError(`chunk ${String(index)} payload could not be copied`),
     })
-    const recordBytes = snapshot.external === true ? 5 : 5 + payload.byteLength
-    const sectors = Math.ceil(recordBytes / ANVIL_SECTOR_BYTES)
-    if (sectors < 1 || sectors > ANVIL_MAX_CHUNK_SECTORS) {
-      return yield* Result.fail(regionError(`chunk ${String(index)} payload does not fit in 255 sectors`))
-    }
     return {
-      localX: snapshot.localX,
-      localZ: snapshot.localZ,
+      localX: yield* Result.mapError(
+        toAnvilLocalCoordinate.result(snapshot.localX),
+        () => regionError(`chunk ${String(index)} has an invalid localX`),
+      ),
+      localZ: yield* Result.mapError(
+        toAnvilLocalCoordinate.result(snapshot.localZ),
+        () => regionError(`chunk ${String(index)} has an invalid localZ`),
+      ),
       timestamp,
       compression: snapshot.compression,
       payload,
@@ -215,7 +265,7 @@ export const anvilRegion = (
     }
 
     const copiedChunks: Array<AnvilChunkRecord | null> = []
-    const copiedTimestamps: number[] = []
+    const copiedTimestamps: AnvilTimestamp[] = []
     for (let index = 0; index < ANVIL_CHUNK_COUNT; index += 1) {
       const chunkValue = chunkValues[index]
       if (chunkValue === undefined) {
@@ -253,7 +303,7 @@ const writeUint24 = (view: DataView, offset: number, value: number): void => {
 
 export const decodeAnvilRegion = (
   bytes: Uint8Array,
-  options?: AnvilRegionOptions,
+  options?: unknown,
 ): Result.Result<AnvilRegion, AnvilRegionError> =>
   Result.gen(function* () {
     if (!(bytes instanceof Uint8Array)) {
@@ -267,10 +317,7 @@ export const decodeAnvilRegion = (
       }),
       catch: () => regionError('input must be a readable Uint8Array'),
     })
-    const optionMaxBytes = yield* Result.try({
-      try: () => options?.maxBytes,
-      catch: () => regionError('maxBytes option must be readable'),
-    })
+    const optionMaxBytes = yield* readMaxBytesOption(options)
     const maxBytes = yield* resolveMaxBytes(optionMaxBytes)
     if (input.byteLength < ANVIL_HEADER_BYTES) {
       return yield* Result.fail(regionError('region is smaller than its 8 KiB header'))
@@ -288,7 +335,7 @@ export const decodeAnvilRegion = (
       catch: () => regionError('input buffer is detached or out of bounds'),
     })
     const sectorCount = input.byteLength / ANVIL_SECTOR_BYTES
-    const timestamps: number[] = []
+    const timestamps: AnvilTimestamp[] = []
     const chunks: Array<AnvilChunkRecord | null> = new Array(ANVIL_CHUNK_COUNT).fill(null)
     const occupied = new Uint8Array(sectorCount)
     occupied.fill(1, 0, ANVIL_HEADER_SECTORS)
@@ -297,7 +344,10 @@ export const decodeAnvilRegion = (
       const headerOffset = index * 4
       const sectorOffset = readUint24(view, headerOffset)
       const sectorLength = view.getUint8(headerOffset + 3)
-      const timestamp = view.getUint32(ANVIL_SECTOR_BYTES + headerOffset, false)
+      const timestamp = yield* Result.mapError(
+        toAnvilTimestamp.result(view.getUint32(ANVIL_SECTOR_BYTES + headerOffset, false)),
+        () => regionError(`chunk slot ${String(index)} has an invalid timestamp`, ANVIL_SECTOR_BYTES + headerOffset),
+      )
       timestamps.push(timestamp)
 
       if (sectorOffset === 0 && sectorLength === 0) continue
@@ -343,8 +393,14 @@ export const decodeAnvilRegion = (
             length - 1,
           ).slice()
       chunks[index] = {
-        localX: index % ANVIL_REGION_CHUNK_SIDE,
-        localZ: Math.floor(index / ANVIL_REGION_CHUNK_SIDE),
+        localX: yield* Result.mapError(
+          toAnvilLocalCoordinate.result(index % ANVIL_REGION_CHUNK_SIDE),
+          () => regionError(`chunk slot ${String(index)} has an invalid localX`),
+        ),
+        localZ: yield* Result.mapError(
+          toAnvilLocalCoordinate.result(Math.floor(index / ANVIL_REGION_CHUNK_SIDE)),
+          () => regionError(`chunk slot ${String(index)} has an invalid localZ`),
+        ),
         timestamp,
         compression: compressionOption.value,
         payload,
@@ -357,7 +413,7 @@ export const decodeAnvilRegion = (
 
 export const encodeAnvilRegion = (
   region: AnvilRegion,
-  options?: AnvilRegionOptions,
+  options?: unknown,
 ): Result.Result<Uint8Array, AnvilRegionError> =>
   Result.gen(function* () {
     if (region === null || typeof region !== 'object') {
@@ -368,10 +424,7 @@ export const encodeAnvilRegion = (
       catch: () => regionError('region chunks and timestamps must be readable'),
     })
     const validated = yield* anvilRegion(parts.chunks, parts.timestamps)
-    const optionMaxBytes = yield* Result.try({
-      try: () => options?.maxBytes,
-      catch: () => regionError('maxBytes option must be readable'),
-    })
+    const optionMaxBytes = yield* readMaxBytesOption(options)
     const maxBytes = yield* resolveMaxBytes(optionMaxBytes)
 
     let nextSector = ANVIL_HEADER_SECTORS
@@ -387,6 +440,9 @@ export const encodeAnvilRegion = (
         )
       }
       const sectors = Math.ceil((chunk.external === true ? 5 : 5 + chunk.payload.byteLength) / ANVIL_SECTOR_BYTES)
+      if (sectors > ANVIL_MAX_CHUNK_SECTORS) {
+        return yield* Result.fail(regionError(`chunk ${String(index)} payload does not fit in 255 sectors`))
+      }
       locations.push([nextSector, sectors, chunk])
       nextSector += sectors
     }

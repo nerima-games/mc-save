@@ -1,4 +1,4 @@
-import { Data, Effect, Result } from 'effect'
+import { Brand, Data, Effect, Result } from 'effect'
 import type * as Cause from 'effect/Cause'
 import { decodeLz4BlockStream, encodeLz4BlockStream } from './minecraft-lz4.js'
 
@@ -10,6 +10,11 @@ export const MINECRAFT_COMPRESSION = {
 } as const
 
 export type MinecraftCompression = keyof typeof MINECRAFT_COMPRESSION
+export type MinecraftCompressionByteLimit = number & Brand.Brand<'MinecraftCompressionByteLimit'>
+
+const toMinecraftCompressionByteLimit = Brand.make<MinecraftCompressionByteLimit>((value) =>
+  Number.isSafeInteger(value) && value >= 0 || 'compression byte limit must be a non-negative safe integer',
+)
 
 export const MINECRAFT_COMPRESSION_MAX_BYTES: number = 64 * 1024 * 1024
 
@@ -31,8 +36,8 @@ export class MinecraftCompressionError extends MinecraftCompressionErrorBase {
 }
 
 export type MinecraftCompressionOptions = {
-  readonly maxInputBytes?: number
-  readonly maxOutputBytes?: number
+  readonly maxInputBytes?: unknown
+  readonly maxOutputBytes?: unknown
 }
 
 type NativeCompressionFormat = 'gzip' | 'deflate'
@@ -105,10 +110,13 @@ function assertCompression(value: unknown, operation: MinecraftCompressionError[
     : Result.fail(compressionError(operation, 'none', `unknown compression ${String(value)}`))
 }
 
-const resolveLimit = (value: number | undefined, name: string, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<number, MinecraftCompressionError> => {
-  const resolved = value ?? MINECRAFT_COMPRESSION_MAX_BYTES
-  return Number.isSafeInteger(resolved) && resolved >= 0
-    ? Result.succeed(resolved)
+const resolveLimit = (value: unknown, name: string, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<MinecraftCompressionByteLimit, MinecraftCompressionError> => {
+  const resolved = value === undefined ? MINECRAFT_COMPRESSION_MAX_BYTES : value
+  return typeof resolved === 'number' && Number.isSafeInteger(resolved) && resolved >= 0
+    ? Result.mapError(
+        toMinecraftCompressionByteLimit.result(resolved),
+        () => compressionError(operation, compression, `${name} must be a non-negative safe integer`),
+      )
     : Result.fail(compressionError(operation, compression, `${name} must be a non-negative safe integer`))
 }
 
@@ -117,12 +125,12 @@ const assertInput = (input: Uint8Array, compression: MinecraftCompression, opera
     ? Result.succeed(undefined)
     : Result.fail(compressionError(operation, compression, 'input must be a Uint8Array'))
 
-const assertInputLimit = (input: Uint8Array, limit: number, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<void, MinecraftCompressionError> =>
+const assertInputLimit = (input: Uint8Array, limit: MinecraftCompressionByteLimit, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<void, MinecraftCompressionError> =>
   input.byteLength > limit
     ? Result.fail(compressionError(operation, compression, `input exceeds maxInputBytes ${String(limit)}`))
     : Result.succeed(undefined)
 
-const assertOutputLimit = (output: Uint8Array, limit: number, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<Uint8Array, MinecraftCompressionError> =>
+const assertOutputLimit = (output: Uint8Array, limit: MinecraftCompressionByteLimit, compression: MinecraftCompression, operation: MinecraftCompressionError['operation']): Result.Result<Uint8Array, MinecraftCompressionError> =>
   output.byteLength > limit
     ? Result.fail(compressionError(operation, compression, `output exceeds maxOutputBytes ${String(limit)}`))
     : Result.succeed(output)
@@ -139,7 +147,7 @@ const streamValueToBytes = (value: StreamValue, compression: MinecraftCompressio
 
 const collectStreamOutput = (
   reader: StreamReader,
-  maxOutputBytes: number,
+  maxOutputBytes: MinecraftCompressionByteLimit,
   compression: MinecraftCompression,
   operation: MinecraftCompressionError['operation'],
 ): Effect.Effect<Uint8Array, MinecraftCompressionError> =>
@@ -181,7 +189,7 @@ const runNativeTransform = (
   input: Uint8Array,
   compression: MinecraftCompression,
   operation: MinecraftCompressionError['operation'],
-  maxOutputBytes: number,
+  maxOutputBytes: MinecraftCompressionByteLimit,
 ): Effect.Effect<Uint8Array, MinecraftCompressionError> =>
   Effect.gen(function* () {
     const Constructor = resolveStreamConstructor(operation === 'encode' ? 'CompressionStream' : 'DecompressionStream')
@@ -221,11 +229,20 @@ const runNativeTransform = (
 export const compressMinecraft = (
   input: Uint8Array,
   compression: MinecraftCompression,
-  options?: MinecraftCompressionOptions,
+  options?: unknown,
 ): Effect.Effect<Uint8Array, MinecraftCompressionError | import('./minecraft-lz4-format.js').MinecraftLz4Error> =>
   Effect.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Effect.fail(compressionError('encode', 'none', 'compression options could not be read'))
+    }
     const values = yield* Effect.try({
-      try: () => ({ compression, maxInputBytes: options?.maxInputBytes, maxOutputBytes: options?.maxOutputBytes }),
+      try: () => options === undefined
+        ? { compression, maxInputBytes: undefined, maxOutputBytes: undefined }
+        : {
+            compression,
+            maxInputBytes: Reflect.get(options, 'maxInputBytes'),
+            maxOutputBytes: Reflect.get(options, 'maxOutputBytes'),
+          },
       catch: () => compressionError('encode', 'none', 'compression options could not be read'),
     })
     const resolvedCompression = yield* Effect.fromResult(assertCompression(values.compression, 'encode'))
@@ -249,11 +266,20 @@ export const compressMinecraft = (
 export const decompressMinecraft = (
   input: Uint8Array,
   compression: MinecraftCompression,
-  options?: MinecraftCompressionOptions,
+  options?: unknown,
 ): Effect.Effect<Uint8Array, MinecraftCompressionError | import('./minecraft-lz4-format.js').MinecraftLz4Error> =>
   Effect.gen(function* () {
+    if (options !== undefined && (options === null || typeof options !== 'object')) {
+      return yield* Effect.fail(compressionError('decode', 'none', 'compression options could not be read'))
+    }
     const values = yield* Effect.try({
-      try: () => ({ compression, maxInputBytes: options?.maxInputBytes, maxOutputBytes: options?.maxOutputBytes }),
+      try: () => options === undefined
+        ? { compression, maxInputBytes: undefined, maxOutputBytes: undefined }
+        : {
+            compression,
+            maxInputBytes: Reflect.get(options, 'maxInputBytes'),
+            maxOutputBytes: Reflect.get(options, 'maxOutputBytes'),
+          },
       catch: () => compressionError('decode', 'none', 'compression options could not be read'),
     })
     const resolvedCompression = yield* Effect.fromResult(assertCompression(values.compression, 'decode'))
