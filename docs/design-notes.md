@@ -14,7 +14,7 @@ The checksum is calculated over the envelope's canonical representation, not the
 
 ## DN-4: Revalidate values read from storage
 
-Although `StoragePort` is typed to return an envelope, the runtime value came from IndexedDB or another external medium. `loadFrom` validates the envelope schema, size, checksum, format, and payload schema. `listFrom` keeps record-level decode failures separate from failures to read the medium itself.
+Although `StoragePort` is typed to return an envelope, the runtime value came from IndexedDB or another external medium. `loadFrom` validates the envelope schema, size, checksum, format, and payload schema. `listFrom` records per-save decode failures in the listing, while invalid read options and storage failures fail the Effect.
 
 ## DN-5: Atomic batches belong to the port
 
@@ -50,7 +50,7 @@ Dimension directories, region coordinates, floor division for negative coordinat
 
 ## DN-13: Keep the write queue generic
 
-`makeWriteQueue` provides serial write mechanics without owning settings state, callbacks, or session behavior. Later writes run after typed failures. A successful write clears the remembered failure; `drain` waits for the queue and reports the last write's typed failure if it failed.
+`makeWriteQueue` provides serial write mechanics without owning settings state, callbacks, or session behavior. Later writes run after typed failures. The most recent typed failure remains pending through later successes. `drain` waits for queued writes, reports that failure, and clears it; a newer failure replaces an older pending failure.
 
 ## Regression tests
 

@@ -31,6 +31,20 @@ const encoded = Result.isSuccess(format)
 
 Handle a failed `Result` as an ordinary validation outcome. Do not call a throwing constructor on untrusted persisted data.
 
+## Public API and branded inputs
+
+This minor release changes public call signatures and the fields of exported types. The complete base-to-head declaration inventory, including removed and added exports, every changed callable signature, constructor, field, optionality and readonly state, type alias, class heritage, index signature, and brand construction path, is in [`docs/api-migration-0.6.0.md`](./api-migration-0.6.0.md). It is generated from the packaged declarations at `origin/main` and this release branch.
+
+The comparison includes the following migration rules:
+
+- `throwMinecraftJavaSaveError` is removed. Use `minecraftJavaSaveError`; it returns `Result<MinecraftJavaSaveError, TypeError>`. `errorReason` also returns `Result`, so propagate its failure before constructing an error.
+- `SaveKey.result(raw)`, `SaveFormatName.result(raw)`, and other same-name brand constructors return `Result<Brand, BrandError>`. Check the Result and propagate `.failure` before using `.success`. Do not call the constructor directly on untrusted input.
+- `saveKeyForWorld(...)`, the `parseMinecraft...` functions, `anvilChunkIndex(...)`, `anvilRegion(...)`, `tagId(...)`, and `assertInteger(...)` already return `Result`; do not call `.result` on those return values. Their precise return types and the right access path for each branded value are in the inventory.
+- New NBT scalar values come from their validating constructors such as `nbtByte(value)`, which return `Result<NbtByte, NbtFormatError>`; use the branded `.success.value` after checking the failure.
+- Exported option fields for codec limits accept `unknown` where the codec validates them. Pass the option through the relevant codec and handle its typed `Result` or `Effect` failure.
+
+The declaration comparison found no existing field transition from optional to required or required to optional. The `MinecraftRegionFilesError.message` field remains writable, matching `Error.message` in the base declaration. Save-file wire formats and envelope bytes are unchanged in this release.
+
 ## Kernel 0.9 brands
 
 Import `WorldId` from the package root. Import `ChunkAxis`, `ChunkCoord`, `CHUNK_SIZE_XZ`, and `chunkCoord` from `@nerima-games/mc-kernel/domain/coordinates`. Save-slice IDs, versions, migrations, and registrations come from the kernel's module-contract and save-slice subpaths. Remove any consumer-local duplicate brand or save-slice contract.

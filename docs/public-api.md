@@ -17,17 +17,17 @@ The package exports its public API from `src/index.ts`. Internal modules that ar
 The main operations are `saveTo`, `loadFrom`, and `listFrom`. They use the `StoragePort` Effect service:
 
 - `saveTo` encodes, seals, validates, then writes one value.
-- `loadFrom` returns `Option.none()` for a missing key and revalidates stored data before decoding it.
-- `listFrom` returns valid values and per-key decode failures separately. A storage failure fails the whole listing.
+- `loadFrom` validates read options before storage lookup, returns `Option.none()` only for a missing key, and revalidates stored data before decoding it.
+- `listFrom` validates read options before enumerating keys, then returns valid values and per-key decode failures separately. Invalid options and storage failures fail the whole listing; a decode failure for an individual record remains a `corrupt` entry.
 - `saveBatch` prepares every entry before one atomic `commitBatch` call.
 - `saveDurably` and `loadDurably` use a previous-value key for recovery.
 - `withStorageRetry` wraps the storage service with a `StorageRetryPolicy`.
 - `writeRevisionedSave` publishes chunks before the head, attempts to restore prior values after a typed write failure, and best-effort removes obsolete chunks after publication.
-- `makeWriteQueue` serializes writes. `enqueue` schedules a write; `drain` waits for queued writes and reports the last typed failure.
+- `makeWriteQueue` serializes writes. `enqueue` schedules a write; `drain` waits for queued writes and reports the most recent failure not yet observed by `drain`. A later success does not erase that failure.
 
-`StoragePort` exposes `get`, `put`, `remove`, `commitBatch`, `readBatch`, and `keys`. The package provides `makeInMemoryStorage`, `InMemoryStorageLayer`, `makeIndexedDbStorage`, `indexedDbStorageLayer`, and `failingStorageLayer`.
+`StoragePort` exposes `get`, `put`, `remove`, `commitBatch`, `readBatch`, and `keys`. The package provides `makeInMemoryStorage`, `InMemoryStorageLayer`, `makeIndexedDbStorage`, `indexedDbStorageLayer`, and `failingStorageLayer`. Both adapters reject malformed envelope values and sparse or `undefined` batch arrays with `StorageError`; they keep valid empty batches and missing keys distinct.
 
-`SaveKey` is a branded key type. Values from untrusted input should be checked with the brand constructor's `option` or `result` method rather than an unsafe cast. `saveKeyForWorld` builds a key from the kernel's `WorldId` and encoded path segments.
+`SaveKey` is a branded key type. For untrusted strings, call `SaveKey.result(raw)` and propagate the `BrandError` before using `.success`. `saveKeyForWorld` already returns `Result<SaveKey, ValidationMessage>`; handle that Result directly.
 
 ## Save-slice bundles
 
@@ -44,7 +44,7 @@ Bundle operations expose typed errors for malformed snapshots, missing entries, 
 
 `emptyRegistry`, `registerFormat`, `registerFormats`, `lookupFormat`, and `describeRegistry` provide immutable format registration. Registration returns a `Result` and rejects duplicate names with `DuplicateFormatError`.
 
-Persistence and codec failures use tagged errors such as `StorageError`, `SaveDecodeError`, `MinecraftJavaSaveError`, `MinecraftCompressionError`, `NbtFormatError`, and `AnvilRegionError`. Pure validation helpers and byte codecs may return `Result`; Effectful codecs and storage operations return typed Effects. No public Minecraft Java save helper throws a domain error for invalid input.
+Persistence and codec failures use tagged errors such as `StorageError`, `SaveDecodeError`, `MinecraftJavaSaveError`, `MinecraftCompressionError`, `NbtFormatError`, and `AnvilRegionError`. Pure validation helpers and byte codecs may return `Result`; Effectful codecs and storage operations return typed Effects. `minecraftJavaSaveError` and `errorReason` return `Result` values, so formatting or brand failures remain visible in the failure channel.
 
 ## Minecraft Java codecs
 
@@ -52,8 +52,8 @@ The package exports codecs for Java modified UTF-8, NBT, gzip/zlib/none/LZ4 comp
 
 Key codec entry points and return types are:
 
-- `encodeMinecraftJavaSave(save, options?)` returns `Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveError>`; `decodeMinecraftJavaSave(files, options?)` returns `Effect.Effect<MinecraftJavaSave, MinecraftJavaSaveError>`.
-- `validateMinecraftJavaSave(save, resolvedOptions)` and `validateMinecraftJavaSaveFiles(files, resolvedOptions)` return `Result.Result` values with `MinecraftJavaSaveError`; `resolveMinecraftJavaSaveOptions(options?)` validates user options and returns the resolved options in a `Result`.
+- `encodeMinecraftJavaSave(save, options?)` returns `Effect.Effect<ReadonlyArray<MinecraftJavaSaveFile>, MinecraftJavaSaveError | TypeError>`; `decodeMinecraftJavaSave(files, options?)` returns `Effect.Effect<MinecraftJavaSave, MinecraftJavaSaveError | TypeError>`.
+- `validateMinecraftJavaSave(save, resolvedOptions)` and `validateMinecraftJavaSaveFiles(files, resolvedOptions)` return `Result.Result` values with `MinecraftJavaSaveError | TypeError`; `resolveMinecraftJavaSaveOptions(options?)` validates user options and returns the resolved options in `Result.Result<ResolvedMinecraftJavaSaveOptions, MinecraftJavaSaveError | TypeError>`.
 - `encodeNbt(document, options?)` and `decodeNbt(bytes, options?)` return `Result.Result` values with `NbtFormatError`.
 - `encodeMinecraftNbtFile(document, options?)` and `decodeMinecraftNbtFile(bytes, options?)` return `Effect.Effect` values with NBT, compression, LZ4, or type errors.
 - `compressMinecraft(bytes, compression, options?)` and `decompressMinecraft(bytes, compression, options?)` return `Effect.Effect` values with compression or LZ4 errors.
@@ -62,3 +62,7 @@ Key codec entry points and return types are:
 Coordinate operations use `ChunkCoord`, `ChunkAxis`, `CHUNK_SIZE_XZ`, and `chunkCoord` from `@nerima-games/mc-kernel/domain/coordinates`. `WorldId` is imported from the kernel package root. These types are not redefined by mc-save.
 
 The codecs validate byte, file-count, and total-size limits. They preserve supported unknown wire data but do not define game-specific player or chunk schemas. Anvil compression ID `127` is retained as a custom algorithm payload; mc-save does not decompress an arbitrary custom algorithm.
+
+## 0.6 declaration comparison
+
+The exhaustive packaged declaration comparison is in [`docs/api-migration-0.6.0.md`](./api-migration-0.6.0.md). It includes all changed callable and constructor signatures; exported interface, type alias, and class members; field presence and mutability; class heritage; index signatures; and checked construction paths for the new brands.
