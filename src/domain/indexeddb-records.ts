@@ -24,36 +24,24 @@ const RECORD_ENVELOPE_FIELD = IndexedDbFieldName('envelope')
 
 export const asRecord = (
   value: unknown,
-): Result.Result<Readonly<Record<IndexedDbFieldNameType, unknown>>, StorageError> => {
-  const inspected = Result.try({
-    try: () => (isRecord(value) ? { _tag: 'record' as const, value } : { _tag: 'malformed' as const }),
-    catch: (cause) => new StorageError({ operation: RECORD_OPERATION, cause }),
-  })
-  if (Result.isFailure(inspected)) return Result.fail(inspected.failure)
-  return inspected.success._tag === 'record'
-    ? Result.succeed(inspected.success.value)
+): Result.Result<Readonly<Record<IndexedDbFieldNameType, unknown>>, StorageError> =>
+  isRecord(value)
+    ? Result.succeed(value)
     : Result.fail(new StorageError({ operation: RECORD_OPERATION, cause: 'stored record is malformed' }))
-}
+
+const SEQUENCE_FIELD = IndexedDbFieldName('seq')
 
 export const readSequence = (
   source: unknown,
-  field: IndexedDbFieldNameType | 'seq',
 ): Result.Result<StorageSequenceType | undefined, StorageError> => {
-  const validField = IndexedDbFieldName.result(field)
-  if (Result.isFailure(validField)) {
-    return Result.fail(new StorageError({ operation: SEQUENCE_OPERATION, cause: validField.failure }))
-  }
   if (source === undefined) return Result.succeed(undefined)
   const record = asRecord(source)
   if (Result.isFailure(record)) {
     return Result.fail(new StorageError({ operation: SEQUENCE_OPERATION, cause: record.failure.cause }))
   }
-  const captured = Result.try({
-    try: () => record.success[validField.success],
-    catch: (cause) => new StorageError({ operation: SEQUENCE_OPERATION, cause }),
-  })
-  if (Result.isFailure(captured)) return Result.fail(captured.failure)
-  const value = captured.success
+  // IndexedDB returns structured clones, so persisted records have ordinary
+  // data properties rather than accessors or proxies.
+  const value = record.success[SEQUENCE_FIELD]
   if (value === undefined) {
     return Result.fail(new StorageError({ operation: SEQUENCE_OPERATION, cause: 'stored sequence is missing' }))
   }

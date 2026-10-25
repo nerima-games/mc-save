@@ -145,6 +145,70 @@ const snapshotDenseArray = <A>(value: unknown, operation: string): Result.Result
     : Result.succeed(captured.success)
 }
 
+const snapshotMutationBatch = (
+  mutations: ReadonlyArray<unknown>,
+  operation: string,
+): Result.Result<ReadonlyArray<StorageMutation>, StorageError> => {
+  let failure: StorageError | undefined
+  let failureKey: SaveKey | undefined
+  const captured = Result.try({
+    try: () => {
+      const normalized: StorageMutation[] = []
+      for (const mutation of mutations) {
+        failureKey = undefined
+        if (typeof mutation !== 'object' || mutation === null || Array.isArray(mutation)) return false
+        const tag = Reflect.get(mutation, '_tag')
+        if (tag !== 'Put' && tag !== 'Remove') return false
+        const key = SaveKey.result(Reflect.get(mutation, 'key'))
+        if (Result.isFailure(key)) return false
+        failureKey = key.success
+        const hasExpected = Reflect.has(mutation, 'expected')
+        const rawExpected = Reflect.get(mutation, 'expected')
+        if (hasExpected && !Option.isOption(rawExpected)) return false
+        let expected: Option.Option<SaveEnvelope> | undefined
+        if (hasExpected) {
+          if (Option.isNone(rawExpected)) {
+            expected = Option.none()
+          } else {
+            const decodedExpected = Schema.decodeUnknownResult(SaveEnvelopeSchema)(rawExpected.value)
+            if (Result.isFailure(decodedExpected)) {
+              failure = new StorageError({ operation, key: key.success, cause: decodedExpected.failure })
+              return false
+            }
+            expected = Option.some(decodedExpected.success)
+          }
+        }
+        if (tag === 'Remove') {
+          normalized.push(expected === undefined ? { _tag: 'Remove', key: key.success } : { _tag: 'Remove', key: key.success, expected })
+          continue
+        }
+        const decodedEnvelope = Schema.decodeUnknownResult(SaveEnvelopeSchema)(Reflect.get(mutation, 'envelope'))
+        if (Result.isFailure(decodedEnvelope)) {
+          failure = new StorageError({ operation, key: key.success, cause: decodedEnvelope.failure })
+          return false
+        }
+        normalized.push(
+          expected === undefined
+            ? { _tag: 'Put', key: key.success, envelope: decodedEnvelope.success }
+            : { _tag: 'Put', key: key.success, envelope: decodedEnvelope.success, expected },
+        )
+      }
+      return normalized
+    },
+    catch: (cause) => new StorageError({ operation, cause }),
+  })
+  if (Result.isFailure(captured)) return Result.fail(captured.failure)
+  return captured.success !== false
+    ? Result.succeed(captured.success)
+    : Result.fail(
+        failure ?? new StorageError({
+          operation,
+          ...(failureKey === undefined ? {} : { key: failureKey }),
+          cause: 'batch contains an invalid mutation',
+        }),
+      )
+}
+
 const matchesExpected = (
   current: SaveEnvelope | undefined,
   expected: Option.Option<SaveEnvelope>,
@@ -166,39 +230,53 @@ export const makeInMemoryStorage: Effect.Effect<StorageService> = Effect.gen(fun
 
   return {
     get: (key) =>
-      Ref.get(store).pipe(
-        Effect.flatMap((current) => {
-          const envelope = current.get(key)
-          return envelope === undefined
-            ? Effect.succeed(Option.none())
-            : cloneEnvelope('in-memory.get', key, envelope).pipe(Effect.map(Option.some))
-        }),
-      ),
+      Effect.gen(function* () {
+        const checkedKey = SaveKey.result(key)
+        if (Result.isFailure(checkedKey)) {
+          return yield* Effect.fail(new StorageError({ operation: 'in-memory.get', cause: checkedKey.failure }))
+        }
+        const current = yield* Ref.get(store)
+        const envelope = current.get(checkedKey.success)
+        return envelope === undefined
+          ? Option.none()
+          : yield* cloneEnvelope('in-memory.get', checkedKey.success, envelope).pipe(Effect.map(Option.some))
+      }),
 
     put: (key, envelope) =>
-      cloneEnvelope('in-memory.put', key, envelope).pipe(
-        Effect.flatMap((cloned) =>
-          Ref.update(store, (current) => {
-            const next = new Map(current)
-            next.set(key, cloned)
-            return next
-          }),
-        ),
-      ),
+      Effect.gen(function* () {
+        const checkedKey = SaveKey.result(key)
+        if (Result.isFailure(checkedKey)) {
+          return yield* Effect.fail(new StorageError({ operation: 'in-memory.put', cause: checkedKey.failure }))
+        }
+        const cloned = yield* cloneEnvelope('in-memory.put', checkedKey.success, envelope)
+        yield* Ref.update(store, (current) => {
+          const next = new Map(current)
+          next.set(checkedKey.success, cloned)
+          return next
+        })
+      }),
 
     remove: (key) =>
-      Ref.update(store, (current) => {
+      Effect.gen(function* () {
+        const checkedKey = SaveKey.result(key)
+        if (Result.isFailure(checkedKey)) {
+          return yield* Effect.fail(new StorageError({ operation: 'in-memory.remove', cause: checkedKey.failure }))
+        }
+        yield* Ref.update(store, (current) => {
         const next = new Map(current)
-        next.delete(key)
+        next.delete(checkedKey.success)
         return next
+        })
       }),
 
     commitBatch: (mutations) =>
       Effect.suspend(() => {
-        const snapshot = snapshotDenseArray<StorageMutation>(mutations, 'in-memory.commitBatch')
+        const snapshot = snapshotDenseArray<unknown>(mutations, 'in-memory.commitBatch')
         if (Result.isFailure(snapshot)) return Effect.fail(snapshot.failure)
+        const normalized = snapshotMutationBatch(snapshot.success, 'in-memory.commitBatch')
+        if (Result.isFailure(normalized)) return Effect.fail(normalized.failure)
         return Effect.gen(function* () {
-          const prepared = yield* Effect.forEach(snapshot.success, (mutation) =>
+          const prepared = yield* Effect.forEach(normalized.success, (mutation) =>
             mutation._tag === 'Put'
               ? cloneEnvelope('in-memory.commitBatch', mutation.key, mutation.envelope).pipe(
                   Effect.map((envelope): StorageMutation => ({ ...mutation, envelope })),
@@ -240,10 +318,18 @@ export const makeInMemoryStorage: Effect.Effect<StorageService> = Effect.gen(fun
       Effect.suspend(() => {
         const snapshot = snapshotDenseArray<SaveKey>(keys, 'in-memory.readBatch')
         if (Result.isFailure(snapshot)) return Effect.fail(snapshot.failure)
+        const checkedKeys: Array<SaveKey> = []
+        for (const key of snapshot.success) {
+          const checked = SaveKey.result(key)
+          if (Result.isFailure(checked)) {
+            return Effect.fail(new StorageError({ operation: 'in-memory.readBatch', cause: checked.failure }))
+          }
+          checkedKeys.push(checked.success)
+        }
         return Effect.gen(function* () {
           const current = yield* Ref.get(store)
           const result: Array<Option.Option<SaveEnvelope>> = []
-          for (const key of snapshot.success) {
+          for (const key of checkedKeys) {
             const envelope = current.get(key)
             result.push(
               envelope === undefined

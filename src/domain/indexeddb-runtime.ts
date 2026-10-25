@@ -174,12 +174,7 @@ export const runTransaction = <A>(
       return
     }
     const validKey = checkedKey.success
-    const checkedOperation = StorageOperation.result(operation)
-    if (Result.isFailure(checkedOperation)) {
-      resume(Effect.fail(storageError(TRANSACTION_OPERATION, validKey, checkedOperation.failure)))
-      return
-    }
-    const validOperation = checkedOperation.success
+    const validOperation = StorageOperation(operation)
     let settled = false
     let delivered: { readonly value: A } | undefined
     let pendingFailure: { readonly cause: unknown } | undefined

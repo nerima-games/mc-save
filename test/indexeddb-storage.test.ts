@@ -221,6 +221,28 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('a failure whose `name` getter throws is NOT reported as quota either', () =>
+    Effect.gen(function* () {
+      const nameFailure = new Error('failure name could not be read')
+      const malformedCause = Object.defineProperty({}, 'name', {
+        get: () => {
+          throw nameFailure
+        },
+      })
+      const factory = makeFakeIndexedDb()
+      factory.corruptNextWriteWithMalformedCause(malformedCause)
+
+      const error = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        return yield* Effect.flip(storage.put(A, envelope({})))
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(error._tag).toBe('StorageError')
+      expect(isQuotaExceeded(error)).toBe(false)
+      expect(error.operation).toBe('indexeddb.put')
+    }),
+  )
+
   effect('a transaction that aborts fails the write AND leaves the store untouched', () =>
     Effect.gen(function* () {
       // A browser may abort a transaction of its own accord, with `error` null.
@@ -343,10 +365,10 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  effect('commitBatch and readBatch reject sparse and undefined runtime arrays', () =>
+  effect('commitBatch and readBatch reject null and malformed runtime arrays', () =>
     Effect.gen(function* () {
       const factory = makeFakeIndexedDb()
-      const malformedInputs: ReadonlyArray<unknown> = [new Array<unknown>(1), [undefined]]
+      const malformedInputs: ReadonlyArray<unknown> = [null, [null], new Array<unknown>(1), [undefined]]
 
       const result = yield* Effect.gen(function* () {
         const storage = yield* StoragePort
@@ -372,6 +394,74 @@ describe('what the medium can do wrong, and what the caller is told', () => {
         { key: 'alpha', seq: 0, envelope: envelope({ original: true }) },
       ])
     }),
+  )
+
+  effect('rejects hostile array shapes instead of reading them as an empty batch', () =>
+    Effect.gen(function* () {
+      let accessorRead = false
+      const symbolOnly = new Array<unknown>(1)
+      Object.defineProperty(symbolOnly, Symbol('extra'), { value: 'not an index', enumerable: true })
+      const negativeIndex = new Array<unknown>(1)
+      Object.defineProperty(negativeIndex, '-1', { value: 'not an index', enumerable: true })
+      const accessorEntry = new Array<unknown>(1)
+      Object.defineProperty(accessorEntry, '0', {
+        get: () => {
+          accessorRead = true
+          return 'not a data entry'
+        },
+        enumerable: true,
+      })
+      const invalidLength = new Proxy([], {
+        getOwnPropertyDescriptor: (target, property) => {
+          const descriptor = Reflect.getOwnPropertyDescriptor(target, property)
+          if (property === 'length' && descriptor !== undefined) {
+            return { ...descriptor, value: Number.NaN }
+          }
+          return descriptor
+        },
+      })
+      const unreadableShape = new Proxy([], {
+        ownKeys: () => {
+          throw new Error('batch keys could not be read')
+        },
+      })
+      const malformedInputs: ReadonlyArray<unknown> = [
+        symbolOnly,
+        negativeIndex,
+        accessorEntry,
+        invalidLength,
+        unreadableShape,
+      ]
+
+      const factory = makeFakeIndexedDb()
+      yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        for (const input of malformedInputs) {
+          const commitError = yield* Effect.flip(applyUntrustedArgument(storage.commitBatch, storage, [input]))
+          expect(commitError).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.commitBatch' })
+          const readError = yield* Effect.flip(applyUntrustedArgument(storage.readBatch, storage, [input]))
+          expect(readError).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.readBatch' })
+        }
+        expect(yield* storage.keys).toStrictEqual([])
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(accessorRead).toBe(false)
+    }),
+  )
+
+  effect('rejects a blank SaveKey in readBatch instead of returning Option.none', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      const result = yield* Effect.result(
+        applyUntrustedArgument(storage.readBatch, storage, [['']]),
+      )
+
+      expect(Result.isFailure(result)).toBe(true)
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.readBatch' })
+      }
+      expect(yield* storage.keys).toStrictEqual([])
+    }).pipe(Effect.provide(freshLayer())),
   )
 
   effect('commitBatch reports a browser abort and rolls the whole checkpoint back', () =>
@@ -413,6 +503,39 @@ describe('what the medium can do wrong, and what the caller is told', () => {
 
       expect(error._tag).toBe('StorageError')
       expect(error.operation).toBe('indexeddb.open')
+    }),
+  )
+
+  effect('rejects an invalid database name before opening the factory', () =>
+    Effect.gen(function* () {
+      let openCalls = 0
+      const error = yield* Effect.flip(openDatabase({
+        databaseName: '' as unknown as ReturnType<typeof makeIdbDatabaseName>,
+        factory: {
+          open: () => {
+            openCalls += 1
+            throw new Error('factory must not receive an invalid database name')
+          },
+        },
+      }))
+
+      expect(error._tag).toBe('StorageError')
+      expect(error.operation).toBe('indexeddb.open')
+      expect(openCalls).toBe(0)
+    }),
+  )
+
+  effect('rejects an unbranded key before starting an IndexedDB operation', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const error = yield* Effect.flip(applyUntrustedArgument(storage.get, storage, [null]))
+        return { error, keys: yield* storage.keys }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(outcome.error).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.transaction' })
+      expect(outcome.keys).toStrictEqual([])
     }),
   )
 
@@ -1040,20 +1163,12 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
-  effect('parses persisted IndexedDB records through typed failures', () =>
+  effect('parses unknown IndexedDB records through typed failures', () =>
     Effect.sync(() => {
-      const sequenceFailure = new Error('sequence getter failed')
-      const unreadableSequence = Object.defineProperty({}, 'seq', {
-        enumerable: true,
-        get: () => { throw sequenceFailure },
-      })
-      const sequence = readSequence(unreadableSequence, 'seq')
-      expect(Result.isFailure(sequence)).toBe(true)
-      if (Result.isFailure(sequence)) expect(sequence.failure.cause).toBe(sequenceFailure)
-      expect(Result.isFailure(readSequence([], 'seq'))).toBe(true)
-      expect(Result.isFailure(readSequence({}, 'seq'))).toBe(true)
-      expect(readSequence(undefined, 'seq')).toStrictEqual(Result.succeed(undefined))
-      expect(readSequence({ seq: 0 }, 'seq')).toStrictEqual(Result.succeed(0))
+      expect(Result.isFailure(readSequence([]))).toBe(true)
+      expect(Result.isFailure(readSequence({}))).toBe(true)
+      expect(readSequence(undefined)).toStrictEqual(Result.succeed(undefined))
+      expect(readSequence({ seq: 0 })).toStrictEqual(Result.succeed(0))
 
       const recordFailure = new Error('record fields failed')
       const unreadableRecord = Object.defineProperty({}, 'key', {
@@ -1095,6 +1210,27 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('rejects sequence allocation beyond the safe integer range', () =>
+    Effect.gen(function* () {
+      for (const operation of ['put', 'commitBatch'] as const) {
+        const factory = makeFakeIndexedDb()
+        const existing = { key: 'alpha', seq: Number.MAX_SAFE_INTEGER, envelope: envelope({ n: 1 }) }
+        factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [existing])
+
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          const write = operation === 'put'
+            ? storage.put(B, envelope({ n: 2 }))
+            : storage.commitBatch([{ _tag: 'Put', key: B, envelope: envelope({ n: 2 }) }])
+          return yield* Effect.flip(write)
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.sequence' })
+        expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([existing])
+      }
+    }),
+  )
+
   effect('rejects malformed indexed sequences in cursor and existing-record paths', () =>
     Effect.gen(function* () {
       for (const operation of ['put', 'commitBatch'] as const) {
@@ -1132,6 +1268,60 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }),
   )
 
+  effect('fails closed when the insertion cursor is malformed or unreadable', () =>
+    Effect.gen(function* () {
+      const cursorFailure = new Error('cursor key could not be read')
+      const unreadableCursor = Object.defineProperty({}, 'key', {
+        get: () => {
+          throw cursorFailure
+        },
+      })
+
+      for (const cursor of [42, unreadableCursor]) {
+        const factory = makeFakeIndexedDb()
+        factory.corruptNextCursor(cursor)
+        const error = yield* Effect.gen(function* () {
+          const storage = yield* StoragePort
+          return yield* Effect.flip(storage.put(A, envelope({ value: true })))
+        }).pipe(Effect.provide(layerFor(factory)))
+
+        expect(error).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.sequence' })
+        if (cursor === unreadableCursor) expect(error.cause).toBe(cursorFailure)
+        expect(factory.recordsOf(DATABASE, SAVE_STORE_NAME)).toStrictEqual([])
+      }
+    }),
+  )
+
+  effect('maps thrown save envelope decoding to StorageError', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const decodeFailure = new Error('envelope could not be decoded')
+      const unreadableEnvelope = new Proxy(envelope({ value: true }), {
+        get: (target, property, receiver) => {
+          if (property === 'format') throw decodeFailure
+          return Reflect.get(target, property, receiver)
+        },
+      })
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const result = yield* Effect.result(applyUntrustedArgument(storage.put, storage, [A, unreadableEnvelope]))
+        return { result, records: factory.recordsOf(DATABASE, SAVE_STORE_NAME) }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(Result.isFailure(outcome.result)).toBe(true)
+      if (Result.isFailure(outcome.result)) {
+        expect(outcome.result.failure).toMatchObject({
+          _tag: 'StorageError',
+          operation: 'indexeddb.put',
+          key: A,
+        })
+        expect(outcome.result.failure.cause).toBeInstanceOf(Error)
+        expect((outcome.result.failure.cause as Error).message).toBe('Result adapter can only return schema issues')
+      }
+      expect(outcome.records).toStrictEqual([])
+    }),
+  )
+
   effect('returns none for missing records and detects expected-value conflicts', () =>
     Effect.gen(function* () {
       const storage = yield* StoragePort
@@ -1145,6 +1335,162 @@ describe('what the medium can do wrong, and what the caller is told', () => {
     }).pipe(Effect.provide(freshLayer())),
   )
 
+  effect('a failed compare-and-remove leaves the current record intact', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        yield* storage.put(A, envelope({ current: true }))
+        const error = yield* Effect.flip(storage.commitBatch([
+          { _tag: 'Remove', key: A, expected: Option.some(envelope({ stale: true })) },
+        ]))
+        return { error, stored: yield* storage.get(A) }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(outcome.error).toMatchObject({
+        _tag: 'StorageError',
+        operation: 'indexeddb.commitBatch:conflict',
+        key: A,
+      })
+      expect(outcome.stored).toStrictEqual(Option.some(envelope({ current: true })))
+    }),
+  )
+
+  effect('a compare-and-put preserves envelope decoding failures', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      factory.seed(DATABASE, STORE_LAYOUT_VERSION, SAVE_STORE_NAME, [
+        { key: 'alpha', seq: 0, envelope: { format: 'invalid', version: 0 } },
+      ])
+
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const error = yield* Effect.flip(storage.commitBatch([
+          { _tag: 'Put', key: A, envelope: envelope({ replacement: true }), expected: Option.some(envelope({ stale: true })) },
+        ]))
+        return { error, records: factory.recordsOf(DATABASE, SAVE_STORE_NAME) }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      expect(outcome.error).toMatchObject({
+        _tag: 'StorageError',
+        operation: 'indexeddb.commitBatch',
+        key: A,
+        cause: { _tag: 'SaveDecodeError' },
+      })
+      expect(outcome.records).toStrictEqual([
+        { key: 'alpha', seq: 0, envelope: { format: 'invalid', version: 0 } },
+      ])
+    }),
+  )
+
+  effect('rejects malformed mutations without corrupting records', () =>
+    Effect.gen(function* () {
+      const factory = makeFakeIndexedDb()
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        const nullExpected = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: A, envelope: envelope({ replacement: true }), expected: null },
+        ]]))
+        const undefinedExpected = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: A, envelope: envelope({ replacement: true }), expected: undefined },
+        ]]))
+        const invalidEnvelope = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: A, envelope: null },
+        ]]))
+        const invalidPut = yield* Effect.result(applyUntrustedArgument(storage.put, storage, [A, null]))
+        const afterNullExpected = yield* Effect.result(storage.get(A))
+        const afterInvalidPut = yield* Effect.result(storage.get(A))
+
+        yield* storage.put(A, envelope({ original: true }))
+        const unknownTag = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Rename', key: A },
+        ]]))
+        const malformedEntry = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[42]]))
+        const blankKey = yield* Effect.result(applyUntrustedArgument(storage.commitBatch, storage, [[
+          { _tag: 'Put', key: '', envelope: envelope({ replacement: true }) },
+        ]]))
+        const tagFailure = new Error('mutation tag could not be read')
+        const unreadableTag = Object.defineProperty({}, '_tag', {
+          get: () => {
+            throw tagFailure
+          },
+        })
+        const unreadableMutation = yield* Effect.result(
+          applyUntrustedArgument(storage.commitBatch, storage, [[unreadableTag]]),
+        )
+        const afterUnknownTag = yield* Effect.result(storage.get(A))
+        const afterMalformed = yield* Effect.result(storage.get(A))
+        return {
+          nullExpected,
+          undefinedExpected,
+          invalidEnvelope,
+          invalidPut,
+          afterNullExpected,
+          afterInvalidPut,
+          unknownTag,
+          malformedEntry,
+          blankKey,
+          unreadableMutation,
+          tagFailure,
+          afterUnknownTag,
+          afterMalformed,
+        }
+      }).pipe(Effect.provide(layerFor(factory)))
+
+      for (const result of [
+        outcome.nullExpected,
+        outcome.undefinedExpected,
+        outcome.invalidEnvelope,
+        outcome.unknownTag,
+        outcome.malformedEntry,
+        outcome.blankKey,
+        outcome.unreadableMutation,
+      ]) {
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.commitBatch' })
+        }
+      }
+      if (Result.isFailure(outcome.invalidPut)) {
+        expect(outcome.invalidPut.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.put' })
+      }
+      if (Result.isFailure(outcome.invalidEnvelope)) {
+        expect(outcome.invalidEnvelope.failure).toMatchObject({ _tag: 'StorageError', operation: 'indexeddb.commitBatch' })
+      }
+      if (Result.isFailure(outcome.unreadableMutation)) {
+        expect(outcome.unreadableMutation.failure.cause).toBe(outcome.tagFailure)
+      }
+      expect(outcome.afterNullExpected).toStrictEqual(Result.succeed(Option.none()))
+      expect(outcome.afterInvalidPut).toStrictEqual(Result.succeed(Option.none()))
+      expect(outcome.afterUnknownTag).toStrictEqual(Result.succeed(Option.some(envelope({ original: true }))))
+      expect(outcome.afterMalformed).toStrictEqual(Result.succeed(Option.some(envelope({ original: true }))))
+    }),
+  )
+
+  effect('uses each mutation field snapshot once when committing a batch', () =>
+    Effect.gen(function* () {
+      const outcome = yield* Effect.gen(function* () {
+        const storage = yield* StoragePort
+        let tagReads = 0
+        const mutation = {
+          get _tag(): 'Put' {
+            tagReads += 1
+            if (tagReads > 1) throw new Error('mutation tag was read more than once')
+            return 'Put'
+          },
+          key: A,
+          envelope: envelope({ snapshot: true }),
+        }
+        const result = yield* Effect.result(storage.commitBatch([mutation]))
+        return { result, tagReads, stored: yield* storage.get(A) }
+      }).pipe(Effect.provide(freshLayer()))
+
+      expect(outcome.result).toStrictEqual(Result.succeed(undefined))
+      expect(outcome.tagReads).toBe(1)
+      expect(outcome.stored).toStrictEqual(Option.some(envelope({ snapshot: true })))
+    }),
+  )
+
   effect('rejects malformed envelope records and unreadable record properties', () =>
     Effect.gen(function* () {
       const unreadable = Object.defineProperty({}, 'key', {
@@ -1154,6 +1500,8 @@ describe('what the medium can do wrong, and what the caller is told', () => {
         },
       })
       const values: ReadonlyArray<unknown> = [
+        null,
+        { key: 42, seq: 0, envelope: envelope({ n: 1 }) },
         { key: '', seq: 0, envelope: envelope({ n: 1 }) },
         { key: 'alpha', seq: 0 },
         unreadable,

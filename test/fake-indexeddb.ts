@@ -274,6 +274,8 @@ export type FakeIndexedDb = IdbFactory & {
    * than a domain one.
    */
   readonly corruptNextIndexKeys: (value: unknown) => void
+  /** Return an arbitrary value from the next insertion-index cursor request. */
+  readonly corruptNextCursor: (value: unknown) => void
 }
 
 export const makeFakeIndexedDb = (): FakeIndexedDb => {
@@ -291,6 +293,7 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
   let pendingMalformedWriteFailure: { readonly value: unknown } | undefined
   let pendingAbort = false
   let pendingIndexKeysOverride: { readonly value: unknown } | undefined
+  let pendingCursorOverride: { readonly value: unknown } | undefined
   let pendingAbortFailure: IdbDomException | undefined
 
   const stringList = (names: ReadonlyArray<string>): IdbStringList => ({
@@ -573,11 +576,18 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
           }, false),
         openCursor: (_query, direction) =>
           submit(() => {
+            if (pendingCursorOverride !== undefined) {
+              const { value } = pendingCursorOverride
+              pendingCursorOverride = undefined
+              return value
+            }
             const rows = ordered()
             const chosen = direction === 'prev' ? rows[rows.length - 1] : rows[0]
             // A cursor past the end is `null`, which is how the adapter learns
             // the store is empty and starts its sequence at zero.
-            return chosen === undefined ? null : { value: clone(chosen.value) }
+            return chosen === undefined
+              ? null
+              : { key: indexKeyOf(chosen.value, keyPath), value: clone(chosen.value) }
           }, false),
       }
     }
@@ -867,6 +877,9 @@ export const makeFakeIndexedDb = (): FakeIndexedDb => {
     },
     corruptNextIndexKeys: (value) => {
       pendingIndexKeysOverride = { value }
+    },
+    corruptNextCursor: (value) => {
+      pendingCursorOverride = { value }
     },
   }
 }

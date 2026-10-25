@@ -145,6 +145,65 @@ describe('listFrom', () => {
       expect(enumerated).toBe(false)
     }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))
   })
+
+  effect('fails closed when a forged runtime format produces malformed decode metadata', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(FIRST, sealedTestEnvelope(World.name, 1, { name: 'first' }))
+      const forgedFormat = widen<typeof World>({ ...World, name: null })
+
+      const result = yield* Effect.result(listFrom(forgedFormat))
+
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure).toMatchObject({
+          _tag: 'StorageError',
+          operation: 'persistence.listFrom',
+          key: FIRST,
+          cause: 'save decode error fields are malformed',
+        })
+      }
+      expect(yield* storage.keys).toStrictEqual([FIRST])
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
+})
+
+describe('saveTo', () => {
+  effect('rejects null and unreadable write options without writing a save', () => {
+    const getterFailure = new Error('write options could not be read')
+    const unreadableOptions = Object.defineProperty({}, 'extensions', {
+      get: () => {
+        throw getterFailure
+      },
+    })
+
+    return Effect.gen(function* () {
+      const storage = yield* StoragePort
+      const nullOptions = yield* Effect.result(
+        saveTo(World, FIRST, { name: 'null options' }, widen<Parameters<typeof saveTo>[3]>(null)),
+      )
+      expect(nullOptions._tag).toBe('Failure')
+      if (nullOptions._tag === 'Failure') {
+        expect(nullOptions.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save write options could not be read',
+        })
+      }
+
+      const unreadable = yield* Effect.result(
+        saveTo(World, FIRST, { name: 'unreadable options' }, widen<Parameters<typeof saveTo>[3]>(unreadableOptions)),
+      )
+      expect(unreadable._tag).toBe('Failure')
+      if (unreadable._tag === 'Failure') {
+        expect(unreadable.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save write options could not be read',
+          cause: getterFailure,
+        })
+      }
+      expect(yield* storage.keys).toStrictEqual([])
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage)))
+  })
 })
 
 describe('loadFrom', () => {
@@ -153,6 +212,74 @@ describe('loadFrom', () => {
       expect(yield* loadFrom(World, SaveKey('world/missing'))).toStrictEqual(Option.none())
     }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
   )
+
+  effect('rejects null and unreadable read options before accessing storage', () => {
+    let lookedUp = false
+    const service: StorageService = {
+      keys: Effect.succeed([]),
+      get: () => {
+        lookedUp = true
+        return Effect.die('must not read storage for invalid options')
+      },
+      put: () => Effect.void,
+      remove: () => Effect.void,
+      commitBatch: () => Effect.void,
+      readBatch: () => Effect.succeed([]),
+    }
+
+    return Effect.gen(function* () {
+      const nullOptions = yield* Effect.result(
+        loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>(null)),
+      )
+      expect(nullOptions._tag).toBe('Failure')
+      if (nullOptions._tag === 'Failure') {
+        expect(nullOptions.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save read options could not be read',
+        })
+      }
+
+      const getterFailure = new Error('read options could not be read')
+      const unreadableOptions = new Proxy({}, {
+        get: (_target, property) => {
+          if (property === 'maxBytes') throw getterFailure
+          return undefined
+        },
+      })
+      const unreadable = yield* Effect.result(
+        loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>(unreadableOptions)),
+      )
+      expect(unreadable._tag).toBe('Failure')
+      if (unreadable._tag === 'Failure') {
+        expect(unreadable.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save read options could not be read',
+          cause: getterFailure,
+        })
+      }
+      expect(lookedUp).toBe(false)
+    }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))
+  })
+
+  effect('fails when storage returns null instead of an Option for a stored key', () => {
+    const service: StorageService = {
+      keys: Effect.succeed([FIRST]),
+      get: () => Effect.succeed(widen<Option.Option<SaveEnvelope>>(null)),
+      put: () => Effect.void,
+      remove: () => Effect.void,
+      commitBatch: () => Effect.void,
+      readBatch: () => Effect.succeed([]),
+    }
+
+    return Effect.gen(function* () {
+      const result = yield* Effect.result(loadFrom(World, FIRST))
+      expect(result._tag).toBe('Failure')
+      if (result._tag === 'Failure') {
+        expect(result.failure._tag).toBe('StorageError')
+        if (result.failure._tag === 'StorageError') expect(result.failure.key).toBe(FIRST)
+      }
+    }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))
+  })
 
   effect('fails when a supplied read limit is null instead of using the default', () =>
     Effect.gen(function* () {
