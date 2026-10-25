@@ -200,7 +200,7 @@ describe('Minecraft JSON boundary', () => {
   })
 
   it('rejects decoded JSON text that exceeds the runtime code-point argument limit', () => {
-    const bytes = new TextEncoder().encode('"' + 'a'.repeat(200_000) + '"')
+    const bytes = new TextEncoder().encode(`"${'a'.repeat(200_000)}"`)
     expectJsonError(() => decodeMinecraftJson(bytes))
   })
 

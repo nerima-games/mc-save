@@ -134,7 +134,7 @@ describe('loadFrom', () => {
       expect(result._tag).toBe('SaveDecodeError')
       if (result._tag === 'SaveDecodeError') {
         expect(result.version).toBe(0)
-        expect(result.reason).toBe('the stored value at "' + BROKEN + '" is not a well-formed save envelope')
+        expect(result.reason).toBe(`the stored value at "${BROKEN}" is not a well-formed save envelope`)
       }
     }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
   )
@@ -160,7 +160,7 @@ describe('loadFrom', () => {
       const error = yield* Effect.flip(loadFrom(World, BROKEN))
       expect(error._tag).toBe('SaveDecodeError')
       if (error._tag === 'SaveDecodeError') {
-        expect(error.reason).toBe('the stored value at "' + BROKEN + '" could not be read as a save envelope')
+        expect(error.reason).toBe(`the stored value at "${BROKEN}" could not be read as a save envelope`)
         expect(error.cause).toBeInstanceOf(Error)
       }
     }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))

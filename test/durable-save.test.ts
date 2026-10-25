@@ -144,16 +144,23 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  effect('does not replace a good previous checkpoint with a corrupt latest', () =>
+  effect('fails without replacing a good previous checkpoint when latest is corrupt', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
       const latest = yield* storage.get(key)
       if (Option.isNone(latest)) throw new Error('latest checkpoint was not written')
-      yield* storage.put(key, { ...latest.value, integrity: { ...latest.value.integrity, checksum: '00000000' } })
+      const corrupt = { ...latest.value, integrity: { ...latest.value.integrity, checksum: '00000000' } }
+      yield* storage.put(key, corrupt)
 
-      yield* saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage))
+      const write = yield* Effect.result(
+        saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(write._tag).toBe('Failure')
+      if (write._tag === 'Failure') expect(write.failure._tag).toBe('SaveDecodeError')
+      expect(yield* storage.get(key)).toStrictEqual(Option.some(corrupt))
+
       const previous = yield* storage.get(previousKey)
       expect(Option.isSome(previous) && previous.value.payload).toStrictEqual({ score: 1, label: 'first' })
     }),
@@ -186,6 +193,23 @@ describe('durable save checkpoints', () => {
         Effect.provideService(StoragePort, storage),
       )
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
+
+      const latest = yield* storage.get(key)
+      expect(Option.isSome(latest) && latest.value.extensions).toStrictEqual(extensions)
+    }),
+  )
+
+  effect('inherits extensions from the previous checkpoint when latest is missing', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      const extensions = { futureInventory: { slots: [1, 2, 3] } }
+      const previous = sealEnvelopeForTest(
+        saveEnvelope(State.name, State.version, { score: 1, label: 'previous' }),
+        extensions,
+      )
+      yield* storage.put(previousKey, previous)
+
+      yield* saveDurably(State, key, { score: 2, label: 'next' }).pipe(Effect.provideService(StoragePort, storage))
 
       const latest = yield* storage.get(key)
       expect(Option.isSome(latest) && latest.value.extensions).toStrictEqual(extensions)
@@ -343,6 +367,71 @@ describe('durable save checkpoints', () => {
     }),
   )
 
+effect('fails when storage returns an incomplete durable checkpoint batch', () =>
+    Effect.gen(function* () {
+      const storage = yield* makeInMemoryStorage
+      const incompleteStorage = {
+        ...storage,
+        readBatch: () => Effect.succeed([Option.none()]),
+      }
+
+      const loaded = yield* Effect.result(
+        loadDurably(State, key).pipe(Effect.provideService(StoragePort, incompleteStorage)),
+      )
+      expect(loaded._tag).toBe('Failure')
+      if (loaded._tag === 'Failure') {
+        expect(loaded.failure._tag).toBe('StorageError')
+        if (loaded.failure._tag === 'StorageError') {
+          expect(loaded.failure.operation).toBe('durable.readBatch')
+        }
+      }
+
+      const saved = yield* Effect.result(
+        saveDurably(State, key, { score: 1, label: 'first' }).pipe(
+          Effect.provideService(StoragePort, incompleteStorage),
+        ),
+      )
+      expect(saved._tag).toBe('Failure')
+      if (saved._tag === 'Failure') {
+        expect(saved.failure._tag).toBe('StorageError')
+        if (saved.failure._tag === 'StorageError') {
+          expect(saved.failure.operation).toBe('durable.readBatch')
+        }
+      }
+
+      const missingLatest = [Option.none(), Option.none()]
+      Object.defineProperty(missingLatest, '0', { value: undefined })
+      const missingPrevious = [Option.none(), Option.none()]
+      Object.defineProperty(missingPrevious, '1', { value: undefined })
+      for (const batch of [missingLatest, missingPrevious]) {
+        const missingSlotStorage = { ...storage, readBatch: () => Effect.succeed(batch) }
+        const result = yield* Effect.result(
+          loadDurably(State, key).pipe(Effect.provideService(StoragePort, missingSlotStorage)),
+        )
+        expect(result._tag).toBe('Failure')
+        if (result._tag === 'Failure') {
+          expect(result.failure._tag).toBe('StorageError')
+          if (result.failure._tag === 'StorageError') {
+            expect(result.failure.operation).toBe('durable.readBatch')
+          }
+        }
+      }
+
+      const nonArrayStorage = { ...storage }
+      Object.defineProperty(nonArrayStorage, 'readBatch', { value: () => Effect.succeed(null) })
+      const nonArrayResult = yield* Effect.result(
+        loadDurably(State, key).pipe(Effect.provideService(StoragePort, nonArrayStorage)),
+      )
+      expect(nonArrayResult._tag).toBe('Failure')
+      if (nonArrayResult._tag === 'Failure') {
+        expect(nonArrayResult.failure._tag).toBe('StorageError')
+        if (nonArrayResult.failure._tag === 'StorageError') {
+          expect(nonArrayResult.failure.operation).toBe('durable.readBatch')
+        }
+      }
+    }),
+  )
+
   effect('treats a key that was never written as a new world, not an error', () =>
     Effect.gen(function* () {
       const storage = yield* makeInMemoryStorage
@@ -394,14 +483,8 @@ describe('durable save checkpoints', () => {
     }),
   )
 
-  effect('does not carry forward a latest that parses but fails to decode (SaveDecodeError, non-future)', () =>
+  effect('fails when latest parses but fails to decode (SaveDecodeError, non-future)', () =>
     Effect.gen(function* () {
-      // Distinct from `loadDurably`'s own fallback block: this is
-      // `saveDurably`'s `recoverableCheckpoint`, which decides whether the
-      // EXISTING latest is worth keeping as the new `previous` before writing.
-      // A latest that parses and passes its checksum but fails to decode is
-      // "not good", the same as a corrupt or missing one, but by a different
-      // path through the code.
       const storage = yield* makeInMemoryStorage
       yield* saveDurably(State, key, { score: 1, label: 'first' }).pipe(Effect.provideService(StoragePort, storage))
       yield* saveDurably(State, key, { score: 2, label: 'second' }).pipe(Effect.provideService(StoragePort, storage))
@@ -409,7 +492,12 @@ describe('durable save checkpoints', () => {
       const badSchema = sealEnvelopeForTest(saveEnvelope(State.name, State.version, { score: 'nope', label: 'bad' }))
       yield* storage.put(key, badSchema)
 
-      yield* saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage))
+      const write = yield* Effect.result(
+        saveDurably(State, key, { score: 3, label: 'third' }).pipe(Effect.provideService(StoragePort, storage)),
+      )
+      expect(write._tag).toBe('Failure')
+      if (write._tag === 'Failure') expect(write.failure._tag).toBe('SaveDecodeError')
+      expect(yield* storage.get(key)).toStrictEqual(Option.some(badSchema))
 
       const previous = yield* storage.get(previousKey)
       expect(Option.isSome(previous) && previous.value.payload).toStrictEqual({ score: 1, label: 'first' })
@@ -777,7 +865,10 @@ describe('save integrity', () => {
 
       const nonErrorValue = Object.defineProperty({}, 'value', {
         enumerable: true,
-        get: () => { throw 'not an Error' },
+        get: () => {
+          // oxlint-disable-next-line no-throw-literal -- deliberate non-Error throw to test canonicalize's unknown-cause handling.
+          throw 'not an Error'
+        },
       })
       const nonErrorResult = canonicalize(nonErrorValue)
       expect(Result.isFailure(nonErrorResult)).toBe(true)

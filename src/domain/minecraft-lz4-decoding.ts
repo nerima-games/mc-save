@@ -183,10 +183,11 @@ export const decodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Op
 
     while (true) {
       if (offset + LZ4_BLOCK_HEADER_BYTES > bytes.byteLength) return yield* Result.fail(lz4Error('decode', 'block header is truncated', offset))
-      yield* assertBlockMagic(bytes, offset)
+      const headerOffset = offset
+      yield* assertBlockMagic(bytes, headerOffset)
       const token = yield* Result.mapError(
-        assertDefined(bytes[offset + 8], 'decodeLz4BlockStream: offset was within input.byteLength'),
-        (reason) => lz4Error('decode', reason, offset + 8),
+        assertDefined(bytes[headerOffset + 8], 'decodeLz4BlockStream: offset was within input.byteLength'),
+        (reason) => lz4Error('decode', reason, headerOffset + 8),
       )
       const compressionMethod = token & 0xf0
       const compressionLevel = token & 0x0f
@@ -213,9 +214,10 @@ export const decodeLz4BlockStream = (input: Uint8Array, options?: MinecraftLz4Op
       }
       if (compressedLength > bytes.byteLength - offset) return yield* Result.fail(lz4Error('decode', 'block data is truncated', offset))
 
+      const blockOffset = offset
       const block = yield* Result.try({
-        try: () => bytes.slice(offset, offset + compressedLength),
-        catch: () => lz4Error('decode', 'block could not be copied', offset),
+        try: () => bytes.slice(blockOffset, blockOffset + compressedLength),
+        catch: () => lz4Error('decode', 'block could not be copied', blockOffset),
       })
       offset += compressedLength
       output.startBlock()

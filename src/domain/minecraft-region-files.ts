@@ -54,7 +54,7 @@ const resolveExternalMaxBytes = (maxBytes: number | undefined): Result.Result<nu
 const assertLocalCoordinate = (value: number, name: string): Result.Result<void, MinecraftRegionFilesError> =>
   Number.isInteger(value) && value >= 0 && value < ANVIL_REGION_CHUNK_SIDE
     ? Result.succeed(undefined)
-    : Result.fail(regionFilesError(name + ' must be an integer between 0 and 31'))
+    : Result.fail(regionFilesError(`${name} must be an integer between 0 and 31`))
 
 const assertPayload = (payload: Uint8Array): Result.Result<void, MinecraftRegionFilesError> =>
   payload instanceof Uint8Array

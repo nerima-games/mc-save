@@ -184,6 +184,7 @@ const writePayload = (
   state: NbtEncodeState,
 ): Result.Result<void, NbtFormatError> =>
   Result.gen(function* () {
+    // oxlint-disable-next-line default-case -- NbtNonEndTag is a closed union and every payload type is handled below.
     switch (tag.type) {
       case 'byte':
         yield* writer.writeI8(tag.value)

@@ -127,6 +127,7 @@ class NbtReader {
 
   readTagPayload(type: NbtPayloadTagType, depth: number): Result.Result<NbtNonEndTag, NbtFormatError> {
     return Result.gen(function* (this: NbtReader) {
+      // oxlint-disable-next-line default-case -- tag ids are validated before this closed union reaches the payload reader.
       switch (type) {
         case 'byte': { const value = yield* this.readI8(); return yield* nbtByte(value) }
         case 'short': { const value = yield* this.readI16(); return yield* nbtShort(value) }

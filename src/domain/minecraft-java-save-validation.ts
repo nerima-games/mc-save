@@ -210,8 +210,8 @@ const optionalSafeInteger = (
   label: string,
 ): Result.Result<number | undefined, MinecraftJavaSaveError> => {
   if (value === undefined) return Result.succeed(undefined)
-  return Number.isSafeInteger(value)
-    ? Result.succeed(value as number)
+  return typeof value === 'number' && Number.isSafeInteger(value)
+    ? Result.succeed(value)
     : failValidation(`${label} must be a safe integer`)
 }
 
