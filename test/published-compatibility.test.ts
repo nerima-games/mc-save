@@ -43,8 +43,18 @@ const CompatibilityFormat = Result.getOrThrow(defineFormat({
   }),
 }))
 
+const normalizeGzipOperatingSystem = (bytes: Uint8Array): Uint8Array => {
+  if (bytes.byteLength < 10 || bytes[0] !== 0x1f || bytes[1] !== 0x8b || bytes[2] !== 0x08) return bytes
+  const normalized = bytes.slice()
+  normalized[9] = 0
+  return normalized
+}
+
+const bytesForComparison = (bytes: Uint8Array): string =>
+  Buffer.from(normalizeGzipOperatingSystem(bytes)).toString('base64')
+
 describe('published 0.5.0 save compatibility', () => {
-  effect('decodes and reproduces the published Minecraft and envelope bytes', () =>
+  effect('decodes published saves and reproduces encoded bytes apart from gzip host metadata', () =>
     Effect.gen(function* () {
       expect(publishedFixture.minecraft.files).toHaveLength(19)
       expect(publishedFixture.minecraft.files.reduce((total, file) => total + file.byteLength, 0)).toBe(37_681)
@@ -63,8 +73,12 @@ describe('published 0.5.0 save compatibility', () => {
       expect(encodedFiles.map((file) => ({
         path: file.path,
         byteLength: file.bytes.byteLength,
-        bytesBase64: Buffer.from(file.bytes).toString('base64'),
-      }))).toStrictEqual(publishedFixture.minecraft.files)
+        bytesBase64: bytesForComparison(file.bytes),
+      }))).toStrictEqual(publishedFixture.minecraft.files.map((file) => ({
+        path: file.path,
+        byteLength: file.byteLength,
+        bytesBase64: bytesForComparison(new Uint8Array(Buffer.from(file.bytesBase64, 'base64'))),
+      })))
 
       const validatedEnvelope = yield* applyUntrustedArgument(
         validateSaveEnvelope,

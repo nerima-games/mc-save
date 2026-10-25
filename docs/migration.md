@@ -43,7 +43,7 @@ The comparison includes the following migration rules:
 - New NBT scalar values come from their validating constructors such as `nbtByte(value)`, which return `Result<NbtByte, NbtFormatError>`; use the branded `.success.value` after checking the failure.
 - Exported option fields for codec limits accept `unknown` where the codec validates them. Pass the option through the relevant codec and handle its typed `Result` or `Effect` failure.
 
-The declaration comparison found no existing field transition from optional to required or required to optional. The `MinecraftRegionFilesError.message` field remains writable, matching `Error.message` in the base declaration. Save-file wire formats and envelope bytes are unchanged in this release.
+The declaration comparison found no existing field transition from optional to required or required to optional. The `MinecraftRegionFilesError.message` field remains writable, matching `Error.message` in the base declaration. Save-file formats and envelope encoding are unchanged in this release. The gzip header OS byte can vary by host: the published 0.5.0 fixture has `0x13` from macOS, while Linux output uses `0x03`. That metadata does not change the decoded save content. Existing saves remain readable and need no migration.
 
 ## Kernel 0.9 brands
 
