@@ -23,6 +23,7 @@
  */
 
 export * from './domain/envelope.js'
+export * from './domain/brand-types.js'
 export * from './application/revisioned-save.js'
 export * from './application/write-queue.js'
 export * from './domain/binary.js'

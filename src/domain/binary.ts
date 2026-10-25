@@ -1,27 +1,102 @@
-import { Schema, SchemaGetter } from 'effect'
+import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
+import { EncodedByteSequence, SaveByteLength } from './brand-types.js'
 
 /** Define a wire-compatible Uint8Array with an exact byte length. */
-export const fixedUint8Array = (length: number): Schema.Codec<Uint8Array, ReadonlyArray<number>> => {
-  const bytes = Schema.Array(
-    Schema.Number.check(
-      Schema.makeFilter<number>((value) =>
-        Number.isSafeInteger(value) && value >= 0 && value <= 255
-          ? undefined
-          : 'byte must be an integer between 0 and 255',
-      ),
-    ),
-  ).check(
-    Schema.makeFilter<ReadonlyArray<number>>((value) =>
-      Number.isSafeInteger(length) && length >= 0 && value.length === length
-        ? undefined
-        : `Uint8Array must contain exactly ${String(length)} bytes`,
-    ),
+export const fixedUint8Array = (
+  length: SaveByteLength,
+): Schema.Codec<Uint8Array, EncodedByteSequence> => {
+  const checkedLength = SaveByteLength.result(length)
+  const encodedBytes = Schema.declareConstructor<EncodedByteSequence, EncodedByteSequence>()(
+    [],
+    () => (value, _ast, options) => {
+      const snapshot = Result.try({
+        try: () => {
+          if (!Array.isArray(value)) {
+            return { _tag: 'failure' as const, message: 'encoded byte sequence must be an array' }
+          }
+
+          const actualLength = value.length
+          if (!Result.isSuccess(checkedLength) || actualLength !== checkedLength.success) {
+            return {
+              _tag: 'failure' as const,
+              message: `Uint8Array must contain exactly ${String(length)} bytes`,
+            }
+          }
+
+          const bytes: Array<number> = []
+          for (let index = 0; index < actualLength; index += 1) {
+            const byte: unknown = value[index]
+            if (typeof byte !== 'number' || !Number.isSafeInteger(byte) || byte < 0 || byte > 255) {
+              return {
+                _tag: 'failure' as const,
+                message: 'byte must be an integer between 0 and 255',
+              }
+            }
+            bytes.push(byte)
+          }
+          return { _tag: 'success' as const, bytes }
+        },
+        catch: () => ({ _tag: 'failure' as const, message: 'encoded byte sequence could not be read' }),
+      })
+
+      if (Result.isFailure(snapshot)) {
+        return Effect.fail(
+          new SchemaIssue.InvalidValue({ message: snapshot.failure.message }, value, options),
+        )
+      }
+      if (snapshot.success._tag === 'failure') {
+        return Effect.fail(
+          new SchemaIssue.InvalidValue({ message: snapshot.success.message }, value, options),
+        )
+      }
+      const bytes = snapshot.success.bytes
+      const encoded = EncodedByteSequence.result(bytes)
+      return Result.isSuccess(encoded)
+        ? Effect.succeed(encoded.success)
+        : Effect.fail(
+            new SchemaIssue.InvalidValue(
+              { message: encoded.failure.message },
+              value,
+              options,
+            ),
+          )
+    },
   )
 
-  return bytes.pipe(
-    Schema.decodeTo(Schema.Uint8Array, {
-      decode: SchemaGetter.transform((value: ReadonlyArray<number>) => new Uint8Array(value)),
-      encode: SchemaGetter.transform((value: Uint8Array) => Array.from(value)),
+  return Schema.decodeTo<Schema.Uint8Array, typeof encodedBytes, never, never>(
+    Schema.Uint8Array,
+    SchemaTransformation.transformEffect<Uint8Array, EncodedByteSequence>({
+      decode: (value) => Effect.succeed(new Uint8Array(value)),
+      encode: (value, options) => {
+        const bytes = Result.try({
+          try: () => {
+            if (!(value instanceof Uint8Array)) {
+              return { _tag: 'failure' as const, message: 'Uint8Array could not be read' }
+            }
+            return { _tag: 'success' as const, bytes: Array.from(value) }
+          },
+          catch: () => ({ _tag: 'failure' as const, message: 'Uint8Array could not be read' }),
+        })
+        if (Result.isFailure(bytes)) {
+          return Effect.fail(new SchemaIssue.InvalidValue({ message: bytes.failure.message }, value, options))
+        }
+        if (bytes.success._tag === 'failure') {
+          return Effect.fail(new SchemaIssue.InvalidValue({ message: bytes.success.message }, value, options))
+        }
+        if (!Result.isSuccess(checkedLength) || bytes.success.bytes.length !== checkedLength.success) {
+          return Effect.fail(
+            new SchemaIssue.InvalidValue(
+              { message: `Uint8Array must contain exactly ${String(length)} bytes` },
+              value,
+              options,
+            ),
+          )
+        }
+        const encoded = EncodedByteSequence.result(bytes.success.bytes)
+        return Result.isSuccess(encoded)
+          ? Effect.succeed(encoded.success)
+          : Effect.fail(new SchemaIssue.InvalidValue({ message: encoded.failure.message }, value, options))
+      },
     }),
-  )
+  )(encodedBytes)
 }

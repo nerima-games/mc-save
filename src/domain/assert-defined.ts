@@ -10,6 +10,9 @@
  * with its own typed error before reaching this line.
  */
 import { Result } from 'effect'
+import type { ValidationMessage } from './brand-types.js'
 
-export const assertDefined = <T,>(value: T | undefined, what: string): Result.Result<T, string> =>
-  value === undefined ? Result.fail(what) : Result.succeed(value)
+export const assertDefined = <T,>(
+  value: T | undefined,
+  what: ValidationMessage,
+): Result.Result<T, ValidationMessage> => (value === undefined ? Result.fail(what) : Result.succeed(value))

@@ -1,7 +1,7 @@
 /**
  * The gap between a domain field typed `T | undefined` and this package's own
  * integrity checksum, which rejects a bare `undefined` anywhere in an encoded
- * payload (`integrity-canonical.ts`'s `canonicalize` throws for anything that
+ * payload (`integrity-canonical.ts`'s `canonicalize` returns a failure for anything that
  * is not a string / boolean / finite-or-non-finite number / null / plain
  * object / array / `Uint8Array`).
  *
@@ -12,9 +12,32 @@
  * decision, not a blanket normalization.
  */
 import { Effect, Result, Schema, SchemaIssue, SchemaTransformation } from 'effect'
+import { JsonFieldName } from './brand-types.js'
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === 'object' && value !== null
+
+
+const validateFields = (
+  fields: ReadonlyArray<JsonFieldName>,
+  actual: unknown,
+): Result.Result<ReadonlyArray<JsonFieldName>, SchemaIssue.Issue> => {
+  const captured = Result.try({
+    try: () => Array.from(fields),
+    catch: () => new SchemaIssue.InvalidValue({ message: 'Optional field names could not be read' }, actual),
+  })
+  if (Result.isFailure(captured)) return Result.fail(captured.failure)
+
+  const checkedFields: Array<JsonFieldName> = []
+  for (const field of captured.success) {
+    const checked = JsonFieldName.result(field)
+    if (Result.isFailure(checked)) {
+      return Result.fail(new SchemaIssue.InvalidValue({ message: 'Optional field names must be strings' }, actual))
+    }
+    checkedFields.push(checked.success)
+  }
+  return Result.succeed(checkedFields)
+}
 
 /**
  * Decode side: a stored `null` becomes the domain's `undefined`, for exactly
@@ -22,13 +45,15 @@ const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
  * restores a VALUE, it does not invent a key.
  */
 export const restoreNullAsUndefined =
-  (fields: ReadonlyArray<string>) =>
+  (fields: ReadonlyArray<JsonFieldName>) =>
   (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
+    const checkedFields = validateFields(fields, value)
+    if (Result.isFailure(checkedFields)) return Result.fail(checkedFields.failure)
     if (!isRecord(value)) return Result.succeed(value)
     const captured = Result.try({
       try: () => {
         const keys = new Set(Object.keys(value))
-        for (const field of fields) {
+        for (const field of checkedFields.success) {
           if (!keys.has(field) && Object.getOwnPropertyDescriptor(value, field) !== undefined) keys.add(field)
         }
         return {
@@ -43,7 +68,7 @@ export const restoreNullAsUndefined =
       return Result.fail(new SchemaIssue.InvalidValue({ message: 'Symbol-keyed fields are not supported' }, value))
     }
     const output = captured.success.output
-    for (const field of fields) {
+    for (const field of checkedFields.success) {
       if (Object.hasOwn(output, field) && output[field] === null) output[field] = undefined
     }
     return Result.succeed(output)
@@ -55,13 +80,15 @@ export const restoreNullAsUndefined =
  * absent entirely is left absent.
  */
 export const encodeUndefinedAsNull =
-  (fields: ReadonlyArray<string>) =>
+  (fields: ReadonlyArray<JsonFieldName>) =>
   (value: unknown): Result.Result<unknown, SchemaIssue.Issue> => {
+    const checkedFields = validateFields(fields, value)
+    if (Result.isFailure(checkedFields)) return Result.fail(checkedFields.failure)
     if (!isRecord(value)) return Result.succeed(value)
     const captured = Result.try({
       try: () => {
         const keys = new Set(Object.keys(value))
-        for (const field of fields) {
+        for (const field of checkedFields.success) {
           if (!keys.has(field) && Object.getOwnPropertyDescriptor(value, field) !== undefined) keys.add(field)
         }
         return {
@@ -76,7 +103,7 @@ export const encodeUndefinedAsNull =
       return Result.fail(new SchemaIssue.InvalidValue({ message: 'Symbol-keyed fields are not supported' }, value))
     }
     const output = captured.success.output
-    for (const field of fields) {
+    for (const field of checkedFields.success) {
       if (Object.hasOwn(output, field) && output[field] === undefined) output[field] = null
     }
     return Result.succeed(output)
@@ -90,7 +117,7 @@ export const encodeUndefinedAsNull =
  */
 export const undefinedFieldsAsNull = <A>(
   inner: Schema.Codec<A, unknown>,
-  fields: ReadonlyArray<string>,
+  fields: ReadonlyArray<JsonFieldName>,
 ): Schema.Codec<A, unknown> =>
   Schema.decodeTo<Schema.Codec<A, unknown>, Schema.Unknown, never, never>(
     inner,

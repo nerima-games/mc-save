@@ -2,11 +2,14 @@ import { describe, expect } from 'vitest'
 import { effect } from './support/effect-test.js'
 import { Effect, Result, Schema } from 'effect'
 import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
+import { JsonFieldName } from '../src/domain/brand-types.js'
 import {
   encodeUndefinedAsNull,
   restoreNullAsUndefined,
   undefinedFieldsAsNull,
 } from '../src/domain/optional-fields.js'
+
+const noteField = Result.getOrThrow(JsonFieldName.result('note'))
 
 type Widget = {
   readonly id: string
@@ -25,7 +28,7 @@ const WidgetSchema = undefinedFieldsAsNull(
     note: Schema.UndefinedOr(Schema.String),
     tags: Schema.Array(Schema.String),
   }),
-  ['note'],
+  [noteField],
 )
 
 const WIDGET_FORMAT = defineFormat({
@@ -35,7 +38,7 @@ const WIDGET_FORMAT = defineFormat({
 })
 
 describe('undefinedFieldsAsNull', () => {
-  const OptionalUnknownSchema = undefinedFieldsAsNull(Schema.Unknown, ['note'])
+  const OptionalUnknownSchema = undefinedFieldsAsNull(Schema.Unknown, [noteField])
 
   effect('round-trips a present undefined field through the real integrity path', () =>
     Effect.gen(function* () {
@@ -75,7 +78,7 @@ describe('undefinedFieldsAsNull', () => {
 })
 
 describe('restoreNullAsUndefined', () => {
-  const restore = (value: unknown) => Result.getOrThrow(restoreNullAsUndefined(['note'])(value))
+  const restore = (value: unknown) => Result.getOrThrow(restoreNullAsUndefined([noteField])(value))
 
   effect('leaves a non-record value untouched', () =>
     Effect.sync(() => {
@@ -119,7 +122,7 @@ describe('restoreNullAsUndefined', () => {
     Effect.sync(() => {
       const value = { id: 'a', [Symbol('extra')]: true }
 
-      expect(Result.isFailure(restoreNullAsUndefined(['note'])(value))).toBe(true)
+      expect(Result.isFailure(restoreNullAsUndefined([noteField])(value))).toBe(true)
     }),
   )
 
@@ -132,13 +135,13 @@ describe('restoreNullAsUndefined', () => {
         },
       })
 
-      expect(Result.isFailure(restoreNullAsUndefined(['note'])(value))).toBe(true)
+      expect(Result.isFailure(restoreNullAsUndefined([noteField])(value))).toBe(true)
     }),
   )
 })
 
 describe('encodeUndefinedAsNull', () => {
-  const encode = (value: unknown) => Result.getOrThrow(encodeUndefinedAsNull(['note'])(value))
+  const encode = (value: unknown) => Result.getOrThrow(encodeUndefinedAsNull([noteField])(value))
 
   effect('leaves a non-record value untouched', () =>
     Effect.sync(() => {
@@ -182,7 +185,7 @@ describe('encodeUndefinedAsNull', () => {
     Effect.sync(() => {
       const value = { id: 'a', [Symbol('extra')]: true }
 
-      expect(Result.isFailure(encodeUndefinedAsNull(['note'])(value))).toBe(true)
+      expect(Result.isFailure(encodeUndefinedAsNull([noteField])(value))).toBe(true)
     }),
   )
 
@@ -195,7 +198,7 @@ describe('encodeUndefinedAsNull', () => {
         },
       })
 
-      expect(Result.isFailure(encodeUndefinedAsNull(['note'])(value))).toBe(true)
+      expect(Result.isFailure(encodeUndefinedAsNull([noteField])(value))).toBe(true)
     }),
   )
 })

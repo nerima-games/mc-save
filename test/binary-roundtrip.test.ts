@@ -42,7 +42,10 @@ import { defineFormat as defineFormatResult, encodeSave } from '../src/domain/fo
 import { loadFrom, saveTo } from '../src/domain/persistence.js'
 import { InMemoryStorageLayer, SaveKey, StoragePort } from '../src/domain/storage-port.js'
 import { fixedUint8Array } from '../src/domain/binary.js'
+import { SaveByteLength } from '../src/domain/brand-types.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
+
+const byteLength = (value: number) => Result.getOrThrow(SaveByteLength.result(value))
 
 /**
  * A chunk, as mc-worldgen would define it.
@@ -59,8 +62,8 @@ import { sealedTestEnvelope } from './support/save-envelope.js'
  * JavaScript runtime is the reference's mistake, not a constraint.
  */
 const ChunkSchema = Schema.Struct({
-  blocks: fixedUint8Array(4),
-  fluid: Schema.optional(fixedUint8Array(4)),
+  blocks: fixedUint8Array(byteLength(4)),
+  fluid: Schema.optional(fixedUint8Array(byteLength(4))),
 })
 
 type Chunk = Schema.Schema.Type<typeof ChunkSchema>
@@ -210,10 +213,10 @@ describe('a chunk across the storage medium', () => {
 describe('fixedUint8Array', () => {
   effect('rejects invalid lengths before a format can ship', () =>
     Effect.sync(() => {
-      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(-1))([]))).toBe(true)
-      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(1.5))([0]))).toBe(true)
-      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(Number.POSITIVE_INFINITY))([0]))).toBe(true)
-      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(1))([256]))).toBe(true)
+      expect(Result.isFailure(SaveByteLength.result(-1))).toBe(true)
+      expect(Result.isFailure(SaveByteLength.result(1.5))).toBe(true)
+      expect(Result.isFailure(SaveByteLength.result(Number.POSITIVE_INFINITY))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(fixedUint8Array(byteLength(1)))([256]))).toBe(true)
     }),
   )
 })
