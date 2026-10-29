@@ -1,5 +1,11 @@
 # @nerima-games/mc-save
 
+## 0.7.0
+
+### Minor Changes
+
+- Pin `@nerima-games/mc-kernel` to `0.14.0`.
+
 ## 0.6.0
 
 ### Minor Changes
