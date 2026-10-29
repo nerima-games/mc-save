@@ -1,4 +1,5 @@
-import { describe, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import * as fc from 'fast-check'
 import { Effect, Schema } from 'effect'
 import {
   SaveSliceIdSchema,
@@ -259,6 +260,41 @@ describe('save slice bundles', () => {
     Effect.gen(function* () {
       const error = yield* Effect.flip(decodeSaveBundle({ '': { version: version(1), data: {} } }))
 
+      expect(error).toBeInstanceOf(Schema.SchemaError)
+    }),
+  )
+
+  it('keeps the kernel save-version boundary at positive integers', () => {
+    const decodeVersion = Schema.decodeUnknownSync(SaveVersionSchema)
+    expect(decodeVersion(1)).toBe(1)
+    expect(() => decodeVersion(0)).toThrow(Schema.SchemaError)
+
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 1_000_000 }), (value) => {
+        expect(decodeVersion(value)).toBe(value)
+      }),
+    )
+
+    fc.assert(
+      fc.property(fc.integer({ min: -1_000_000, max: -1 }), (value) => {
+        expect(() => decodeVersion(value)).toThrow(Schema.SchemaError)
+      }),
+    )
+
+    fc.assert(
+      fc.property(
+        fc.tuple(fc.integer({ min: 1, max: 1_000_000 }), fc.integer({ min: 1, max: 999 }))
+          .map(([whole, fraction]) => whole + fraction / 1_000),
+        (value) => {
+          expect(() => decodeVersion(value)).toThrow(Schema.SchemaError)
+        },
+      ),
+    )
+  })
+
+  effect('returns a typed schema error when decoding a zero save version', () =>
+    Effect.gen(function* () {
+      const error = yield* Effect.flip(decodeSaveBundle({ inventory: { version: 0, data: {} } }))
       expect(error).toBeInstanceOf(Schema.SchemaError)
     }),
   )
