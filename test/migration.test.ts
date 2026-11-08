@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import * as fc from 'fast-check'
 import { effect } from './support/effect-test.js'
@@ -110,16 +111,37 @@ type ChunkSaveV3Payload = Schema.Codec.Encoded<typeof ChunkSaveV3Schema>
 
 const CHUNK_FORMAT_NAME = 'mc-save/test/migration/chunk'
 
+const MigrationFixtureSchema = Schema.Struct({
+  encoder: Schema.Struct({
+    package: Schema.Literal('@nerima-games/mc-save'),
+    version: Schema.Literal('0.5.0'),
+    integrity: Schema.String,
+  }),
+  format: Schema.Struct({
+    name: Schema.String,
+    version: Schema.Int,
+  }),
+  json: Schema.String,
+  bytesBase64: Schema.String,
+})
+
+const migrationV1Fixture = Schema.decodeUnknownSync(MigrationFixtureSchema)(
+  JSON.parse(readFileSync(new URL('./fixtures/migration-v1-mc-save-0.5.0.json', import.meta.url), 'utf8')),
+)
+const migrationV2Fixture = Schema.decodeUnknownSync(MigrationFixtureSchema)(
+  JSON.parse(readFileSync(new URL('./fixtures/migration-v2-mc-save-0.5.0.json', import.meta.url), 'utf8')),
+)
+
+const migrationFixtureEnvelope = (fixture: typeof migrationV1Fixture | typeof migrationV2Fixture): unknown =>
+  JSON.parse(Buffer.from(fixture.bytesBase64, 'base64').toString('utf8'))
+
+const decodeMigrationFixture = (fixture: typeof migrationV1Fixture | typeof migrationV2Fixture) =>
+  Schema.decodeUnknownEffect(SaveEnvelopeSchema)(migrationFixtureEnvelope(fixture))
+
 const LEGACY_CHUNK_FORMAT_V1 = defineFormat({
   name: CHUNK_FORMAT_NAME,
   version: 1,
   schema: ChunkSaveV1Schema,
-})
-
-const CHUNK_FORMAT_V2 = defineFormat({
-  name: CHUNK_FORMAT_NAME,
-  version: 2,
-  schema: ChunkSaveV2Schema,
 })
 
 const migrateChunkV1ToV2 = (old: ChunkSaveV1): ChunkSaveV2Payload => ({
@@ -167,27 +189,16 @@ const CURRENT_CHUNK_FORMAT_FROM_V2 = defineFormat({
   migrations: [CHUNK_V2_TO_V3],
 })
 
-const encodeHistoricalV1 = (value: ChunkSaveV1) =>
+const encodeSyntheticV1MigrationPropertyValue = (value: ChunkSaveV1) =>
   Effect.gen(function* () {
     const draft = yield* encodeSave(LEGACY_CHUNK_FORMAT_V1, value)
-    return yield* Effect.fromResult(sealSaveEnvelope(draft))
-  })
-
-const encodeHistoricalV2 = (value: ChunkSaveV2) =>
-  Effect.gen(function* () {
-    const draft = yield* encodeSave(CHUNK_FORMAT_V2, value)
     return yield* Effect.fromResult(sealSaveEnvelope(draft))
   })
 
 describe('migrating a save written by an earlier build', () => {
   effect('migrates v1 through its single v1 to v2 step', () =>
     Effect.gen(function* () {
-      const value: ChunkSaveV1 = {
-        worldId: 'overworld-alpha',
-        blocks: new Uint8Array([0, 1, 2, 255, 7, 0]),
-        inventory: ['diamond_pickaxe', null, null, 'torch'],
-      }
-      const oldEnvelope = yield* encodeHistoricalV1(value)
+      const oldEnvelope = yield* decodeMigrationFixture(migrationV1Fixture)
       const restored = yield* decodeSave(CHUNK_FORMAT_V2_WITH_MIGRATION, oldEnvelope)
 
       expect(restored).toStrictEqual({
@@ -200,26 +211,21 @@ describe('migrating a save written by an earlier build', () => {
 
   effect('migrates v2 through its single v2 to v3 step', () =>
     Effect.gen(function* () {
-      const oldValue: ChunkSaveV2 = {
+      const oldEnvelope = yield* decodeMigrationFixture(migrationV2Fixture)
+      const restored = yield* decodeSave(CURRENT_CHUNK_FORMAT, oldEnvelope)
+
+      expect(restored).toStrictEqual({
         worldId: 'overworld-beta',
         blocks: [0, 300, 65_535],
         inventory: ['iron_pickaxe', undefined],
-      }
-      const oldEnvelope = yield* encodeHistoricalV2(oldValue)
-      const restored = yield* decodeSave(CURRENT_CHUNK_FORMAT, oldEnvelope)
-
-      expect(restored).toStrictEqual({ ...oldValue, dimension: 'overworld' })
+        dimension: 'overworld',
+      })
     }),
   )
 
   effect('migrates a v1 envelope through every step to the current schema', () =>
     Effect.gen(function* () {
-      const oldValue: ChunkSaveV1 = {
-        worldId: 'overworld-alpha',
-        blocks: new Uint8Array([0, 1, 2, 255, 7, 0]),
-        inventory: ['diamond_pickaxe', null, null, 'torch'],
-      }
-      const oldEnvelope = yield* encodeHistoricalV1(oldValue)
+      const oldEnvelope = yield* decodeMigrationFixture(migrationV1Fixture)
       const restored = yield* decodeSave(CURRENT_CHUNK_FORMAT, oldEnvelope)
 
       expect(restored).toStrictEqual({
@@ -250,9 +256,7 @@ describe('migrating a save written by an earlier build', () => {
 
   effect('returns a typed failure when a legacy version has no migration path', () =>
     Effect.gen(function* () {
-      const unsupported = Result.getOrThrow(
-        sealSaveEnvelope(saveEnvelope(CHUNK_FORMAT_NAME, 1, { any: 'payload' })),
-      )
+      const unsupported = yield* decodeMigrationFixture(migrationV1Fixture)
       const error = yield* Effect.flip(decodeSave(CURRENT_CHUNK_FORMAT_FROM_V2, unsupported))
 
       expect(error._tag).toBe('SaveDecodeError')
@@ -277,11 +281,7 @@ describe('migrating a save written by an earlier build', () => {
         schema: ChunkSaveV3Schema,
         migrations: [throwingStep],
       })
-      const oldEnvelope = yield* encodeHistoricalV2({
-        worldId: 'overworld-beta',
-        blocks: [0, 300],
-        inventory: [undefined],
-      })
+      const oldEnvelope = yield* decodeMigrationFixture(migrationV2Fixture)
       const error = yield* Effect.flip(decodeSave(format, oldEnvelope))
 
       expect(error._tag).toBe('SaveDecodeError')
@@ -318,7 +318,7 @@ describe('migrating a save written by an earlier build', () => {
     }),
   )
 
-  it('migrates arbitrary historical values through the chain with independently derived expectations', () => {
+  it('migrates generated v1 payload values through the chain with independent expectations', () => {
     fc.assert(
       fc.property(
         fc.record({
@@ -332,7 +332,7 @@ describe('migrating a save written by an earlier build', () => {
             blocks: Uint8Array.from(value.blocks),
             inventory: value.inventory,
           }
-          const oldEnvelope = Effect.runSync(encodeHistoricalV1(oldValue))
+          const oldEnvelope = Effect.runSync(encodeSyntheticV1MigrationPropertyValue(oldValue))
           const restored = Effect.runSync(decodeSave(CURRENT_CHUNK_FORMAT, oldEnvelope))
 
           expect(restored).toStrictEqual({
@@ -346,21 +346,23 @@ describe('migrating a save written by an earlier build', () => {
     )
   })
 
-  effect('confirms the historical encoder produces a v1 envelope the old schema accepts', () =>
+  effect('validates committed v1 and v2 bytes from the published 0.5.0 encoder', () =>
     Effect.gen(function* () {
-      const oldValue: ChunkSaveV1 = {
-        worldId: 'overworld-alpha',
-        blocks: new Uint8Array([0, 1, 2, 255, 7, 0]),
-        inventory: ['diamond_pickaxe', null, null, 'torch'],
-      }
-      const envelope = yield* encodeHistoricalV1(oldValue)
-      const parsed = yield* Schema.decodeUnknownEffect(SaveEnvelopeSchema)(envelope)
-      const decoded = yield* Schema.decodeUnknownEffect(ChunkSaveV1Schema)(parsed.payload)
+      for (const fixture of [migrationV1Fixture, migrationV2Fixture]) {
+        const bytes = Buffer.from(fixture.bytesBase64, 'base64')
+        expect(bytes.toString('utf8')).toBe(fixture.json)
+        expect(fixture.encoder.package).toBe('@nerima-games/mc-save')
+        expect(fixture.encoder.version).toBe('0.5.0')
+        expect(fixture.encoder.integrity).toMatch(/^sha512-/)
 
-      expect(parsed.version).toBe(1)
-      expect(decoded).toStrictEqual(oldValue)
-      const validated = yield* validateSaveEnvelope(envelope)
-      expect(validated.integrity.checksum).toBe(envelope.integrity.checksum)
+        const envelope = yield* decodeMigrationFixture(fixture)
+        expect(fixture.format.name).toBe(CHUNK_FORMAT_NAME)
+        expect(fixture.format.version).toBe(envelope.version)
+        expect(envelope.format).toBe(CHUNK_FORMAT_NAME)
+
+        const validated = yield* validateSaveEnvelope(envelope)
+        expect(validated.integrity.checksum).toBe(envelope.integrity.checksum)
+      }
     }),
   )
 })
@@ -381,11 +383,7 @@ describe('save boundary defaults', () => {
 
   effect('rejects explicit null maxBytes at the envelope validation boundary', () =>
     Effect.gen(function* () {
-      const oldEnvelope = yield* encodeHistoricalV1({
-        worldId: 'overworld-alpha',
-        blocks: new Uint8Array([0, 1]),
-        inventory: [null],
-      })
+      const oldEnvelope = yield* decodeMigrationFixture(migrationV1Fixture)
       const error = yield* Effect.flip(
         applyUntrustedArgument(validateSaveEnvelope, undefined, [oldEnvelope, null]),
       )

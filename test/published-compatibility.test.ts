@@ -3,7 +3,7 @@ import { describe, expect } from 'vitest'
 import { Effect, Result, Schema } from 'effect'
 import { effect } from './support/effect-test.js'
 import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
-import { decodeSave, defineFormat, encodeSave } from '../src/domain/format.js'
+import { decodeSave, defineFormat, defineFormatMigration, encodeSave } from '../src/domain/format.js'
 import { sealSaveEnvelope, validateSaveEnvelope } from '../src/domain/integrity.js'
 import {
   decodeMinecraftJavaSave,
@@ -41,6 +41,24 @@ const CompatibilityFormat = Result.getOrThrow(defineFormat({
     health: Schema.Number,
     inventory: Schema.Array(Schema.Struct({ id: Schema.String, count: Schema.Number })),
   }),
+}))
+
+const CompatibilityFormatV1ToV2 = Result.getOrThrow(defineFormatMigration({
+  fromVersion: 1,
+  schema: CompatibilityFormat.schema,
+  migrate: (state) => ({ ...state, formatGeneration: 2 }),
+}))
+
+const CompatibilityFormatWithMigration = Result.getOrThrow(defineFormat({
+  name: 'mc-save/compatibility-fixture',
+  version: 2,
+  schema: Schema.Struct({
+    worldId: Schema.String,
+    health: Schema.Number,
+    inventory: Schema.Array(Schema.Struct({ id: Schema.String, count: Schema.Number })),
+    formatGeneration: Schema.Literal(2),
+  }),
+  migrations: [CompatibilityFormatV1ToV2],
 }))
 
 const normalizeGzipOperatingSystem = (bytes: Uint8Array): Uint8Array => {
@@ -94,6 +112,9 @@ describe('published 0.5.0 save compatibility', () => {
           { id: 'example:moon_shard', count: 3 },
         ],
       })
+
+      const migratedState = yield* decodeSave(CompatibilityFormatWithMigration, validatedEnvelope)
+      expect(migratedState).toStrictEqual({ ...decodedState, formatGeneration: 2 })
 
       const draft = yield* encodeSave(CompatibilityFormat, decodedState)
       const sealedEnvelope = Result.getOrThrow(sealSaveEnvelope(draft, jsonExtensions({

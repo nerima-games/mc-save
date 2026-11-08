@@ -313,6 +313,10 @@ export type RevisionedSaveReader<Key, Raw, Head, Chunk, Error, Requirements> = {
   readonly lastHealthyRevisionAvailable: boolean
   readonly decodeHead: (rawHead: Raw) => Effect.Effect<Head, SaveDecodeError, Requirements>
   readonly chunkKeysFromHead: (head: Head) => Effect.Effect<ReadonlyArray<Key>, SaveDecodeError, Requirements>
+  /**
+   * The caller owns chunk decoding and integrity checks. This reader does not
+   * inspect or checksum raw chunk bytes, so accepted byte changes are returned.
+   */
   readonly decodeChunk: (rawChunk: Raw) => Effect.Effect<Chunk, SaveDecodeError, Requirements>
   readonly missingChunkError: (head: Head, key: Key) => SaveDecodeError
   readonly keyToString: (key: Key) => SaveKey
