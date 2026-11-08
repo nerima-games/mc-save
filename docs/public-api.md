@@ -18,7 +18,7 @@ The main operations are `saveTo`, `loadFrom`, and `listFrom`. They use the `Stor
 
 - `saveTo` encodes, seals, validates, then writes one value.
 - `loadFrom` validates read options before storage lookup, returns `Option.none()` only for a missing key, and revalidates stored data before decoding it.
-- `SaveReadOptions.record` identifies a failing load as a save, head, or chunk; `repair` lets a wrapper provide recovery facts. Save and head reads check for a decodable durable previous value by default; chunk reads default to no retained revision.
+- `SaveReadOptions.record` identifies a failing load as a save, head, or chunk; `repair` lets a wrapper provide recovery facts. Save and head reads check for a decodable durable previous value by default. For a chunk read, `loadFrom` has no checkpoint context and defaults `lastHealthyRevisionAvailable` to `false`; a wrapper that knows checkpoint status can pass `repair` to override that guidance.
 - `listFrom` validates read options before enumerating keys, then returns valid values and per-key decode failures separately. Invalid options and storage failures fail the whole listing; its `corrupt` partition contains decode failures and does not mean every save is safe to delete.
 - Decode failures identify the affected save record and include repair guidance. Listing entries omit error causes, which may contain payload data.
 - `saveBatch` prepares every entry before one atomic `commitBatch` call.
