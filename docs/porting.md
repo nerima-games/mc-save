@@ -4,17 +4,15 @@
 
 mc-save owns reusable save and wire format behavior without taking on a consumer's game domain:
 
-- `src/domain/format*.ts`: schema-based formats and strict current-version decoding
+- `src/domain/format*.ts`: schema-based formats, explicit contiguous migration chains, and current-version decoding
 - `src/domain/envelope.ts` and `src/domain/integrity*.ts`: envelopes, canonical bytes, checksums, and size validation
 - `src/domain/persistence.ts`, `src/domain/batch-save.ts`, and `src/domain/durable-save.ts`: Effect persistence operations
 - `src/domain/storage-port.ts` and `src/domain/indexeddb-*.ts`: storage port and IndexedDB adapter
-- `src/application/revisioned-save.ts`: generic revision writes, rollback, and cleanup
+- `src/application/revisioned-save.ts`: generic revision writes, rollback, optional validated checkpoint retention, and partial reads with repair metadata
 - `src/application/write-queue.ts`: generic sequential write mechanics
 - `src/domain/save-slices.ts`: save-slice bundle codecs, migration paths, and restore preflight
 - `src/domain/minecraft-*.ts`, `src/domain/anvil-region.ts`, and `src/domain/minecraft-region-files.ts`: Java wire and container codecs
 - `src/domain/minecraft-paths.ts`: save paths and coordinate mapping
-
-These layers provide validated values, bytes, containers, and storage operations. They do not assign game meaning to the data.
 
 ## Layers that stay with consumers
 
@@ -23,7 +21,7 @@ Consumers retain:
 - Player, chunk, and world metadata schemas and semantic validation
 - Tick and autosave policy
 - Settings state, settings defaults, and settings callbacks
-- Typed session wrappers and save-slice registration composition; confirm the owning package in the downstream plan
+- Typed session wrappers and save-slice registration composition; the owning package is not documented in this repository
 - Private world session lifecycle, browser host wiring, and host registration
 - Rendering, UI, input, and game rules
 - Product-specific decisions for converting legacy payloads into current domain state
@@ -38,9 +36,9 @@ Save keys and Minecraft path calculations use `WorldId`, `ChunkCoord`, `ChunkAxi
 
 1. Define the payload schema and current format with `defineFormat`.
 2. Validate the storage key with `SaveKey` or `saveKeyForWorld`.
-3. Use `saveTo` and `loadFrom`, adding `saveBatch`, durable persistence, or the revisioned-save operation where the storage contract requires them.
+3. Use `saveTo` and `loadFrom`, adding `saveBatch`, durable persistence, or revisioned-save checkpointing where the storage contract requires them.
 4. Provide `InMemoryStorageLayer` or `indexedDbStorageLayer` for the runtime.
-5. For save-slice bundles, mc-sim supplies slice state and mc-save encodes and preflights the bundle. Confirm which downstream package composes the registration list before that integration begins.
+5. For save-slice bundles, mc-sim supplies slice state and mc-save encodes and preflights the bundle. The downstream owner of registration composition is not documented here; confirm it before integration.
 6. Use NBT, compression, Anvil, and path codecs directly only when a consumer must handle Java save files.
 
 Keep semantic schemas, defaults, session lifecycle, and host behavior in their consumer packages. Do not import internal helpers or create a second save envelope, storage port, or coordinate brand.

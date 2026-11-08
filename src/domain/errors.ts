@@ -28,7 +28,19 @@ type SaveDecodeErrorFields = {
   readonly format: string
   readonly version: number
   readonly reason: string
+  readonly record?: SaveRecordLocation
+  readonly repair?: SaveRepairGuidance
   readonly cause?: unknown
+}
+
+export type SaveRecordLocation =
+  | { readonly _tag: 'Save'; readonly key: string }
+  | { readonly _tag: 'Head'; readonly key: string }
+  | { readonly _tag: 'Chunk'; readonly key: string }
+
+export type SaveRepairGuidance = {
+  readonly lastHealthyRevisionAvailable: boolean
+  readonly discardableChunkKeys: ReadonlyArray<string>
 }
 
 const SaveDecodeErrorBase: new (

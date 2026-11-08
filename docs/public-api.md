@@ -4,7 +4,7 @@ The package exports its public API from `src/index.ts`. Internal modules that ar
 
 ## Formats and envelopes
 
-`defineFormat` validates a format name and positive safe-integer version. It returns a `Result` from Effect; handle its failure before passing the format to other APIs. `encodeSave` encodes a typed value and returns an Effect with a `SaveEnvelopeDraft`. `decodeSave` accepts only the format's current version and returns a typed Effect. It does not migrate older payloads.
+`defineFormat` validates a format name and positive safe-integer version. It returns a `Result` from Effect; handle its failure before passing the format to other APIs. `defineFormatMigration` validates a migration step's source version and transform. Pass a contiguous migration chain through `defineFormat({ migrations })`; each step receives the value decoded by its source schema and returns the next version's encoded payload. `decodeSave` decodes the final payload with the current schema. Future versions and older versions without a complete chain fail with `SaveDecodeError`. `encodeSave` always writes the current format version.
 
 `sealSaveEnvelope` validates and seals an envelope synchronously through `Result`. `validateSaveEnvelope` checks an untrusted envelope and its integrity through an Effect. The default encoded-size limit is `DEFAULT_MAX_SAVE_BYTES`; persistence read and write options can override the applicable limit.
 
@@ -18,11 +18,14 @@ The main operations are `saveTo`, `loadFrom`, and `listFrom`. They use the `Stor
 
 - `saveTo` encodes, seals, validates, then writes one value.
 - `loadFrom` validates read options before storage lookup, returns `Option.none()` only for a missing key, and revalidates stored data before decoding it.
-- `listFrom` validates read options before enumerating keys, then returns valid values and per-key decode failures separately. Invalid options and storage failures fail the whole listing; a decode failure for an individual record remains a `corrupt` entry.
+- `SaveReadOptions.record` identifies a failing load as a save, head, or chunk; `repair` lets a wrapper provide recovery facts. Save and head reads check for a decodable durable previous value by default; chunk reads default to no retained revision.
+- `listFrom` validates read options before enumerating keys, then returns valid values and per-key decode failures separately. Invalid options and storage failures fail the whole listing; its `corrupt` partition contains decode failures and does not mean every save is safe to delete.
+- Decode failures identify the affected save record and include repair guidance. Listing entries omit error causes, which may contain payload data.
 - `saveBatch` prepares every entry before one atomic `commitBatch` call.
 - `saveDurably` and `loadDurably` use a previous-value key for recovery.
 - `withStorageRetry` wraps the storage service with a `StorageRetryPolicy`.
 - `writeRevisionedSave` publishes chunks before the head, attempts to restore prior values after a typed write failure, and best-effort removes obsolete chunks after publication.
+- `writeRevisionedSaveWithCheckpoint` retains the validated prior revision under caller-defined revision-specific keys before publishing the replacement. `readRevisionedSave` and `loadRetainedRevision` return valid chunks plus per-chunk decode failures, with the actual stored chunk keys in repair metadata.
 - `makeWriteQueue` serializes writes. `enqueue` schedules a write; `drain` waits for queued writes and reports the most recent failure not yet observed by `drain`. A later success does not erase that failure.
 
 `StoragePort` exposes `get`, `put`, `remove`, `commitBatch`, `readBatch`, and `keys`. The package provides `makeInMemoryStorage`, `InMemoryStorageLayer`, `makeIndexedDbStorage`, `indexedDbStorageLayer`, and `failingStorageLayer`. Both adapters reject malformed envelope values and sparse or `undefined` batch arrays with `StorageError`; they keep valid empty batches and missing keys distinct.

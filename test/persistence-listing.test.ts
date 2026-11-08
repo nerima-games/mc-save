@@ -1,7 +1,8 @@
-import { describe, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import * as fc from 'fast-check'
 import { effect } from './support/effect-test.js'
 import { Effect, Layer, Option, Result, Schema } from 'effect'
-import { StorageError } from '../src/domain/errors.js'
+import { StorageError, type SaveRepairGuidance } from '../src/domain/errors.js'
 import type { SaveEnvelope } from '../src/domain/envelope.js'
 import { defineFormat as defineFormatResult } from '../src/domain/format.js'
 import { durablePreviousKey } from '../src/domain/durable-key.js'
@@ -24,6 +25,8 @@ const FIRST = SaveKey('world/first')
 const BROKEN = SaveKey('world/broken')
 const SECOND = SaveKey('world/second')
 const FOREIGN = SaveKey('world/foreign')
+const CHUNK = SaveKey('world/chunk')
+const HEAD = SaveKey('world/head')
 
 // A deliberately malformed value is returned by the test storage service to
 // exercise the read boundary without asking a real adapter to persist invalid data.
@@ -54,6 +57,7 @@ describe('listFrom', () => {
       const storage = yield* StoragePort
       yield* storage.put(FIRST, sealedTestEnvelope(World.name, 1, { name: 'first' }))
       yield* storage.put(BROKEN, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      yield* storage.put(durablePreviousKey(BROKEN), sealedTestEnvelope(World.name, 1, { name: 'checkpoint' }))
       yield* storage.put(SECOND, sealedTestEnvelope(World.name, 1, { name: 'second' }))
       yield* storage.put(FOREIGN, sealedTestEnvelope('another-format', 1, { name: 'foreign' }))
 
@@ -70,9 +74,16 @@ describe('listFrom', () => {
         format: World.name,
         version: 1,
         reason: 'the payload does not satisfy the current schema',
+        record: { _tag: 'Save', key: BROKEN },
+        repair: { lastHealthyRevisionAvailable: true, discardableChunkKeys: [] },
       })
       expect(listed.corrupt[1]?.reason).toContain('another-format')
+      expect(listed.corrupt[1]).toMatchObject({
+        record: { _tag: 'Save', key: FOREIGN },
+        repair: { lastHealthyRevisionAvailable: false, discardableChunkKeys: [] },
+      })
       expect(listed.corrupt.every((failure) => !('cause' in failure))).toBe(true)
+      expect(JSON.stringify(listed.corrupt)).not.toContain('checkpoint')
       expect(JSON.stringify(listed.corrupt)).not.toContain('42')
     }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
   )
@@ -166,6 +177,71 @@ describe('listFrom', () => {
       expect(yield* storage.keys).toStrictEqual([FIRST])
     }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
   )
+
+  it('reports future versions as typed per-record failures for arbitrary version values', async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.integer({ min: 2, max: 1_000_000 }), async (version) => {
+        const key = SaveKey(`world/future/${version}`)
+        const listed = await Effect.runPromise(
+          Effect.gen(function* () {
+            const storage = yield* StoragePort
+            yield* storage.put(key, sealedTestEnvelope(World.name, version, { ignored: true }))
+            return yield* listFrom(World)
+          }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+        )
+
+        expect(listed.valid).toStrictEqual([])
+        expect(listed.corrupt).toHaveLength(1)
+        expect(listed.corrupt[0]).toMatchObject({
+          _tag: 'SaveDecodeError',
+          key,
+          format: World.name,
+          version,
+          record: { _tag: 'Save', key },
+          repair: { lastHealthyRevisionAvailable: false, discardableChunkKeys: [] },
+        })
+        expect(listed.corrupt[0]?.reason).toContain(`v${version}`)
+        expect(JSON.stringify(listed.corrupt)).not.toContain('cause')
+        expect(JSON.stringify(listed.corrupt)).not.toContain('ignored')
+      }),
+    )
+  })
+
+  effect('reports the maximum safe envelope version without throwing', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(
+        BROKEN,
+        sealedTestEnvelope(World.name, Number.MAX_SAFE_INTEGER, { ignored: true }),
+      )
+
+      const listed = yield* listFrom(World)
+
+      expect(listed.valid).toStrictEqual([])
+      expect(listed.corrupt).toHaveLength(1)
+      expect(listed.corrupt[0]).toMatchObject({
+        key: BROKEN,
+        version: Number.MAX_SAFE_INTEGER,
+        record: { _tag: 'Save', key: BROKEN },
+      })
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
+
+  effect('does not advertise an invalid durable checkpoint as a repair option', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(BROKEN, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      yield* storage.put(durablePreviousKey(BROKEN), sealedTestEnvelope(World.name, 1, { name: 99 }))
+
+      const listed = yield* listFrom(World)
+
+      expect(listed.corrupt).toHaveLength(1)
+      expect(listed.corrupt[0]?.repair).toStrictEqual({
+        lastHealthyRevisionAvailable: false,
+        discardableChunkKeys: [],
+      })
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
 })
 
 describe('saveTo', () => {
@@ -204,6 +280,7 @@ describe('saveTo', () => {
       expect(yield* storage.keys).toStrictEqual([])
     }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage)))
   })
+
 })
 
 describe('loadFrom', () => {
@@ -257,9 +334,123 @@ describe('loadFrom', () => {
           cause: getterFailure,
         })
       }
+
+      const invalidRecord = yield* Effect.result(
+        loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>({ record: 'manifest' })),
+      )
+      expect(invalidRecord._tag).toBe('Failure')
+      if (invalidRecord._tag === 'Failure') {
+        expect(invalidRecord.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save read options could not be read',
+        })
+      }
+
+      const invalidRepair = yield* Effect.result(
+        loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>({ repair: null })),
+      )
+      expect(invalidRepair._tag).toBe('Failure')
+      if (invalidRepair._tag === 'Failure') {
+        expect(invalidRepair.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save read options could not be read',
+        })
+      }
       expect(lookedUp).toBe(false)
     }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))
   })
+
+  effect('attaches caller-provided head repair guidance to decode failures', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(HEAD, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      const repair: SaveRepairGuidance = {
+        lastHealthyRevisionAvailable: true,
+        discardableChunkKeys: ['world/chunk/unreadable'],
+      }
+
+      const error = yield* Effect.flip(loadFrom(World, HEAD, { record: 'Head', repair }))
+
+      expect(error._tag).toBe('SaveDecodeError')
+      if (error._tag === 'SaveDecodeError') {
+        expect(error.record).toStrictEqual({ _tag: 'Head', key: HEAD })
+        expect(error.repair).toStrictEqual(repair)
+      }
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
+
+  effect('does not infer a head checkpoint for a failed chunk read', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(CHUNK, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      yield* storage.put(durablePreviousKey(CHUNK), sealedTestEnvelope(World.name, 1, { name: 'checkpoint' }))
+
+      const error = yield* Effect.flip(loadFrom(World, CHUNK, { record: 'Chunk' }))
+
+      expect(error._tag).toBe('SaveDecodeError')
+      if (error._tag === 'SaveDecodeError') {
+        expect(error.record).toStrictEqual({ _tag: 'Chunk', key: CHUNK })
+        expect(error.repair).toStrictEqual({
+          lastHealthyRevisionAvailable: false,
+          discardableChunkKeys: [],
+        })
+      }
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
+
+  effect('detects only decodable durable checkpoints for default save and head errors', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      const validBackup = SaveKey('world/broken-with-valid-backup')
+      const invalidBackup = SaveKey('world/broken-with-invalid-backup')
+      const headWithBackup = SaveKey('world/broken-head-with-backup')
+      yield* storage.put(validBackup, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      yield* storage.put(durablePreviousKey(validBackup), sealedTestEnvelope(World.name, 1, { name: 'valid' }))
+      yield* storage.put(invalidBackup, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      yield* storage.put(durablePreviousKey(invalidBackup), sealedTestEnvelope(World.name, 1, { name: 99 }))
+      yield* storage.put(headWithBackup, sealedTestEnvelope(World.name, 1, { name: 42 }))
+      yield* storage.put(durablePreviousKey(headWithBackup), sealedTestEnvelope(World.name, 1, { name: 'head backup' }))
+
+      const validError = yield* Effect.flip(loadFrom(World, validBackup))
+      const invalidError = yield* Effect.flip(loadFrom(World, invalidBackup))
+      const headError = yield* Effect.flip(loadFrom(World, headWithBackup, { record: 'Head' }))
+
+      expect(validError._tag).toBe('SaveDecodeError')
+      if (validError._tag === 'SaveDecodeError') {
+        expect(validError.record).toStrictEqual({ _tag: 'Save', key: validBackup })
+        expect(validError.repair?.lastHealthyRevisionAvailable).toBe(true)
+      }
+      expect(invalidError._tag).toBe('SaveDecodeError')
+      if (invalidError._tag === 'SaveDecodeError') {
+        expect(invalidError.record).toStrictEqual({ _tag: 'Save', key: invalidBackup })
+        expect(invalidError.repair?.lastHealthyRevisionAvailable).toBe(false)
+      }
+      expect(headError._tag).toBe('SaveDecodeError')
+      if (headError._tag === 'SaveDecodeError') {
+        expect(headError.record).toStrictEqual({ _tag: 'Head', key: headWithBackup })
+        expect(headError.repair?.lastHealthyRevisionAvailable).toBe(true)
+      }
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
+
+  effect('adds recovery metadata without preserving an absent decode cause', () =>
+    Effect.gen(function* () {
+      const storage = yield* StoragePort
+      yield* storage.put(
+        HEAD,
+        sealedTestEnvelope(World.name, World.version + 1, { name: 'future' }),
+      )
+
+      const error = yield* Effect.flip(loadFrom(World, HEAD))
+
+      expect(error._tag).toBe('SaveDecodeError')
+      if (error._tag === 'SaveDecodeError') {
+        expect(error.cause).toBeUndefined()
+        expect(error.record).toStrictEqual({ _tag: 'Save', key: HEAD })
+        expect(error.repair?.lastHealthyRevisionAvailable).toBe(false)
+      }
+    }).pipe(Effect.provide(Layer.effect(StoragePort, makeInMemoryStorage))),
+  )
 
   effect('fails when storage returns null instead of an Option for a stored key', () => {
     const service: StorageService = {
@@ -344,6 +535,8 @@ describe('loadFrom', () => {
       if (result._tag === 'SaveDecodeError') {
         expect(result.version).toBe(0)
         expect(result.reason).toBe(`the stored value at "${BROKEN}" is not a well-formed save envelope`)
+        expect(result.record).toStrictEqual({ _tag: 'Save', key: BROKEN })
+        expect(result.repair?.lastHealthyRevisionAvailable).toBe(false)
       }
     }).pipe(Effect.provide(Layer.succeed(StoragePort, storage)))
   })
@@ -371,6 +564,8 @@ describe('loadFrom', () => {
       if (error._tag === 'SaveDecodeError') {
         expect(error.reason).toBe(`the stored value at "${BROKEN}" could not be read as a save envelope`)
         expect(error.cause).toBeInstanceOf(Error)
+        expect(error.record).toStrictEqual({ _tag: 'Save', key: BROKEN })
+        expect(error.repair?.lastHealthyRevisionAvailable).toBe(false)
       }
     }).pipe(Effect.provide(Layer.succeed(StoragePort, service)))
   })

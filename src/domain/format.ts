@@ -1,3 +1,3 @@
-export type { SaveFormat } from './format-types.js'
+export type { SaveFormat, SaveFormatMigration } from './format-types.js'
 export { decodeSave, encodeSave } from './format-codec.js'
-export { defineFormat } from './format-definition.js'
+export { defineFormat, defineFormatMigration } from './format-definition.js'

@@ -86,15 +86,41 @@ export const decodeSave = <A, I>(
       })
     }
 
-    if (envelope.version !== format.version) {
-      return yield* new SaveDecodeError({
-        format: format.name,
-        version: envelope.version,
-        reason: `this save uses unsupported version v${envelope.version}; current version is v${format.version}; only the current format version is accepted`,
+    let payload: unknown = envelope.payload
+    for (let version: number = envelope.version; version < format.version; version += 1) {
+      const migration = format.migrations?.find((candidate) => candidate.fromVersion === version)
+      if (migration === undefined) {
+        return yield* new SaveDecodeError({
+          format: format.name,
+          version: envelope.version,
+          reason: `this save uses unsupported version v${envelope.version}; migration from v${version} to v${version + 1} is not defined, so it must not be treated as corrupt`,
+        })
+      }
+
+      const sourcePayload = payload
+      const migrationVersion = version
+      const migrated = yield* Effect.try({
+        try: () => migration.migrate(sourcePayload),
+        catch: (cause) =>
+          new SaveDecodeError({
+            format: format.name,
+            version: migrationVersion,
+            reason: `the payload could not be migrated from v${migrationVersion} to v${migrationVersion + 1}`,
+            cause,
+          }),
       })
+      if (Result.isFailure(migrated)) {
+        return yield* new SaveDecodeError({
+          format: format.name,
+          version: migrationVersion,
+          reason: `the payload could not be migrated from v${migrationVersion} to v${migrationVersion + 1}`,
+          cause: migrated.failure,
+        })
+      }
+      payload = migrated.success
     }
 
-    return yield* Schema.decodeUnknownEffect(format.schema)(envelope.payload).pipe(
+    return yield* Schema.decodeUnknownEffect(format.schema)(payload).pipe(
       Effect.mapError(
         (cause) =>
           new SaveDecodeError({

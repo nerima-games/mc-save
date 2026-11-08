@@ -9,7 +9,7 @@ The package version and save format version are separate contracts.
 | Package version | Published package release | `version` in `package.json` |
 | Format version | Current schema generation for one payload | `defineFormat({ version })` |
 
-Changing the package version does not change a save format version. A format-version change should update the schema, fixtures, and consumer release plan together.
+A format-version change should update the schema, fixtures, and consumer release plan together.
 
 ## Current format contract
 
@@ -17,12 +17,16 @@ A format is identified by an exact name and version. `decodeSave` rejects:
 
 - An envelope for a different format
 - A future version
-- An older version than the current format
+- An older version without a complete migration chain to the current format
 - An envelope with invalid integrity, byte length, or payload schema
 
-There is no automatic migration chain for ordinary save formats. Consumers that do not support an older format must decide how to preserve, migrate, or regenerate that data. The rejection prevents unsupported data from being treated as corrupt and overwritten or deleted.
+Consumers can define a contiguous chain of migrations for ordinary save formats. Each step decodes its source with that version's schema, then returns the next version's encoded payload; the next step decodes that payload, and the current schema decodes the final result. The consumer owns the version history and conversion logic. Without a complete chain, an older save remains unsupported; that is not evidence of corruption, so preserve it until a suitable migration is available. A successful read does not rewrite the stored envelope; writing the loaded value stores it in the current version.
 
 The save-slice API is a separate migration boundary. It resolves an explicit unique path from one slice version to another and decodes all slices before calling restore callbacks.
+
+`SaveDecodeError` can identify the failed save, head, or chunk record and include repair guidance. Save listings omit error causes and payloads. Revisioned-save consumers can opt into `writeRevisionedSaveWithCheckpoint` to copy a validated previous revision under revision-specific keys before publishing the replacement. The checkpoint head is written after its chunks; an invalid or incomplete live revision does not replace an existing checkpoint. `readRevisionedSave` reports healthy chunks alongside per-chunk decode failures so a consumer can choose a repair policy.
+
+The checkpoint API is generic and does not change the IndexedDB layout version. Consumers supply the checkpoint key namespace and health validation. After cleanup, storage is approximately the live revision plus one retained copy. During replacement, storage can approach four revision sizes when keys do not overlap: the current live revision, old checkpoint, new checkpoint copy, and next live revision being written.
 
 ## IndexedDB layout version
 
@@ -37,7 +41,7 @@ Release inputs include `engines`, `packageManager`, the lockfile, exports, and t
 3. The package version and changeset intent agree.
 4. The exact `@nerima-games/mc-kernel` version and lockfile are reproducible for consumers.
 
-`@nerima-games/mc-kernel` is pinned exactly. When updating it, review that version's consumer-migration and public API documentation, then apply only the changes relevant to the shared types, guards, and constants used by mc-save. If a migration does not change persisted wire values, it does not require a save format version change.
+`@nerima-games/mc-kernel` is pinned exactly. When updating it, review the matching consumer-migration and public API documentation in the mc-kernel repository, then apply only the changes relevant to the shared types, guards, and constants used by mc-save. If a migration does not change persisted wire values, it does not require a save format version change.
 
 Use `pnpm changeset status` to review the pending release state.
 

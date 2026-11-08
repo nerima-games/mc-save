@@ -53,7 +53,7 @@ When reading unknown coordinates or branded values, capture the input once and v
 
 ## Save format compatibility
 
-`decodeSave` accepts only the format name and version declared by the current `SaveFormat`. It does not upgrade an older payload. To migrate a product's older format, read the envelope, validate it, decode the payload with that old version's schema, transform it in the consumer's domain layer, and encode and seal it with the current format. Keep old schemas and product-specific conversion rules with the consumer.
+`decodeSave` requires the current `SaveFormat` name and either its current version or a complete migration chain from the stored older version. Define each step with `defineFormatMigration`, passing the old version's schema and a consumer-owned transformation from its decoded value to the next version's encoded payload, then provide the contiguous chain to `defineFormat`. The current schema decodes the final payload. Keep old schemas and product-specific conversion rules with the consumer; a successful read does not rewrite the stored envelope.
 
 For legacy version 3, the outer envelope must match the legacy `SaveFormat.name` selected by the consuming application, have version `3`, and contain valid integrity metadata. mc-save rejects other legacy outer versions. This boundary validates and exposes the payload; mc-sim converts it into the current slice and domain state.
 

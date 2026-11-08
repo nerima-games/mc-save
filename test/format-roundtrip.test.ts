@@ -1,9 +1,15 @@
-import { describe, expect, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import * as fc from 'fast-check'
 import { effect } from './support/effect-test.js'
 import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { Effect, Result, Schema } from 'effect'
 import { SaveEnvelopeDraftSchema, SaveEnvelopeSchema } from '../src/domain/envelope.js'
-import { decodeSave, defineFormat as defineFormatResult, encodeSave } from '../src/domain/format.js'
+import {
+  decodeSave,
+  defineFormat as defineFormatResult,
+  defineFormatMigration as defineFormatMigrationResult,
+  encodeSave,
+} from '../src/domain/format.js'
 import { CanonicalJson } from '../src/domain/brand-types.js'
 import { checksumOf, utf8Bytes } from '../src/domain/integrity-canonical.js'
 import { sealedTestEnvelope } from './support/save-envelope.js'
@@ -150,7 +156,7 @@ describe('encodeSave / decodeSave', () => {
       expect(result._tag).toBe('SaveDecodeError')
       if (result._tag === 'SaveDecodeError') {
         expect(result.version).toBe(1)
-        expect(result.reason).toContain('only the current format version is accepted')
+        expect(result.reason).toContain('migration from v1 to v2 is not defined')
       }
     }),
   )
@@ -304,6 +310,171 @@ describe('format definition', () => {
       expect(Result.isSuccess(result)).toBe(true)
       if (Result.isSuccess(result)) {
         expect(Object.keys(result.success).sort()).toStrictEqual(['name', 'schema', 'version'])
+      }
+    }),
+  )
+
+  effect('accepts a contiguous migration chain ending at the current version', () =>
+    Effect.sync(() => {
+      const fromOne = Result.getOrThrow(defineFormatMigrationResult({
+        fromVersion: 1,
+        schema: Schema.String,
+        migrate: (value) => value,
+      }))
+      const fromTwo = Result.getOrThrow(defineFormatMigrationResult({
+        fromVersion: 2,
+        schema: Schema.String,
+        migrate: (value) => ({ value }),
+      }))
+      const result = defineFormatResult({
+        name: 'mc-save/test/migration-chain',
+        version: 3,
+        schema: Schema.Struct({ value: Schema.String }),
+        migrations: [fromOne, fromTwo],
+      })
+
+      expect(Result.isFailure(result)).toBe(false)
+      if (!Result.isFailure(result)) {
+        expect(result.success.migrations?.map(({ fromVersion }) => fromVersion)).toStrictEqual([1, 2])
+      }
+    }),
+  )
+
+  effect('rejects duplicate, skipped, incomplete, and out-of-range migration steps', () =>
+    Effect.sync(() => {
+      const fromOne = Result.getOrThrow(defineFormatMigrationResult({
+        fromVersion: 1,
+        schema: Schema.String,
+        migrate: (value) => value,
+      }))
+      const fromTwo = Result.getOrThrow(defineFormatMigrationResult({
+        fromVersion: 2,
+        schema: Schema.String,
+        migrate: (value) => value,
+      }))
+      const fromThree = Result.getOrThrow(defineFormatMigrationResult({
+        fromVersion: 3,
+        schema: Schema.String,
+        migrate: (value) => value,
+      }))
+      const define = (version: number, migrations: ReadonlyArray<typeof fromOne>) =>
+        defineFormatResult({ name: 'mc-save/test/invalid-chain', version, schema: Schema.String, migrations })
+
+      const duplicate = define(3, [fromOne, fromOne])
+      const skipped = define(4, [fromOne, fromThree])
+      const incomplete = define(4, [fromOne])
+      const outOfRange = define(3, [fromOne, fromTwo, fromThree])
+
+      expect(Result.isFailure(duplicate)).toBe(true)
+      expect(Result.isFailure(skipped)).toBe(true)
+      expect(Result.isFailure(incomplete)).toBe(true)
+      expect(Result.isFailure(outOfRange)).toBe(true)
+      if (Result.isFailure(duplicate)) expect(duplicate.failure.join(' ')).toContain('contiguous chain')
+      if (Result.isFailure(skipped)) expect(skipped.failure.join(' ')).toContain('contiguous chain')
+      if (Result.isFailure(incomplete)) expect(incomplete.failure.join(' ')).toContain('end at the current')
+      if (Result.isFailure(outOfRange)) expect(outOfRange.failure.join(' ')).toContain('less than the current')
+    }),
+  )
+
+  effect('returns Result failures for malformed migration definitions and lists', () =>
+    Effect.sync(() => {
+      const defineWithMigrations = (migrations: unknown) =>
+        applyUntrustedArgument(defineFormatResult, undefined, [{
+          name: 'mc-save/test/runtime-migrations',
+          version: 2,
+          schema: Schema.String,
+          migrations,
+        }])
+      const defineMigration = (spec: unknown) =>
+        applyUntrustedArgument(defineFormatMigrationResult, undefined, [spec])
+
+      const nonArray = defineWithMigrations(null)
+      const unreadableList = defineWithMigrations(new Proxy([], {
+        get(target, property, receiver) {
+          if (property === 'length') throw new Error('migration length getter failed')
+          return Reflect.get(target, property, receiver)
+        },
+      }))
+      const emptyList = defineWithMigrations([])
+      const invalidEntry = defineWithMigrations([null])
+      const unreadableEntry = defineWithMigrations([new Proxy({}, {
+        get(target, property, receiver) {
+          if (property === 'fromVersion') throw new Error('migration version getter failed')
+          return Reflect.get(target, property, receiver)
+        },
+      })])
+      const invalidVersion = defineWithMigrations([{ fromVersion: 0, migrate: (value: unknown) => value }])
+      const invalidTransform = defineWithMigrations([{ fromVersion: 1, migrate: null }])
+
+      expect(Result.isFailure(nonArray)).toBe(true)
+      expect(Result.isFailure(unreadableList)).toBe(true)
+      expect(Result.isSuccess(emptyList)).toBe(true)
+      if (Result.isSuccess(emptyList)) expect(Object.hasOwn(emptyList.success, 'migrations')).toBe(false)
+      expect(Result.isFailure(invalidEntry)).toBe(true)
+      expect(Result.isFailure(unreadableEntry)).toBe(true)
+      expect(Result.isFailure(invalidVersion)).toBe(true)
+      expect(Result.isFailure(invalidTransform)).toBe(true)
+
+      const unreadableDefinition = defineMigration(new Proxy(
+        { fromVersion: 1, schema: Schema.String, migrate: (value: string) => value },
+        {
+          get(target, property, receiver) {
+            if (property === 'schema') throw new Error('schema getter failed')
+            return Reflect.get(target, property, receiver)
+          },
+        },
+      ))
+      const nonNumericVersion = defineMigration({
+        fromVersion: '1',
+        schema: Schema.String,
+        migrate: (value: string) => value,
+      })
+      const nonCallableTransform = defineMigration({
+        fromVersion: 1,
+        schema: Schema.String,
+        migrate: 1,
+      })
+      const invalidSchema = defineMigration({
+        fromVersion: 1,
+        schema: null,
+        migrate: (value: unknown) => value,
+      })
+
+      expect(Result.isFailure(unreadableDefinition)).toBe(true)
+      expect(Result.isFailure(nonNumericVersion)).toBe(true)
+      expect(Result.isFailure(nonCallableTransform)).toBe(true)
+      expect(Result.isSuccess(invalidSchema)).toBe(true)
+      if (Result.isSuccess(invalidSchema)) {
+        expect(Result.isFailure(invalidSchema.success.migrate('legacy'))).toBe(true)
+      }
+    }),
+  )
+
+  it('accepts positive safe migration source versions', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 1_000_000 }), (fromVersion) => {
+        const result = defineFormatMigrationResult({
+          fromVersion,
+          schema: Schema.String,
+          migrate: (value) => value,
+        })
+        expect(Result.isFailure(result)).toBe(false)
+      }),
+    )
+  })
+
+  effect('rejects migration source versions at and outside the positive safe integer boundary', () =>
+    Effect.sync(() => {
+      for (const fromVersion of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        const result = defineFormatMigrationResult({
+          fromVersion,
+          schema: Schema.String,
+          migrate: (value) => value,
+        })
+        expect(Result.isFailure(result)).toBe(true)
+        if (Result.isFailure(result)) {
+          expect(result.failure.join(' ')).toContain('safe integer >= 1')
+        }
       }
     }),
   )

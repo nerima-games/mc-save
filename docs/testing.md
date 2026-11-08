@@ -27,7 +27,7 @@ The `.ast-grep/rules/no-type-assertion.yml` rule rejects `as` (except `as const`
 
 - Pure codecs: envelopes, integrity, binary, NBT, UTF-8, compression, and LZ4
 - Java containers: Anvil regions, sector allocation, external `.mcc` chunks, and paths
-- Persistence: strict formats, revalidation, corrupt-list separation, batch atomicity, durable rollback, and revision writes
+- Persistence: format migrations, revalidation, repair metadata, corrupt-list separation, batch atomicity, durable rollback, and revision checkpoints
 - Save-slice contracts: migration paths, registration coverage, schema preflight, and restore behavior
 - Adapters: in-memory storage, fake IndexedDB, and Chromium IndexedDB
 - Public boundary: exported names, release build, and a packed tarball in a temporary consumer
