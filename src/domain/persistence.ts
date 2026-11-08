@@ -101,26 +101,43 @@ const resolveReadRecordContext = <A, I>(
   options?: SaveReadOptions,
 ): Effect.Effect<SaveReadRecordContext, SaveDecodeError> =>
   Effect.gen(function* () {
-    return yield* Effect.try({
+    const captured = Result.try({
       try: () => {
-        const recordValue = options === undefined ? undefined : Reflect.get(options, 'record')
-        const repairValue = options === undefined ? undefined : Reflect.get(options, 'repair')
-        const record = recordValue === undefined ? 'Save' : recordValue
-        if (record !== 'Save' && record !== 'Head' && record !== 'Chunk') {
-          throw new TypeError('record must be Save, Head, or Chunk')
-        }
-        if (repairValue === undefined) return { record }
-        const repair = Schema.decodeUnknownResult(SaveRepairGuidanceSchema)(repairValue)
-        if (Result.isFailure(repair)) throw repair.failure
-        return { record, repair: repair.success }
+        return options === undefined
+          ? { record: undefined, repair: undefined }
+          : {
+              record: Reflect.get(options, 'record'),
+              repair: Reflect.get(options, 'repair'),
+            }
       },
-      catch: (cause) => new SaveDecodeError({
+      catch: (cause) => cause,
+    })
+    const makeReadOptionsError = (cause: unknown): SaveDecodeError => new SaveDecodeError({
         format: format.name,
         version: format.version,
         reason: 'save read options could not be read',
         cause,
-      }),
-    })
+      })
+
+    if (Result.isFailure(captured)) {
+      return yield* Effect.fail(makeReadOptionsError(captured.failure))
+    }
+
+    const recordValue = captured.success.record
+    const repairValue = captured.success.repair
+    const record = recordValue === undefined ? 'Save' : recordValue
+    if (record !== 'Save' && record !== 'Head' && record !== 'Chunk') {
+      return yield* Effect.fail(
+        makeReadOptionsError(new TypeError('record must be Save, Head, or Chunk')),
+      )
+    }
+    if (repairValue === undefined) return { record }
+
+    const repair = Schema.decodeUnknownResult(SaveRepairGuidanceSchema)(repairValue)
+    if (Result.isFailure(repair)) {
+      return yield* Effect.fail(makeReadOptionsError(repair.failure))
+    }
+    return { record, repair: repair.success }
   })
 
 const loadFromWithMaxBytes = <A, I>(

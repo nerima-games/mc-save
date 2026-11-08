@@ -335,6 +335,44 @@ describe('loadFrom', () => {
         })
       }
 
+      const recordGetterFailure = new Error('record option could not be read')
+      const unreadableRecord = new Proxy({}, {
+        get: (_target, property) => {
+          if (property === 'record') throw recordGetterFailure
+          return undefined
+        },
+      })
+      const recordGetterResult = yield* Effect.result(
+        loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>(unreadableRecord)),
+      )
+      expect(recordGetterResult._tag).toBe('Failure')
+      if (recordGetterResult._tag === 'Failure') {
+        expect(recordGetterResult.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save read options could not be read',
+          cause: recordGetterFailure,
+        })
+      }
+
+      const repairGetterFailure = new Error('repair option could not be read')
+      const unreadableRepairGetter = new Proxy({}, {
+        get: (_target, property) => {
+          if (property === 'repair') throw repairGetterFailure
+          return undefined
+        },
+      })
+      const repairGetterResult = yield* Effect.result(
+        loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>(unreadableRepairGetter)),
+      )
+      expect(repairGetterResult._tag).toBe('Failure')
+      if (repairGetterResult._tag === 'Failure') {
+        expect(repairGetterResult.failure).toMatchObject({
+          _tag: 'SaveDecodeError',
+          reason: 'save read options could not be read',
+          cause: repairGetterFailure,
+        })
+      }
+
       const invalidRecord = yield* Effect.result(
         loadFrom(World, FIRST, widen<Parameters<typeof loadFrom>[2]>({ record: 'manifest' })),
       )
