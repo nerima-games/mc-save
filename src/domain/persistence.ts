@@ -17,12 +17,17 @@ import {
   type SaveMaxBytes,
 } from './brand-types.js'
 import { SaveEnvelopeSchema } from './envelope.js'
-import { SaveDecodeError, StorageError } from './errors.js'
+import { SaveKey as SaveKeyConstructor, type SaveKey } from './save-key.js'
+import {
+  SaveDecodeError,
+  StorageError,
+  type SaveRecordLocation,
+  type SaveRepairGuidance,
+} from './errors.js'
 import { decodeSave, type SaveFormat } from './format.js'
-import { isDurablePreviousKey } from './durable-key.js'
+import { durablePreviousKey, isDurablePreviousKey } from './durable-key.js'
 import { resolveSaveMaxBytes, validateSaveEnvelope } from './integrity.js'
 import { prepareSave, type SaveWriteOptions } from './save-preparation.js'
-import type { SaveKey } from './save-key.js'
 import { StoragePort } from './storage-port.js'
 
 export type { SaveWriteOptions } from './save-preparation.js'
@@ -39,6 +44,8 @@ export type ListedSaveFailure =
       readonly format: SaveErrorFormatLabelType
       readonly version: SaveErrorVersionType
       readonly reason: ValidationMessage
+      readonly record: SaveRecordLocation
+      readonly repair: SaveRepairGuidance
     }
 
 export type SaveListing<A> = {
@@ -48,7 +55,21 @@ export type SaveListing<A> = {
 
 export type SaveReadOptions = {
   readonly maxBytes?: SaveMaxBytes
+  /** Identifies the record in a `SaveDecodeError`. */
+  readonly record?: SaveRecordLocation['_tag']
+  /** Overrides recovery guidance inferred from the durable previous record. */
+  readonly repair?: SaveRepairGuidance
 }
+
+type SaveReadRecordContext = {
+  readonly record: SaveRecordLocation['_tag']
+  readonly repair?: SaveRepairGuidance
+}
+
+const SaveRepairGuidanceSchema = Schema.Struct({
+  lastHealthyRevisionAvailable: Schema.Boolean,
+  discardableChunkKeys: Schema.Array(Schema.fromBrand('SaveKey', SaveKeyConstructor)(Schema.String)),
+})
 
 const resolveReadMaxBytes = <A, I>(
   format: SaveFormat<A, I>,
@@ -73,6 +94,50 @@ const resolveReadMaxBytes = <A, I>(
       }),
     })
     return yield* Effect.fromResult(resolveSaveMaxBytes(maxBytesValue, format.name, format.version))
+  })
+
+const resolveReadRecordContext = <A, I>(
+  format: SaveFormat<A, I>,
+  options?: SaveReadOptions,
+): Effect.Effect<SaveReadRecordContext, SaveDecodeError> =>
+  Effect.gen(function* () {
+    const captured = Result.try({
+      try: () => {
+        return options === undefined
+          ? { record: undefined, repair: undefined }
+          : {
+              record: Reflect.get(options, 'record'),
+              repair: Reflect.get(options, 'repair'),
+            }
+      },
+      catch: (cause) => cause,
+    })
+    const makeReadOptionsError = (cause: unknown): SaveDecodeError => new SaveDecodeError({
+        format: format.name,
+        version: format.version,
+        reason: 'save read options could not be read',
+        cause,
+      })
+
+    if (Result.isFailure(captured)) {
+      return yield* Effect.fail(makeReadOptionsError(captured.failure))
+    }
+
+    const recordValue = captured.success.record
+    const repairValue = captured.success.repair
+    const record = recordValue === undefined ? 'Save' : recordValue
+    if (record !== 'Save' && record !== 'Head' && record !== 'Chunk') {
+      return yield* Effect.fail(
+        makeReadOptionsError(new TypeError('record must be Save, Head, or Chunk')),
+      )
+    }
+    if (repairValue === undefined) return { record }
+
+    const repair = Schema.decodeUnknownResult(SaveRepairGuidanceSchema)(repairValue)
+    if (Result.isFailure(repair)) {
+      return yield* Effect.fail(makeReadOptionsError(repair.failure))
+    }
+    return { record, repair: repair.success }
   })
 
 const loadFromWithMaxBytes = <A, I>(
@@ -121,6 +186,46 @@ const loadFromWithMaxBytes = <A, I>(
     return Option.some(yield* decodeSave(format, validated))
   })
 
+const hasHealthyDurablePrevious = <A, I>(
+  format: SaveFormat<A, I>,
+  key: SaveKey,
+  maxBytes: SaveMaxBytes,
+): Effect.Effect<boolean, StorageError, StoragePort> =>
+  loadFromWithMaxBytes(format, durablePreviousKey(key), maxBytes).pipe(
+    Effect.map(Option.isSome),
+    Effect.catchTags({ SaveDecodeError: () => Effect.succeed(false) }),
+  )
+
+const attachReadFailureMetadata = <A, I>(
+  format: SaveFormat<A, I>,
+  key: SaveKey,
+  maxBytes: SaveMaxBytes,
+  error: SaveDecodeError,
+  context: SaveReadRecordContext,
+): Effect.Effect<never, StorageError | SaveDecodeError, StoragePort> => {
+  const record: SaveRecordLocation = { _tag: context.record, key }
+  const makeError = (repair: SaveRepairGuidance): SaveDecodeError => new SaveDecodeError({
+    format: error.format,
+    version: error.version,
+    reason: error.reason,
+    ...(error.cause === undefined ? {} : { cause: error.cause }),
+    record,
+    repair,
+  })
+
+  if (context.repair !== undefined) return Effect.fail(makeError(context.repair))
+
+  if (context.record === 'Chunk') {
+    return Effect.fail(makeError({ lastHealthyRevisionAvailable: false, discardableChunkKeys: [] }))
+  }
+
+  return hasHealthyDurablePrevious(format, key, maxBytes).pipe(
+    Effect.flatMap((lastHealthyRevisionAvailable) =>
+      Effect.fail(makeError({ lastHealthyRevisionAvailable, discardableChunkKeys: [] })),
+    ),
+  )
+}
+
 /** Encode `value` with `format` and write it under `key`. */
 export const saveTo = <A, I>(
   format: SaveFormat<A, I>,
@@ -151,7 +256,12 @@ export const loadFrom = <A, I>(
 ): Effect.Effect<Option.Option<A>, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
     const maxBytes = yield* resolveReadMaxBytes(format, options)
-    return yield* loadFromWithMaxBytes(format, key, maxBytes)
+    const context = yield* resolveReadRecordContext(format, options)
+    return yield* loadFromWithMaxBytes(format, key, maxBytes).pipe(
+      Effect.catchTags({
+        SaveDecodeError: (error) => attachReadFailureMetadata(format, key, maxBytes, error, context),
+      }),
+    )
   })
 
 /**
@@ -164,7 +274,7 @@ export const loadFrom = <A, I>(
  */
 export const listFrom = <A, I>(
   format: SaveFormat<A, I>,
-  options?: SaveReadOptions,
+  options?: Pick<SaveReadOptions, 'maxBytes'>,
 ): Effect.Effect<SaveListing<A>, StorageError | SaveDecodeError, StoragePort> =>
   Effect.gen(function* () {
     const maxBytes = yield* resolveReadMaxBytes(format, options)
@@ -187,16 +297,23 @@ export const listFrom = <A, I>(
                 new StorageError({ operation: 'persistence.listFrom', key, cause: 'save decode error fields are malformed' }),
               )
             }
-            return Effect.sync(() => {
+            return hasHealthyDurablePrevious(format, key, maxBytes).pipe(
+              Effect.map((lastHealthyRevisionAvailable) => {
                 corrupt.push({
                   _tag: error._tag,
                   key,
                   format: formatLabel.success,
                   version: version.success,
                   reason: reason.success,
+                  record: { _tag: 'Save', key },
+                  repair: {
+                    lastHealthyRevisionAvailable,
+                    discardableChunkKeys: [],
+                  },
                 })
                 return Option.none<A>()
-            })
+              }),
+            )
           },
           }),
           Effect.map((value) => {

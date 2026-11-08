@@ -1,0 +1,13 @@
+{
+  "encoder": {
+    "package": "@nerima-games/mc-save",
+    "version": "0.5.0",
+    "integrity": "sha512-SJXzqA9X6wS2PEudR+PkQAmfy+r98JNTyfnRskX0GJ+x3I/6Eu5SjDMb1az7b/9GWIo/t0jQ1AVHXW+6vKco6g=="
+  },
+  "format": {
+    "name": "mc-save/test/migration/chunk",
+    "version": 2
+  },
+  "json": "{\"format\":\"mc-save/test/migration/chunk\",\"version\":2,\"payload\":{\"worldId\":\"overworld-beta\",\"blocks\":[0,300,65535],\"inventory\":[\"iron_pickaxe\",null]},\"integrity\":{\"algorithm\":\"fnv1a32\",\"byteLength\":149,\"checksum\":\"3cbd8ef4\"}}",
+  "bytesBase64": "eyJmb3JtYXQiOiJtYy1zYXZlL3Rlc3QvbWlncmF0aW9uL2NodW5rIiwidmVyc2lvbiI6MiwicGF5bG9hZCI6eyJ3b3JsZElkIjoib3ZlcndvcmxkLWJldGEiLCJibG9ja3MiOlswLDMwMCw2NTUzNV0sImludmVudG9yeSI6WyJpcm9uX3BpY2theGUiLG51bGxdfSwiaW50ZWdyaXR5Ijp7ImFsZ29yaXRobSI6ImZudjFhMzIiLCJieXRlTGVuZ3RoIjoxNDksImNoZWNrc3VtIjoiM2NiZDhlZjQifX0="
+}

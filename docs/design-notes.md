@@ -2,7 +2,7 @@
 
 ## DN-1: Format versions require an exact match
 
-`decodeSave` checks the format name and version. It rejects future versions and versions other than the current one. Implicitly reading an older payload would make conversions hard to trace and complicate recovery after a failed migration. Consumers define a new format and own any explicit conversion.
+`decodeSave` checks the format name and version. It rejects future versions and older versions without a complete contiguous migration chain. Each consumer-defined step validates its old payload schema before converting it, and the current schema validates the final result. Keeping the chain explicit makes conversions traceable and keeps game-specific format history with the consumer.
 
 ## DN-2: Keep draft and sealed envelopes separate
 
@@ -14,7 +14,7 @@ The checksum is calculated over the envelope's canonical representation, not the
 
 ## DN-4: Revalidate values read from storage
 
-Although `StoragePort` is typed to return an envelope, the runtime value came from IndexedDB or another external medium. `loadFrom` validates the envelope schema, size, checksum, format, and payload schema. `listFrom` records per-save decode failures in the listing, while invalid read options and storage failures fail the Effect.
+Although `StoragePort` is typed to return an envelope, the runtime value came from IndexedDB or another external medium. `loadFrom` validates the envelope schema, size, checksum, format, and payload schema, then attaches record and repair metadata to decode failures. `listFrom` records per-save decode failures without their causes, which may contain payload data; invalid read options and storage failures fail the Effect.
 
 ## DN-5: Atomic batches belong to the port
 
@@ -42,7 +42,7 @@ Dimension directories, region coordinates, floor division for negative coordinat
 
 ## DN-11: Publish revisioned data by publishing the head last
 
-`writeRevisionedSave` writes chunks before the head so readers do not observe a head that points to unpublished chunks. After a typed write failure it attempts to restore the previous head and chunk values. Once the new head is written, obsolete chunk cleanup is best-effort.
+`writeRevisionedSave` writes chunks before the head so readers do not observe a head that points to unpublished chunks. After a typed write failure it attempts to restore the previous head and chunk values. Once the new head is written, obsolete chunk cleanup is best-effort. `writeRevisionedSaveWithCheckpoint` first copies a validated previous revision to revision-specific keys and publishes its checkpoint head last. A failed or incomplete live revision does not replace the checkpoint. Cleanup of the prior checkpoint happens only after the replacement live head publishes.
 
 ## DN-12: Preflight every save slice before restoring any slice
 

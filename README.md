@@ -6,7 +6,7 @@
 
 - Effect 4 format codecs, envelopes, integrity checks, and size limits
 - `StoragePort`, in-memory and IndexedDB adapters, batch and durable operations, retries, revision writes, and a sequential write queue
-- Save-slice bundle encoding, migration-path resolution, and restore preflight using `@nerima-games/mc-kernel` 0.14.0 contracts
+- Save-slice bundle encoding, migration-path resolution, and restore preflight using `@nerima-games/mc-kernel` 0.15.0 contracts
 - Java modified UTF-8, NBT, gzip/zlib/none/LZ4, Anvil regions, external `.mcc` chunks, and standard save paths
 - Shared `WorldId`, coordinate brands, and save-slice contracts from `@nerima-games/mc-kernel`
 
@@ -40,7 +40,7 @@ const savePlayer = Result.isSuccess(playerFormat)
 await Effect.runPromise(savePlayer.pipe(Effect.provide(InMemoryStorageLayer)))
 ```
 
-`defineFormat` returns a `Result`; handle invalid definitions before using the format. `saveTo` encodes the value, seals and validates the envelope, then writes it. `decodeSave` accepts only the exact format name and version; it does not migrate older envelopes. Save-slice restore uses a separate API for registered migrations.
+`defineFormat` returns a `Result`; handle invalid definitions before using the format. `defineFormatMigration` declares a schema-checked step, and `defineFormat({ migrations })` accepts a contiguous chain to the current version. Each step converts its decoded source value to the next version's encoded payload. `saveTo` encodes the value, seals and validates the envelope, then writes it. `decodeSave` applies the declared chain to supported older envelopes; it rejects future versions and older versions without a complete chain. Save-slice restore uses a separate API for registered migrations.
 
 ## Repository structure
 
@@ -76,7 +76,7 @@ pnpm audit
 - Persisted envelopes contain the format name, version, payload, and integrity metadata.
 - `encodeSave` returns an unsealed draft; persistence operations store a sealed envelope.
 - Stored values are revalidated at read boundaries.
-- Older product-specific payloads require an explicit consumer migration. The save-slice API validates registered slices before invoking their restore callbacks.
+- Consumers define explicit migration chains for older format versions. The save-slice API validates registered slices before invoking their restore callbacks.
 - Minecraft NBT and Anvil codecs preserve supported wire data; consumers define game-specific schema meaning.
 - IndexedDB layout versions are independent of save format versions.
 

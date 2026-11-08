@@ -1,17 +1,11 @@
 /**
  * @nerima-games/mc-save — the persistence toolkit.
  *
- * The public entry point for the persistence toolkit.
- *
  * mc-save is a stable persistence library with a narrow interface. It provides
- * current-version application formats, storage ports, and lossless Java
- * NBT/Anvil codecs plus a typed file-level boundary for official Minecraft
- * saves. Version-specific game semantics remain in NBT documents so unknown
- * fields survive a read/write cycle.
- *
- * The storage service has no dependency on game-domain modules, so persistence
- * and world generation remain separate. The Java save façade covers the
- * official on-disk file categories without coupling IndexedDB to world logic.
+ * versioned application formats with explicit migrations, storage ports, and
+ * lossless Java NBT/Anvil codecs plus a typed file-level boundary for official
+ * Minecraft saves. Version-specific game semantics remain in NBT documents so
+ * unknown fields survive a read/write cycle.
  *
  * The IndexedDB adapter ships from here too, and it does NOT cost the toolkit
  * its platform-freedom. `tsconfig.base.json` still says `lib: ["ES2024"]` with

@@ -1,0 +1,13 @@
+{
+  "encoder": {
+    "package": "@nerima-games/mc-save",
+    "version": "0.5.0",
+    "integrity": "sha512-SJXzqA9X6wS2PEudR+PkQAmfy+r98JNTyfnRskX0GJ+x3I/6Eu5SjDMb1az7b/9GWIo/t0jQ1AVHXW+6vKco6g=="
+  },
+  "format": {
+    "name": "mc-save/test/migration/chunk",
+    "version": 1
+  },
+  "json": "{\"format\":\"mc-save/test/migration/chunk\",\"version\":1,\"payload\":{\"worldId\":\"overworld-alpha\",\"blocks\":[0,1,2,255,7,0],\"inventory\":[\"diamond_pickaxe\",null,null,\"torch\"]},\"integrity\":{\"algorithm\":\"fnv1a32\",\"byteLength\":168,\"checksum\":\"7f767a47\"}}",
+  "bytesBase64": "eyJmb3JtYXQiOiJtYy1zYXZlL3Rlc3QvbWlncmF0aW9uL2NodW5rIiwidmVyc2lvbiI6MSwicGF5bG9hZCI6eyJ3b3JsZElkIjoib3ZlcndvcmxkLWFscGhhIiwiYmxvY2tzIjpbMCwxLDIsMjU1LDcsMF0sImludmVudG9yeSI6WyJkaWFtb25kX3BpY2theGUiLG51bGwsbnVsbCwidG9yY2giXX0sImludGVncml0eSI6eyJhbGdvcml0aG0iOiJmbnYxYTMyIiwiYnl0ZUxlbmd0aCI6MTY4LCJjaGVja3N1bSI6IjdmNzY3YTQ3In19"
+}
