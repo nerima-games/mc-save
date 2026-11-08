@@ -1,5 +1,6 @@
 import { Effect, Option } from 'effect'
 import { SaveDecodeError } from '../domain/errors.js'
+import type { SaveKey } from '../domain/save-key.js'
 
 export type RevisionEntry<Key, Value> = {
   readonly key: Key
@@ -314,12 +315,14 @@ export type RevisionedSaveReader<Key, Raw, Head, Chunk, Error, Requirements> = {
   readonly chunkKeysFromHead: (head: Head) => Effect.Effect<ReadonlyArray<Key>, SaveDecodeError, Requirements>
   readonly decodeChunk: (rawChunk: Raw) => Effect.Effect<Chunk, SaveDecodeError, Requirements>
   readonly missingChunkError: (head: Head, key: Key) => SaveDecodeError
-  readonly keyToString: (key: Key) => string
+  readonly keyToString: (key: Key) => SaveKey
 }
 
 const annotateDecodeError = (
   error: SaveDecodeError,
-  record: { readonly _tag: 'Head' | 'Chunk'; readonly key: string },
+  record:
+    | { readonly _tag: 'Head'; readonly key: SaveKey }
+    | { readonly _tag: 'Chunk'; readonly key: SaveKey },
   lastHealthyRevisionAvailable: boolean,
 ): SaveDecodeError =>
   new SaveDecodeError({

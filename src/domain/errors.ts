@@ -1,5 +1,6 @@
 import { Data } from 'effect'
 import type * as Cause from 'effect/Cause'
+import type { SaveKey } from './save-key.js'
 
 // Every error class in this package binds its tag constructor to a name and
 // annotates the resolved shape, because `--isolatedDeclarations` (see
@@ -34,13 +35,13 @@ type SaveDecodeErrorFields = {
 }
 
 export type SaveRecordLocation =
-  | { readonly _tag: 'Save'; readonly key: string }
-  | { readonly _tag: 'Head'; readonly key: string }
-  | { readonly _tag: 'Chunk'; readonly key: string }
+  | { readonly _tag: 'Save'; readonly key: SaveKey }
+  | { readonly _tag: 'Head'; readonly key: SaveKey }
+  | { readonly _tag: 'Chunk'; readonly key: SaveKey }
 
 export type SaveRepairGuidance = {
   readonly lastHealthyRevisionAvailable: boolean
-  readonly discardableChunkKeys: ReadonlyArray<string>
+  readonly discardableChunkKeys: ReadonlyArray<SaveKey>
 }
 
 const SaveDecodeErrorBase: new (

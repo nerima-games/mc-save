@@ -404,7 +404,7 @@ describe('loadFrom', () => {
       yield* storage.put(HEAD, sealedTestEnvelope(World.name, 1, { name: 42 }))
       const repair: SaveRepairGuidance = {
         lastHealthyRevisionAvailable: true,
-        discardableChunkKeys: ['world/chunk/unreadable'],
+        discardableChunkKeys: [SaveKey('world/chunk/unreadable')],
       }
 
       const error = yield* Effect.flip(loadFrom(World, HEAD, { record: 'Head', repair }))

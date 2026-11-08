@@ -11,6 +11,7 @@ import {
   type RevisionStorage,
 } from '../src/application/revisioned-save.js'
 import { SaveDecodeError, StorageError } from '../src/domain/errors.js'
+import { SaveKey } from '../src/domain/save-key.js'
 
 type Stored = {
   readonly kind: string
@@ -123,7 +124,7 @@ const makeRevisionReader = (
       version: 9,
       reason: `chunk "${key}" is missing`,
     }),
-  keyToString: (key: string) => key,
+  keyToString: (key: string) => SaveKey(key),
 })
 
 describe('writeRevisionedSave', () => {

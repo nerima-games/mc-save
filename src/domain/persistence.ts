@@ -17,6 +17,7 @@ import {
   type SaveMaxBytes,
 } from './brand-types.js'
 import { SaveEnvelopeSchema } from './envelope.js'
+import { SaveKey as SaveKeyConstructor, type SaveKey } from './save-key.js'
 import {
   SaveDecodeError,
   StorageError,
@@ -27,7 +28,6 @@ import { decodeSave, type SaveFormat } from './format.js'
 import { durablePreviousKey, isDurablePreviousKey } from './durable-key.js'
 import { resolveSaveMaxBytes, validateSaveEnvelope } from './integrity.js'
 import { prepareSave, type SaveWriteOptions } from './save-preparation.js'
-import type { SaveKey } from './save-key.js'
 import { StoragePort } from './storage-port.js'
 
 export type { SaveWriteOptions } from './save-preparation.js'
@@ -68,7 +68,7 @@ type SaveReadRecordContext = {
 
 const SaveRepairGuidanceSchema = Schema.Struct({
   lastHealthyRevisionAvailable: Schema.Boolean,
-  discardableChunkKeys: Schema.Array(Schema.String),
+  discardableChunkKeys: Schema.Array(Schema.fromBrand('SaveKey', SaveKeyConstructor)(Schema.String)),
 })
 
 const resolveReadMaxBytes = <A, I>(
