@@ -1,5 +1,17 @@
 # @nerima-games/mc-save
 
+## 0.8.0
+
+### Minor Changes
+
+- Add schema-checked migration chains for save formats. Chunk format v3 migrations upgrade v1/v2 data and preserve per-cell block states.
+
+- Include the failed record location and recovery guidance in decode errors and save listings, including for unsupported versions.
+
+- Add optional revision checkpoints and reads to retain the last healthy save revision during recovery.
+
+- Pin `@nerima-games/mc-kernel` to `0.17.0`.
+
 ## 0.7.0
 
 ### Minor Changes
