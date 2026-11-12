@@ -4,6 +4,7 @@ import * as fc from 'fast-check'
 import { effect } from './support/effect-test.js'
 import { applyUntrustedArgument } from './support/apply-untrusted-argument.js'
 import { Effect, Result, Schema, SchemaGetter, SchemaTransformation } from 'effect'
+import { EncodedBlockStateSchema } from '@nerima-games/mc-kernel/domain/block-state'
 import { SaveEnvelopeSchema } from '../src/domain/envelope.js'
 import {
   DEFAULT_MAX_SAVE_BYTES,
@@ -100,6 +101,7 @@ const ChunkSaveV3Schema = Schema.Struct({
       ),
     ),
   ),
+  blockStates: Schema.Array(EncodedBlockStateSchema),
   inventory: Schema.Array(InventorySlotSchema),
   dimension: Schema.Literals(['overworld', 'nether', 'end']),
 })
@@ -152,6 +154,7 @@ const migrateChunkV1ToV2 = (old: ChunkSaveV1): ChunkSaveV2Payload => ({
 
 const migrateChunkV2ToV3 = (old: ChunkSaveV2): ChunkSaveV3Payload => ({
   ...old,
+  blockStates: old.blocks.map(() => 0),
   inventory: old.inventory.map((slot) => slot ?? null),
   dimension: 'overworld',
 })
@@ -217,6 +220,7 @@ describe('migrating a save written by an earlier build', () => {
       expect(restored).toStrictEqual({
         worldId: 'overworld-beta',
         blocks: [0, 300, 65_535],
+        blockStates: [0, 0, 0],
         inventory: ['iron_pickaxe', undefined],
         dimension: 'overworld',
       })
@@ -231,7 +235,42 @@ describe('migrating a save written by an earlier build', () => {
       expect(restored).toStrictEqual({
         worldId: 'overworld-alpha',
         blocks: [0, 1, 2, 255, 7, 0],
+        blockStates: [0, 0, 0, 0, 0, 0],
         inventory: ['diamond_pickaxe', undefined, undefined, 'torch'],
+        dimension: 'overworld',
+      })
+    }),
+  )
+
+  effect('round-trips the 0.16 and 0.17 block ids and encoded states through v3', () =>
+    Effect.gen(function* () {
+      const original: typeof ChunkSaveV3Schema.Type = {
+        worldId: 'stateful-blocks',
+        blocks: [125, 126, 127],
+        blockStates: [
+          Schema.decodeUnknownSync(EncodedBlockStateSchema)(0),
+          Schema.decodeUnknownSync(EncodedBlockStateSchema)(9),
+          Schema.decodeUnknownSync(EncodedBlockStateSchema)(6),
+        ],
+        inventory: [],
+        dimension: 'overworld',
+      }
+
+      const envelope = yield* encodeSave(CURRENT_CHUNK_FORMAT, original)
+      const restored = yield* decodeSave(CURRENT_CHUNK_FORMAT, JSON.parse(JSON.stringify(envelope)))
+
+      expect(envelope.payload).toStrictEqual({
+        worldId: 'stateful-blocks',
+        blocks: [125, 126, 127],
+        blockStates: [0, 9, 6],
+        inventory: [],
+        dimension: 'overworld',
+      })
+      expect(restored).toStrictEqual({
+        worldId: 'stateful-blocks',
+        blocks: [125, 126, 127],
+        blockStates: [0, 9, 6],
+        inventory: [],
         dimension: 'overworld',
       })
     }),
@@ -334,13 +373,16 @@ describe('migrating a save written by an earlier build', () => {
           }
           const oldEnvelope = Effect.runSync(encodeSyntheticV1MigrationPropertyValue(oldValue))
           const restored = Effect.runSync(decodeSave(CURRENT_CHUNK_FORMAT, oldEnvelope))
+          const { blockStates, ...restoredWithoutBlockStates } = restored
 
-          expect(restored).toStrictEqual({
+          expect(restoredWithoutBlockStates).toStrictEqual({
             worldId: value.worldId,
             blocks: [...value.blocks],
             inventory: value.inventory.map((slot) => slot === null ? undefined : slot),
             dimension: 'overworld',
           })
+          expect(blockStates).toHaveLength(value.blocks.length)
+          expect(blockStates.every((state) => state === 0)).toBe(true)
         },
       ),
     )

@@ -6,7 +6,7 @@
 
 - Effect 4 format codecs, envelopes, integrity checks, and size limits
 - `StoragePort`, in-memory and IndexedDB adapters, batch and durable operations, retries, revision writes, and a sequential write queue
-- Save-slice bundle encoding, migration-path resolution, and restore preflight using `@nerima-games/mc-kernel` 0.15.0 contracts
+- Save-slice bundles, migration-path resolution, and validation of every registered slice before restore callbacks, using `@nerima-games/mc-kernel` 0.17.0 contracts
 - Java modified UTF-8, NBT, gzip/zlib/none/LZ4, Anvil regions, external `.mcc` chunks, and standard save paths
 - Shared `WorldId`, coordinate brands, and save-slice contracts from `@nerima-games/mc-kernel`
 
@@ -80,7 +80,7 @@ pnpm audit
 - Minecraft NBT and Anvil codecs preserve supported wire data; consumers define game-specific schema meaning.
 - IndexedDB layout versions are independent of save format versions.
 
-See [the 0.6.0 migration guide](docs/migration.md), [public API reference](docs/public-api.md), and [verification guide](docs/testing.md).
+For users upgrading from 0.6.0, see [the migration guide](docs/migration.md). For API and verification details, see [the public API reference](docs/public-api.md) and [verification guide](docs/testing.md).
 
 ## License
 
